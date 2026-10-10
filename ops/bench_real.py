@@ -156,6 +156,8 @@ def main(argv=None):
     rep.priv["picked_inputs"] = {k: v[1] for k, v in picks.items()}
     rep.pub["edits"] = measure_edits(wb, picks, m)
     rep.pub['total_s'] = round(time.time() - t0, 1)
+    if time.time() - t0 > a.max_seconds:  # the polling watchdog can miss a short run
+        rep.pub.update(status='aborted', aborted_reason=f'time > {a.max_seconds} s'); rep.write(); sys.exit(3)
     rep.pub['status'] = 'ok'; rep.write()
     print(json.dumps(rep.pub, indent=2))
 
