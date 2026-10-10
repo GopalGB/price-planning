@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
 import sqlite3
+import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 
@@ -15,16 +18,63 @@ from openpyxl.formula.translate import Translator
 from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
 
-from .store import publish, staging_directory
+from .store import publish, replace_snapshot, staging_directory
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
+IMPORT_VERSION = 3
 
 
 class TemplateImportError(Exception):
     """A source archive could not be safely imported."""
+
+
+@dataclass(frozen=True)
+class StyleDefinition:
+    index: int
+    node: ET.Element
+    base: ET.Element | None
+
+
+@dataclass(frozen=True)
+class CellContext:
+    database: sqlite3.Connection
+    sheet: int
+    unlocked: set[int]
+
+
+@dataclass(frozen=True)
+class SheetContext:
+    archive: zipfile.ZipFile
+    database: sqlite3.Connection
+    unlocked: set[int]
+    destination: Path
+
+
+@dataclass(frozen=True)
+class SheetState:
+    rows: dict
+    metadata: dict
+    cells: CellContext
+
+
+@dataclass(frozen=True)
+class FormulaSync:
+    destination: Path
+    database: sqlite3.Connection
+    metadata: list[dict]
+
+
+@dataclass(frozen=True)
+class CapturedSource:
+    path: Path
+    digest: str
+    name: str
 
 
 def _source_hash(path: Path) -> str:
@@ -35,9 +85,38 @@ def _source_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _capture_source(source: Path, parent: Path) -> CapturedSource:
+    parent.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(prefix=".captured-", dir=parent, delete=False)
+    temporary = Path(handle.name)
+    try:
+        with source.open("rb") as reader, handle:
+            shutil.copyfileobj(reader, handle, length=1024 * 1024)
+        return CapturedSource(temporary, _source_hash(temporary), source.name)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def _write_json(path: Path, value: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, separators=(",", ":"), sort_keys=True), encoding="utf-8")
+
+
+def _preserve_source(source: Path, destination: Path) -> None:
+    target = destination / "source.xlsm"
+    if target.exists():
+        return
+    destination.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(prefix=".source-", dir=destination, delete=False)
+    temporary = Path(handle.name)
+    try:
+        with source.open("rb") as reader, handle:
+            shutil.copyfileobj(reader, handle, length=1024 * 1024)
+        temporary.replace(target)
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _cell_ref(ref: str) -> tuple[int, int]:
@@ -74,7 +153,8 @@ def _component(items: list[ET.Element], index: int) -> ET.Element | None:
 
 
 def _component_id(xf: ET.Element, base: ET.Element | None, name: str) -> int:
-    apply = xf.get(f"apply{name[0].upper()}{name[1:]}")
+    apply_name = "applyNumberFormat" if name == "numFmt" else f"apply{name[0].upper()}{name[1:]}"
+    apply = xf.get(apply_name)
     source = base if apply in {"0", "false"} else xf
     return int(source.get(f"{name}Id", "0")) if source is not None else 0
 
@@ -88,14 +168,15 @@ def _locked(xf: ET.Element | None, inherited: bool = True) -> bool:
     return protection.get("locked", "1") not in {"0", "false"}
 
 
-def _style_record(index: int, xf: ET.Element, base: ET.Element | None, root: ET.Element) -> dict:
+def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
+    index, xf, base = style.index, style.node, style.base
     fonts = list(root.findall(f"{NS}fonts/{NS}font"))
     fills = list(root.findall(f"{NS}fills/{NS}fill"))
     borders = list(root.findall(f"{NS}borders/{NS}border"))
     font = _component(fonts, _component_id(xf, base, "font"))
     fill = _component(fills, _component_id(xf, base, "fill"))
     border = _component(borders, _component_id(xf, base, "border"))
-    alignment = xf.find(f"{NS}alignment")
+    alignment = None if xf.get("applyAlignment") in {"0", "false"} else xf.find(f"{NS}alignment")
     if alignment is None and base is not None:
         alignment = base.find(f"{NS}alignment")
     num_id = _component_id(xf, base, "numFmt")
@@ -114,6 +195,7 @@ def _style_record(index: int, xf: ET.Element, base: ET.Element | None, root: ET.
         "valign": alignment.get("vertical") if alignment is not None else None,
         "wrap": alignment is not None and alignment.get("wrapText") in {"1", "true"},
         "font_size": float(font.find(f"{NS}sz").get("val")) if font is not None and font.find(f"{NS}sz") is not None else None,
+        "locked": _locked(xf, _locked(base)),
         "border": {"t": side("top"), "r": side("right"), "b": side("bottom"), "l": side("left")},
     }
 
@@ -127,7 +209,7 @@ def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
     for index, xf in enumerate(root.findall(f"{NS}cellXfs/{NS}xf")):
         parent = int(xf.get("xfId", "0"))
         base = bases[parent] if parent < len(bases) else None
-        styles.append(_style_record(index, xf, base, root))
+        styles.append(_style_record(StyleDefinition(index, xf, base), root))
         if not _locked(xf, _locked(base)):
             unlocked.add(index)
     return styles or [_default_style()], unlocked
@@ -136,6 +218,7 @@ def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
 def _default_style() -> dict:
     return {"id": 0, "nf": "General", "bold": False, "italic": False, "color": None,
             "fill": None, "align": None, "valign": None, "wrap": False, "font_size": None,
+            "locked": True,
             "border": {"t": None, "r": None, "b": None, "l": None}}
 
 
@@ -168,13 +251,26 @@ def _shared_strings(archive: zipfile.ZipFile, database: sqlite3.Connection) -> N
                 stack.append(element)
                 continue
             if element.tag == f"{NS}si":
-                value = "".join(node.text or "" for node in element.iter(f"{NS}t"))
+                value = _visible_text(element)
                 database.execute("INSERT INTO strings VALUES (?, ?)", (index, value))
                 index += 1
                 if len(stack) > 1:
                     stack[-2].remove(element)
             stack.pop()
     database.commit()
+
+
+def _visible_text(element):
+    if element is None:
+        return ""
+    parts = []
+    for child in element:
+        if child.tag == f"{NS}t":
+            parts.append(child.text or "")
+        elif child.tag == f"{NS}r":
+            text = child.find(f"{NS}t")
+            parts.append(text.text or "" if text is not None else "")
+    return "".join(parts)
 
 
 def _value(cell: ET.Element, database: sqlite3.Connection):
@@ -185,7 +281,7 @@ def _value(cell: ET.Element, database: sqlite3.Connection):
     if kind == "b":
         return value == "1"
     if kind == "inlineStr":
-        return "".join(node.text or "" for node in cell.iter(f"{NS}t"))
+        return _visible_text(cell.find(f"{NS}is"))
     if kind == "e":
         return {"error": value or "#VALUE!"}
     if value is None:
@@ -196,7 +292,8 @@ def _value(cell: ET.Element, database: sqlite3.Connection):
         return value
 
 
-def _formula(cell: ET.Element, database: sqlite3.Connection, sheet: int, row: int, col: int) -> str | None:
+def _formula(cell: ET.Element, database: sqlite3.Connection, coordinate: tuple[int, int, int]) -> str | None:
+    sheet, row, col = coordinate
     node = cell.find(f"{NS}f")
     if node is None:
         return None
@@ -212,11 +309,17 @@ def _formula(cell: ET.Element, database: sqlite3.Connection, sheet: int, row: in
 def _validation(node: ET.Element) -> dict:
     formulas = [node.findtext(f"{NS}formula1"), node.findtext(f"{NS}formula2")]
     ranges = [_bounds(ref) for ref in (node.get("sqref") or "").split()]
-    result = {"type": node.get("type"), "ranges": ranges}
+    result = {"type": node.get("type"), "ranges": ranges,
+              "showErrorMessage": node.get("showErrorMessage") in {"1", "true"}}
+    if node.get("errorStyle"):
+        result["errorStyle"] = node.get("errorStyle")
     if node.get("operator"):
         result["operator"] = node.get("operator")
-    if result["type"] == "list" and formulas[0] and formulas[0].startswith('"'):
-        result["list"] = formulas[0].strip('"').split(",")
+    if result["type"] == "list":
+        if formulas[0] and formulas[0].startswith('"'):
+            result["list"] = formulas[0].strip('"').split(",")
+        elif formulas[0] is not None:
+            result["formula1"] = formulas[0]
     elif formulas[0] is not None:
         result["min"] = _literal(formulas[0])
         if formulas[1] is not None:
@@ -231,34 +334,36 @@ def _literal(value: str):
         return value
 
 
-def _flush_block(destination: Path, sheet: int, block: int | None, rows: dict) -> None:
+def _flush_block(directory: Path, block: int | None, rows: dict) -> None:
     if block is not None:
-        _write_json(destination / "sheets" / str(sheet) / f"{block}.json", rows)
+        _write_json(directory / f"{block}.json", rows)
 
 
-def _record_cell(element: ET.Element, database: sqlite3.Connection, sheet: int, unlocked: set[int]) -> tuple[int, int, dict]:
+def _record_cell(element: ET.Element, context: CellContext) -> tuple[int, int, dict]:
     reference = element.get("r")
     if reference is None:
         raise TemplateImportError("cell coordinate is missing")
     row, col = _cell_ref(reference)
     style = int(element.get("s", "0"))
-    formula = _formula(element, database, sheet, row, col)
-    record = {"v": _value(element, database), "s": style, "k": "f" if formula is not None else "c"}
+    formula = _formula(element, context.database, (context.sheet, row, col))
+    record = {"v": _value(element, context.database), "s": style, "k": "f" if formula is not None else "c"}
     if formula is not None:
         record["formula"] = formula
-    elif style in unlocked:
-        database.execute("INSERT INTO candidates VALUES (?, ?, ?)", (sheet, row, col))
+    elif style in context.unlocked:
+        context.database.execute("INSERT INTO candidates VALUES (?, ?, ?)", (context.sheet, row, col))
     return row, col, record
 
 
-def _sheet_pass(archive, sheet_info, database, unlocked, destination) -> tuple[dict, bool]:
+def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     index = sheet_info["index"]
     metadata = {**sheet_info, "rows": 0, "cols": 0, "freeze": {"rows": 0, "cols": 0},
                 "col_widths": {}, "row_heights": {}, "hidden_rows": [], "hidden_cols": [],
-                "merges": [], "validations": []}
+                "col_styles": [], "row_styles": {}, "merges": [], "validations": []}
     metadata.pop("part")
     block_index, block_rows, protected = None, {}, False
-    with archive.open(sheet_info["part"]) as stream:
+    sheet_dir = context.destination / "sheets" / str(index)
+    state = SheetState(block_rows, metadata, CellContext(context.database, index, context.unlocked))
+    with context.archive.open(sheet_info["part"]) as stream:
         stack = []
         for event, element in ET.iterparse(stream, events=("start", "end")):
             if event == "start":
@@ -268,33 +373,37 @@ def _sheet_pass(archive, sheet_info, database, unlocked, destination) -> tuple[d
                 row_number = int(element.get("r", "1")) - 1
                 next_block = row_number // 256
                 if block_index is not None and next_block != block_index:
-                    _flush_block(destination, index, block_index, block_rows)
+                    _flush_block(sheet_dir, block_index, block_rows)
                     block_rows = {}
+                    state = SheetState(block_rows, metadata, state.cells)
                 block_index = next_block
-                _record_row(element, row_number, block_rows, metadata, database, index, unlocked)
+                _record_row(element, row_number, state)
             else:
                 protected = _sheet_metadata(element, metadata, protected)
             if len(stack) > 1 and element.tag == f"{NS}row":
                 stack[-2].remove(element)
             stack.pop()
-    _flush_block(destination, index, block_index, block_rows)
-    (destination / "sheets" / str(index)).mkdir(parents=True, exist_ok=True)
+    _flush_block(sheet_dir, block_index, block_rows)
+    sheet_dir.mkdir(parents=True, exist_ok=True)
+    metadata["protected"] = protected
     return metadata, protected
 
 
-def _record_row(element, row_number, rows, metadata, database, sheet, unlocked) -> None:
+def _record_row(element, row_number, state: SheetState) -> None:
     row_cells = {}
     for cell in element.findall(f"{NS}c"):
-        row, col, record = _record_cell(cell, database, sheet, unlocked)
+        row, col, record = _record_cell(cell, state.cells)
         row_cells[str(col)] = record
-        metadata["rows"] = max(metadata["rows"], row + 1)
-        metadata["cols"] = max(metadata["cols"], col + 1)
+        state.metadata["rows"] = max(state.metadata["rows"], row + 1)
+        state.metadata["cols"] = max(state.metadata["cols"], col + 1)
     if row_cells:
-        rows[str(row_number % 256)] = row_cells
+        state.rows[str(row_number % 256)] = row_cells
     if element.get("ht"):
-        metadata["row_heights"][str(row_number)] = float(element.get("ht"))
+        state.metadata["row_heights"][str(row_number)] = float(element.get("ht"))
     if element.get("hidden") in {"1", "true"}:
-        metadata["hidden_rows"].append(row_number)
+        state.metadata["hidden_rows"].append(row_number)
+    if element.get("customFormat") in {"1", "true"} and element.get("s") is not None:
+        state.metadata["row_styles"][str(row_number)] = int(element.get("s"))
 
 
 def _sheet_metadata(element, metadata, protected):
@@ -323,6 +432,8 @@ def _column_metadata(element, metadata):
             metadata["col_widths"][str(col)] = float(element.get("width"))
         if element.get("hidden") in {"1", "true"}:
             metadata["hidden_cols"].append(col)
+    if element.get("style") is not None:
+        metadata["col_styles"].append([first, last, int(element.get("style"))])
     metadata["cols"] = max(metadata["cols"], last + 1)
 
 
@@ -347,6 +458,38 @@ def _expand_shared_formulas(destination: Path, database: sqlite3.Connection, she
                 changed = True
         if changed:
             _write_json(path, rows)
+
+
+def _write_formula_block(sync: FormulaSync, key, cells) -> None:
+    sheet, block = key
+    path = sync.destination / "sheets" / str(sheet) / f"{block}.json"
+    data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for row, col, value, anchor in cells:
+        row_data = data.setdefault(str(row % 256), {})
+        record = row_data.setdefault(str(col), {"v": None, "s": 0, "k": "c"})
+        record.update({"v": value, "k": "f"})
+        if not anchor:
+            record.pop("formula", None)
+    _write_json(path, data)
+
+
+def _synchronize_formula_results(source: Path, sync: FormulaSync) -> None:
+    from ..engine.formualizer import EngineError, FormualizerAdapter
+
+    try:
+        engine = FormualizerAdapter.load(source)
+    except EngineError as exc:
+        raise TemplateImportError(f"template formula capability error: {exc}") from exc
+    grouped = {}
+    for sheet, row, col, value in engine.result_snapshot():
+        anchor = (sheet, row, col) in engine.formula_anchors
+        grouped.setdefault((sheet, row // 256), []).append((row, col, value, anchor))
+        sync.database.execute("DELETE FROM candidates WHERE sheet=? AND row=? AND col=?",
+                              (sheet, row, col))
+        sync.metadata[sheet]["rows"] = max(sync.metadata[sheet]["rows"], row + 1)
+        sync.metadata[sheet]["cols"] = max(sync.metadata[sheet]["cols"], col + 1)
+    for key, cells in grouped.items():
+        _write_formula_block(sync, key, cells)
 
 
 def _apply_input_mask(destination: Path, database: sqlite3.Connection, protected: set[int]) -> None:
@@ -377,31 +520,34 @@ def _write_input_mask(path: Path, database: sqlite3.Connection, protected: set[i
         stream.write("]")
 
 
-def _import_archive(source: Path, staging: Path, digest: str) -> None:
+def _import_archive(source: CapturedSource, staging: Path) -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
     database.execute("CREATE TABLE formulas (sheet INTEGER, id INTEGER, row INTEGER, col INTEGER, formula TEXT, PRIMARY KEY(sheet,id))")
     try:
-        with zipfile.ZipFile(source) as archive:
+        with zipfile.ZipFile(source.path) as archive:
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
             sheet_specs, names = _workbook_data(archive)
             metadata, protected = [], set()
+            context = SheetContext(archive, database, unlocked, staging)
             for spec in sheet_specs:
-                info, is_protected = _sheet_pass(archive, spec, database, unlocked, staging)
+                info, is_protected = _sheet_pass(context, spec)
                 metadata.append(info)
                 if is_protected:
                     protected.add(spec["index"])
                 _write_json(staging / "progress.json", {"complete": False,
                             "sheets_completed": len(metadata), "sheets_total": len(sheet_specs)})
+                LOGGER.info("Template import progress: sheet %d/%d", len(metadata), len(sheet_specs))
             database.commit()
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
+        _synchronize_formula_results(source.path, FormulaSync(staging, database, metadata))
         _apply_input_mask(staging, database, protected)
         _write_input_mask(staging / "input_mask.json", database, protected)
         _write_json(staging / "styles.json", styles)
-        _write_json(staging / "meta.json", {"hash": digest, "name": source.name,
-                    "sheets": metadata, "defined_names": names})
+        _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
+                    "import_version": IMPORT_VERSION, "sheets": metadata, "defined_names": names})
         _write_json(staging / "progress.json", {"complete": True,
                     "sheets_completed": len(metadata), "sheets_total": len(metadata)})
     finally:
@@ -409,17 +555,41 @@ def _import_archive(source: Path, staging: Path, digest: str) -> None:
         (staging / "import.sqlite").unlink(missing_ok=True)
 
 
-def import_template(source: str | Path, data_dir: str | Path) -> Path:
-    source, data_dir = Path(source), Path(data_dir)
-    digest = _source_hash(source)
-    destination = data_dir / "templates" / digest
-    if destination.exists():
-        return destination
+def _snapshot_current(destination: Path) -> bool:
+    try:
+        meta = json.loads((destination / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (meta.get("hash") == destination.name
+            and meta.get("import_version") == IMPORT_VERSION
+            and (destination / "source.xlsm").is_file())
+
+
+def _build_snapshot(source: CapturedSource, destination: Path) -> Path:
     staging = staging_directory(destination.parent)
     try:
-        _import_archive(source, staging, digest)
+        _import_archive(source, staging)
+        source.path.replace(staging / "source.xlsm")
+        if destination.exists():
+            return replace_snapshot(staging, destination)
         return publish(staging, destination)
-    except (OSError, ValueError, IndexError, sqlite3.Error, ET.ParseError,
-            zipfile.BadZipFile, KeyError) as exc:
+    except Exception as exc:
         shutil.rmtree(staging, ignore_errors=True)
-        raise TemplateImportError("template import failed") from exc
+        if isinstance(exc, TemplateImportError):
+            raise
+        if isinstance(exc, (OSError, ValueError, IndexError, sqlite3.Error,
+                            ET.ParseError, zipfile.BadZipFile, KeyError)):
+            raise TemplateImportError("template import failed") from exc
+        raise
+
+
+def import_template(source: str | Path, data_dir: str | Path) -> Path:
+    source, data_dir = Path(source), Path(data_dir)
+    captured = _capture_source(source, data_dir / "templates")
+    destination = data_dir / "templates" / captured.digest
+    try:
+        if _snapshot_current(destination):
+            return destination
+        return _build_snapshot(captured, destination)
+    finally:
+        captured.path.unlink(missing_ok=True)

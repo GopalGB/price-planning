@@ -17,3 +17,16 @@ def publish(staging: Path, destination: Path) -> Path:
         return destination
     os.replace(staging, destination)
     return destination
+
+
+def replace_snapshot(staging: Path, destination: Path) -> Path:
+    backup = Path(tempfile.mkdtemp(prefix=".replaced-", dir=destination.parent))
+    backup.rmdir()
+    os.replace(destination, backup)
+    try:
+        os.replace(staging, destination)
+    except Exception:
+        os.replace(backup, destination)
+        raise
+    shutil.rmtree(backup)
+    return destination

@@ -10,12 +10,12 @@ TMP = ROOT / "results-private" / "tmp"
 
 
 class BackendFixture:
-    def __init__(self):
+    def __init__(self, builder=make_semantic):
         TMP.mkdir(parents=True, exist_ok=True)
         self._temporary = tempfile.TemporaryDirectory(dir=TMP)
         self.root = Path(self._temporary.name)
         self.source = self.root / "semantic.xlsm"
-        make_semantic(self.source)
+        builder(self.source)
 
         from pp.db import Database
         from pp.template.importer import import_template
@@ -83,4 +83,3 @@ class BackendFixture:
     def close(self):
         self.database.close()
         self._temporary.cleanup()
-

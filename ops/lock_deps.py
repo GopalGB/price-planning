@@ -1,6 +1,10 @@
 # ops/lock_deps.py
 """Regenerate hashed locks (all platforms) and download Windows wheels for offline install."""
-import json, hashlib, subprocess, sys, tempfile
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 WHEELS = ROOT / 'vendor' / 'wheels'

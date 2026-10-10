@@ -1,6 +1,6 @@
 """Startup replay of durable unfinished calculation jobs."""
 
-from .calc_service import CalculationService
+from .calc_service import CalculationPublication, CalculationService
 
 
 def recover_unfinished(database, calculate) -> dict:
@@ -12,8 +12,9 @@ def recover_unfinished(database, calculate) -> dict:
     completed = failed = 0
     for job in jobs:
         try:
-            changes = calculate(job["copy_id"], job["revision"])
-            if service.complete(job["copy_id"], job["revision"], changes):
+            result = calculate(job["copy_id"], job["revision"])
+            publication = CalculationPublication(job["copy_id"], job["revision"], result["results"])
+            if service.complete(publication):
                 completed += 1
         except Exception as exc:
             service.failed(job["copy_id"], job["revision"], type(exc).__name__)

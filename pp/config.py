@@ -79,8 +79,10 @@ def load_config(root: str | Path) -> Config:
         raise ValueError("demo_mode must be boolean")
     origins = tuple(_origin(item) for item in settings.get("allowed_origins", ()))
     cookie_secure = settings.get("cookie_secure", not demo_mode)
-    if not isinstance(cookie_secure, bool) or cookie_secure and demo_mode:
-        raise ValueError("cookie_secure is unsafe for demo mode")
+    if not isinstance(cookie_secure, bool):
+        raise ValueError("cookie_secure must be boolean")
+    if not demo_mode and not cookie_secure:
+        raise ValueError("cookie_secure must be enabled outside demo mode")
     template_value = os.environ.get("PP_TEMPLATE_PATH", settings.get("template_path"))
     template_path = _path(root, template_value, "template_path") if template_value else None
     if template_path is None:

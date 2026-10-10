@@ -9,6 +9,7 @@
 *.pptx
 *.pdf
 logo.png
+/template/
 sources/*
 !sources/.keep
 

@@ -2,6 +2,9 @@
 
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS pp_meta (
+    key TEXT PRIMARY KEY, value TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pp_users (
     id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, name TEXT NOT NULL,
     password_hash TEXT NOT NULL, created_at TEXT NOT NULL
@@ -37,7 +40,7 @@ CREATE TABLE IF NOT EXISTS pp_copies (
     default_role TEXT NOT NULL CHECK(default_role IN ('editor','viewer')),
     parent_copy_id TEXT REFERENCES pp_copies(id), fork_revision INTEGER,
     input_revision INTEGER NOT NULL DEFAULT 0,
-    calculated_revision INTEGER NOT NULL DEFAULT 0,
+    calculated_revision INTEGER NOT NULL DEFAULT -1,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS pp_copy_shares (
@@ -52,6 +55,12 @@ CREATE TABLE IF NOT EXISTS pp_overrides (
     value_json TEXT NOT NULL, version INTEGER NOT NULL,
     updated_by TEXT NOT NULL REFERENCES pp_users(id), updated_at TEXT NOT NULL,
     origin_copy_id TEXT, origin_revision INTEGER,
+    PRIMARY KEY(copy_id, sheet, row, col)
+);
+CREATE TABLE IF NOT EXISTS pp_copy_baselines (
+    copy_id TEXT NOT NULL REFERENCES pp_copies(id) ON DELETE CASCADE,
+    sheet INTEGER NOT NULL, row INTEGER NOT NULL, col INTEGER NOT NULL,
+    value_json TEXT NOT NULL,
     PRIMARY KEY(copy_id, sheet, row, col)
 );
 CREATE TABLE IF NOT EXISTS pp_ops (
@@ -94,5 +103,8 @@ CREATE TABLE IF NOT EXISTS pp_source_overlays (
     copy_id TEXT NOT NULL REFERENCES pp_copies(id) ON DELETE CASCADE,
     source_id TEXT NOT NULL, revision INTEGER NOT NULL, payload_json TEXT NOT NULL,
     PRIMARY KEY(copy_id, source_id, revision)
+);
+CREATE TABLE IF NOT EXISTS pp_legacy_events (
+    event_id TEXT PRIMARY KEY
 );
 """

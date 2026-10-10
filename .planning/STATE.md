@@ -1,30 +1,37 @@
 # STATE
 
 ## Current phase
-P0 Repo + rails (plan: .planning/excel-grid/PLAN-P0.md). Code complete on branch `feat/p0-rails`;
-acceptance waits on Sir's office steps below.
+Track A v2 backend exact-revision repair and final confirmed regression follow-up are implemented in the
+`feat/v2-backend` worktree. Local safe tests are green. Controller acceptance remains pending the two
+root-owned localhost transport checks, independent review, security gates, canonical repeats, and Git integration.
 
 ## Last handoff
-2026-10-10, Mac / Claude (planner + reviewer), Codex gpt-6.1-sol high (executor), gpt-6-astra (reviewer).
-- Tasks 1-5 committed (guard, docs, locks + vendored Windows wheel, fixtures, benchmark).
-- Astra P0 review: 10 defects, all reproduced red then fixed (`.planning/excel-grid/sol/p0-fix-redlog.md`).
-  Claude review added 2 more (Windows python3 Store stub in hook, unknown engine error kinds), both fixed with tests.
-- Test suite: `.venv/bin/python -m unittest discover -s tests` = 64 tests OK (two consecutive runs).
-  `python3 ops/content_guard.py --all` exit 0.
-- Task 6: `.github/workflows/ci.yml` (ubuntu 3.10/3.12 tests, semgrep/bandit/pip-audit/gitleaks, Windows
-  offline install on 3.10/3.11/3.12). NOT YET RUN: needs the push.
-- Task 7: Univer gate PASS twice in Ego Lite (`results/univer-gate-2026-10-10.json`): heap 26-119 MB including
-  all 1.27M cells of a 4088x312 sheet; typed formulas blocked, editor recovers, undo works, zero client formulas.
-  Not measured: scroll fps (background tab throttles), paste and fill interception (P3).
-- Clickable UI mockup: `proto/mockup/index.html` (fake data), shown to Sir in Ego Lite.
-- Max HQ auto-commit hook now honours `git config max.autocommit false` (set in this repo).
+2026-10-10, Codex gpt-6.1-sol high, planner takeover after two executor failures.
+
+- Repaired honest revision-zero calculation and replay, full formula snapshot persistence, shared-formula
+  ISFORMULA handling, typed bool-versus-number comparisons, and immutable inherited fork baselines.
+- Repaired live access revocation, session-specific logout, expiry rechecks, monotonic per-copy broadcasts, and
+  same-revision calculation replay. Added importer progress and cleanup, import-only isolation, and `/template/`
+  ignore coverage.
+- Preserved immutable template source, mask, metadata, engine behavior, and export across replacement of the
+  configured workbook path. Exact RED/GREEN evidence is indexed in `.planning/excel-grid/backend-units.md`.
+- Focused controller contracts passed 39/39 after the helper-signature refactor. Two consecutive sandbox-safe
+  repository runs passed 132/132. Ruff, compileall, content guard, and the touched-code structural audit passed.
+- `tests/test_runtime.py` and `tests/v2/test_http_transport.py` were intentionally excluded because root owns
+  actual TCP verification. Independent model review, security scans, and office acceptance were not run here.
+- Controller-owned dependency locking, installs, Git index changes, commits, and pushes were not touched.
+- Repaired actual legacy scrypt login, 1-based migration coordinates, durable migrated calculation jobs,
+  UTC ISO migration timestamps, native error inputs, exact typed/event deltas, per-copy publication pipelines,
+  bounded streaming bodies, `_xlfn.` and quoted ISFORMULA handling, fail-closed validation coverage, and
+  malformed control-payload type checks.
+- Final focused contracts passed 75/75. The final broad safe suite passed 148/148. Ruff, content guard, and the
+  complete `pp/` function-size/signature audit passed. Evidence is in `backend-final-pending-result.md`.
 
 ## Next task
-1. Sir: push from Terminal.app (`git push -u origin main && git push -u origin feat/p0-rails`), open the PR, watch CI.
-2. Sir (office server): clone, copy the .xlsm in by hand, run `ops\office_p0.bat`, push `.planning\excel-grid\results\*.json`;
-   open the app from a second office PC (PLAN-P0 Task 8 Step 0).
-3. Then write PLAN-P1 (engine adapter, compat shims, typed-golden parity) from the office benchmark numbers.
+1. Root runs `tests/test_runtime.py` and `tests/v2/test_http_transport.py` with localhost binding available.
+2. Root runs the canonical safe suite twice, independent review, and security gates, then sends concrete findings back.
+3. Root reviews and commits the units in `.planning/excel-grid/backend-units.md`.
 
 ## Results waiting on Sir
-- Office benchmark report (aggregate only) and LAN second-machine pass/fail.
-- One template copy recalculated and saved in desktop Excel (parity reference for P1).
+- Office Excel parity against one approved template copy, LAN second-machine verification, measured load and
+  performance evidence, review, and security acceptance remain outside this repair session.

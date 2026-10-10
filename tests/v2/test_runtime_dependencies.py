@@ -28,6 +28,7 @@ def check_runtime_imports():
     sys.meta_path.insert(0, RuntimeOnlyImports())
     from pp.engine import FormualizerAdapter
     from pp.template import import_template
+    _ = FormualizerAdapter, import_template
 
 
 class RuntimeDependencyTests(unittest.TestCase):
