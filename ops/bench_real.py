@@ -29,6 +29,10 @@ def rss_mb():
 
 class Report:
     def __init__(self, a):
+        public, private = Path(a.public_dir).resolve(), Path(a.private_dir).resolve()
+        if public == private or public in private.parents or private in public.parents:
+            raise ValueError('public and private report directories must be separate, non-nested trees')
+        a.public_dir, a.private_dir = public, private
         self.a, self.pub, self.priv = a, {'status': 'running'}, {'mismatches': []}
         stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
         host = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:8]
@@ -59,7 +63,9 @@ def split(ref):
     n = 0
     for ch in col.upper():
         n = n * 26 + ord(ch) - 64
-    return sheet.strip("'"), row, n
+    if sheet.startswith("'") and sheet.endswith("'"):
+        sheet = sheet[1:-1].replace("''", "'")
+    return sheet, row, n
 
 def cached_values(xlsm, sheets, sample):
     from openpyxl import load_workbook
@@ -133,10 +139,11 @@ def main(argv=None):
     ap.add_argument('--private-dir', default='results-private')
     ap.add_argument('--max-rss-mb', type=float, default=12000); ap.add_argument('--max-seconds', type=float, default=3600)
     a = ap.parse_args(argv)
+    rep = Report(a)
     import formualizer
     from importlib.metadata import version
     m = json.loads(Path(a.manifest).read_text())
-    rep = Report(a); t0 = time.time()
+    t0 = time.time()
     rep.pub.update(formualizer=version('formualizer'), xlsm_sha256=hashlib.sha256(Path(a.xlsm).read_bytes()).hexdigest())
     threading.Thread(target=watchdog, args=(rep, (a.max_rss_mb, a.max_seconds), t0), daemon=True).start()
     expected = cached_values(a.xlsm, m['parity_sheets'], m['parity_sample'])

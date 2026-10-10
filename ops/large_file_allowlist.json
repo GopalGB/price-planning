@@ -1,3 +1,7 @@
 {
-  "vendor/wheels/formualizer-0.11.1-cp310-abi3-win_amd64.whl": "52c3d4e9714cee12c9e4eca0e57717a2443088930dfcdb669f6921974b758ca6"
+  "vendor/wheels/formualizer-0.11.1-cp310-abi3-win_amd64.whl": "52c3d4e9714cee12c9e4eca0e57717a2443088930dfcdb669f6921974b758ca6",
+  "vendor/waitress-3.0.2-py3-none-any.whl": "c56d67fd6e87c2ee598b76abdd4e96cfad1f24cacdea5078d382b1f9d7b5ed2e",
+  "vendor/wheels/et_xmlfile-2.0.0-py3-none-any.whl": "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa",
+  "vendor/wheels/openpyxl-3.1.5-py2.py3-none-any.whl": "5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2",
+  "vendor/wheels/waitress-3.0.2-py3-none-any.whl": "c56d67fd6e87c2ee598b76abdd4e96cfad1f24cacdea5078d382b1f9d7b5ed2e"
 }

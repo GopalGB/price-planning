@@ -1,6 +1,7 @@
 import hashlib
 import os
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -37,11 +38,23 @@ class CheckTests(unittest.TestCase):
 
 
 class HookTests(unittest.TestCase):
+    def git_shim(self, repo, staged=''):
+        """Model read-only Git queries so hook tests never create or stage a repo."""
+        shim = repo / 'bin'
+        shim.mkdir()
+        git = shim / 'git'
+        git.write_text('#!/bin/sh\ncase "$1" in\n'
+                       f'  rev-parse) printf "%s\\n" {shlex.quote(str(repo))} ;;\n'
+                       f'  diff) printf "%s" {shlex.quote(staged)}'
+                       + ('; printf "\\0"' if staged else '') + ' ;;\n'
+                       '  *) exit 2 ;;\nesac\n')
+        git.chmod(0o755)
+        return shim
+
     def test_hook_runs_bash_maxhq_hook_when_present(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d) / 'r'
-            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-            (repo / 'ops').mkdir()
+            (repo / 'ops').mkdir(parents=True)
             (repo / '.githooks').mkdir()
             for rel in ('ops/content_guard.py', 'ops/large_file_allowlist.json', '.githooks/pre-commit'):
                 (repo / rel).write_bytes((ROOT / rel).read_bytes())
@@ -50,8 +63,7 @@ class HookTests(unittest.TestCase):
             (hook_dir / 'pre-commit-hook.sh').write_text(
                 '#!/bin/bash\nset -euo pipefail\nitems=(ok)\n[[ ${items[0]} == ok ]]\n')
             # macOS sh accepts Bash syntax; model a strictly POSIX-only sh.
-            shim = Path(d) / 'bin'
-            shim.mkdir()
+            shim = self.git_shim(repo)
             (shim / 'sh').write_text('#!/bin/sh\nexit 77\n')
             (shim / 'sh').chmod(0o755)
             env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'])
@@ -62,17 +74,42 @@ class HookTests(unittest.TestCase):
     def test_hook_runs_without_maxhq(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d) / 'r'
-            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
-            (repo / 'ops').mkdir()
+            (repo / 'ops').mkdir(parents=True)
             (repo / '.githooks').mkdir()
             for rel in ('ops/content_guard.py', 'ops/large_file_allowlist.json', '.githooks/pre-commit'):
                 (repo / rel).write_bytes((ROOT / rel).read_bytes())
             (repo / 'bad.xlsx').write_bytes(b'x')
-            subprocess.run(['git', '-C', str(repo), 'add', '-A'], check=True)
-            result = subprocess.run(['sh', '.githooks/pre-commit'], cwd=repo, capture_output=True, text=True)
+            shim = self.git_shim(repo, 'bad.xlsx')
+            env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run(['sh', '.githooks/pre-commit'], cwd=repo, env=env,
+                                    capture_output=True, text=True)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn('BLOCKED bad.xlsx', result.stdout)
 
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class StubInterpreterTests(unittest.TestCase):
+    def test_hook_skips_broken_python3_stub(self):
+        import shutil, stat
+        with tempfile.TemporaryDirectory() as d:
+            repo, bindir = Path(d) / 'r', Path(d) / 'bin'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            (repo / 'ops').mkdir(); (repo / '.githooks').mkdir(); bindir.mkdir()
+            for rel in ('ops/content_guard.py', 'ops/large_file_allowlist.json', '.githooks/pre-commit'):
+                (repo / rel).write_bytes((ROOT / rel).read_bytes())
+            stub = bindir / 'python3'
+            stub.write_text('#!/bin/sh\nexit 9009\n'); stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            (bindir / 'python').symlink_to(sys.executable)
+            for tool in ('git', 'sh', 'dirname'):
+                found = shutil.which(tool)
+                if found:
+                    (bindir / tool).symlink_to(found)
+            (repo / 'bad.xlsx').write_bytes(b'x')
+            subprocess.run(['git', '-C', str(repo), 'add', '-A'], check=True)
+            env = {'PATH': str(bindir), 'HOME': d}
+            r = subprocess.run(['/bin/sh', '.githooks/pre-commit'], cwd=repo, env=env, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn('BLOCKED bad.xlsx', r.stdout)

@@ -2,8 +2,14 @@
 """Excel-typed values: blank, empty string, number, text, bool and error are different things."""
 import math
 ERRORS = {'#NULL!', '#DIV/0!', '#VALUE!', '#REF!', '#NAME?', '#NUM!', '#N/A', '#SPILL!', '#CALC!', '#GETTING_DATA'}
+ENGINE_ERRORS = {'Null': '#NULL!', 'Div': '#DIV/0!', 'Value': '#VALUE!', 'Ref': '#REF!',
+                 'Name': '#NAME?', 'Num': '#NUM!', 'Na': '#N/A', 'Spill': '#SPILL!',
+                 'Calc': '#CALC!', 'GettingData': '#GETTING_DATA'}
 
 def typed(v):
+    if isinstance(v, dict) and v.get('type') == 'Error':
+        kind = str(v.get('kind'))
+        return ('error', ENGINE_ERRORS.get(kind, f'#{kind.upper()}'))
     if v is None:
         return ('blank', None)
     if isinstance(v, bool):

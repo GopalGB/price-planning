@@ -14,7 +14,8 @@ class Bench(unittest.TestCase):
     def tearDown(self):
         self.d.cleanup()
     def test_find_inputs_lists_unlocked_cells_on_protected_sheet(self):
-        self.assertEqual(find_inputs.find_inputs(self.wb), sorted(self.meta['inputs']))
+        self.assertEqual(find_inputs.find_inputs(self.wb),
+                         ["'Inputs'!B2", "'Inputs'!B3", "'Inputs'!B4", "'Inputs'!B5", "'Inputs'!B6"])
     def run_bench(self, *extra):
         manifest = self.dir / 'm.json'
         manifest.write_text(json.dumps({'parity_sheets': ['Calc'], 'parity_sample': 50,

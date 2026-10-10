@@ -6,12 +6,22 @@ from pathlib import Path
 NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 RNS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'
 
+def _locked(xf, inherited=True):
+    if xf is None or xf.get('applyProtection') in ('0', 'false'):
+        return inherited
+    protection = xf.find(f'{NS}protection')
+    if protection is None:
+        return inherited
+    return protection.get('locked', '1') not in ('0', 'false')
+
 def _unlocked_style_ids(z):
     root = ET.fromstring(z.read('xl/styles.xml'))
+    styles = root.find(f'{NS}cellStyleXfs')
     ids = set()
     for i, xf in enumerate(root.find(f'{NS}cellXfs')):
-        p = xf.find(f'{NS}protection')
-        if p is not None and p.get('locked') in ('0', 'false'):
+        parent = int(xf.get('xfId', '0'))
+        base = styles[parent] if styles is not None and parent < len(styles) else None
+        if not _locked(xf, _locked(base)):
             ids.add(str(i))
     return ids
 
@@ -32,7 +42,7 @@ def find_inputs(xlsm):
             with z.open(part) as f:
                 for _, el in ET.iterparse(f):
                     if el.tag == f'{NS}c':
-                        if el.get('s') in unlocked and el.find(f'{NS}f') is None:
+                        if el.get('s', '0') in unlocked and el.find(f'{NS}f') is None:
                             cells.append(el.get('r'))
                         el.clear()
                     elif el.tag == f'{NS}sheetProtection' and el.get('sheet') in ('1', 'true'):
@@ -40,7 +50,8 @@ def find_inputs(xlsm):
                     elif el.tag == f'{NS}row':
                         el.clear()
             if protected:
-                out += [f'{name}!{c}' for c in cells]
+                quoted = "'" + name.replace("'", "''") + "'"
+                out += [f'{quoted}!{c}' for c in cells]
     return sorted(out)
 
 if __name__ == '__main__':
