@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+from uuid import uuid4
 import threading
 import time
 
@@ -24,7 +25,7 @@ from .copies import CopyService, ShareChange
 from .db import token_hash
 from .engine.pool import CalculationRequest
 from .errors import AppError
-from .export import export_copy
+from .export.xlsm import export_xlsm
 from .live import LiveHub, serve_live
 from .ops import OperationService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
@@ -277,9 +278,15 @@ async def _calculate_baseline(services, copy, user_id):
 async def _export(request: Request):
     services, user = _read_auth(request)
     source, overrides = services.workbooks.source_and_overrides(request.path_params["copy_id"], user["id"])
-    path = await asyncio.to_thread(
-        export_copy, source, overrides, Path(services.config.data_dir) / "exports"
-    )
+    output_dir = Path(services.config.data_dir) / "exports"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"price-plan-{uuid4().hex}.xlsm"
+    cells = [(*coordinate, value) for coordinate, value in sorted(overrides.items())]
+    try:
+        await asyncio.to_thread(export_xlsm, source, cells, path)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return FileResponse(path, media_type="application/vnd.ms-excel.sheet.macroenabled.12",
                         filename="price-plan.xlsm", background=BackgroundTask(path.unlink, missing_ok=True))
 
@@ -447,6 +454,6 @@ def _security_headers(headers):
     result.extend([
         (b"x-content-type-options", b"nosniff"), (b"x-frame-options", b"DENY"),
         (b"referrer-policy", b"same-origin"), (b"cache-control", b"no-store"),
-        (b"content-security-policy", b"default-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
+        (b"content-security-policy", b"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'"),
     ])
     return result

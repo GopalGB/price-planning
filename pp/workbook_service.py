@@ -237,10 +237,14 @@ class WorkbookService:
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:
             copy = self._copy(connection, copy_id, user_id)
+            snapshot = self.templates.get(connection, copy["template_id"])
             template = connection.execute("SELECT source_path FROM pp_templates WHERE id=?",
                                           (copy["template_id"],)).fetchone()
             rows = connection.execute("SELECT sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?",
                                       (copy_id,)).fetchall()
+            for item in rows:
+                if not snapshot.is_input(item["sheet"], item["row"], item["col"]):
+                    raise AppError(422, "locked", "This cell is locked")
         return Path(template["source_path"]), {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
                                                  for item in rows}
 

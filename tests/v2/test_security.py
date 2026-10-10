@@ -24,6 +24,16 @@ class SecurityContractTests(unittest.TestCase):
         missing = client.get("/api/not-a-route")
         self.assertEqual((missing.status_code, missing.json()["error"]), (404, "not_found"))
 
+    def test_content_security_policy_allows_required_app_assets_only(self):
+        client, _, _ = self.fixture.signup("csp@example.test", "CSP")
+        policy = client.get("/api/me").headers["content-security-policy"]
+        self.assertIn("default-src 'self'", policy)
+        self.assertIn("style-src 'self' 'unsafe-inline'", policy)
+        self.assertIn("img-src 'self' data:", policy)
+        self.assertIn("frame-ancestors 'none'", policy)
+        self.assertIn("object-src 'none'", policy)
+        self.assertIn("base-uri 'none'", policy)
+
     def test_actual_body_limit_and_session_expiry_are_enforced(self):
         """Trusting Content-Length or accepting an expired cookie must fail."""
         client, csrf, user = self.fixture.signup("expiry@example.test", "Expiry")
