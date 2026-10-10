@@ -3,12 +3,12 @@
 from .calc_service import CalculationPublication, CalculationService
 
 
-def recover_unfinished(database, calculate) -> dict:
+def recover_unfinished(database, calculate, templates=None) -> dict:
     with database.connect() as connection:
         jobs = connection.execute(
             "SELECT copy_id,revision FROM pp_calc_jobs WHERE status='pending' ORDER BY created_at,copy_id,revision"
         ).fetchall()
-    service = CalculationService(database)
+    service = CalculationService(database, templates)
     completed = failed = 0
     for job in jobs:
         try:

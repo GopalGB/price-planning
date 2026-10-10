@@ -54,7 +54,7 @@ class Services:
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
         self.operations = OperationService(context.database, templates)
-        self.calculations = CalculationService(context.database)
+        self.calculations = CalculationService(context.database, templates)
         self.engine_pool = context.engine_pool
         self.hub = LiveHub(context.database, context.config.replay_window)
         self.writes = WriteLimiter()

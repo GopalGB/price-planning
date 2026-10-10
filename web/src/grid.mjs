@@ -322,6 +322,50 @@ export class PlanningGrid {
   currentSheet() {
     return this.meta.sheets.find((s) => s.index === this.sheet);
   }
+  growCalcExtents(changes) {
+    let activeShape;
+    for (const cell of changes ?? []) {
+      if (
+        !Number.isSafeInteger(cell.sheet) ||
+        !Number.isSafeInteger(cell.r) ||
+        !Number.isSafeInteger(cell.c) ||
+        cell.r < 0 ||
+        cell.c < 0
+      )
+        continue;
+      const shape = this.meta.sheets.find(
+        (sheet) => sheet.index === cell.sheet,
+      );
+      if (!shape) continue;
+      shape.rows = Math.max(shape.rows ?? 0, cell.r + 1);
+      shape.cols = Math.max(shape.cols ?? 0, cell.c + 1);
+      if (cell.sheet === this.sheet) activeShape = shape;
+    }
+    this.growActiveWorksheet(activeShape);
+  }
+  growActiveWorksheet(shape) {
+    const worksheet = this.worksheet;
+    if (
+      !shape ||
+      typeof worksheet?.getMaxRows !== "function" ||
+      typeof worksheet?.getMaxColumns !== "function" ||
+      typeof worksheet?.setRowCount !== "function" ||
+      typeof worksheet?.setColumnCount !== "function"
+    )
+      return;
+    const rows = worksheet.getMaxRows(),
+      columns = worksheet.getMaxColumns(),
+      growRows = shape.rows > rows,
+      growColumns = shape.cols > columns;
+    if (!growRows && !growColumns) return;
+    this.internal++;
+    try {
+      if (growRows) worksheet.setRowCount(shape.rows);
+      if (growColumns) worksheet.setColumnCount(shape.cols);
+    } finally {
+      this.internal--;
+    }
+  }
   viewMatches(context) {
     return (
       !this.closed &&
@@ -457,7 +501,12 @@ export class PlanningGrid {
       this.mutate(cleared);
       this.store.evict(evicted.sheet, evicted.start);
     }
-    this.store.merge(data.rows, sheet, data.calculated_revision);
+    this.store.merge(
+      data.rows,
+      sheet,
+      data.calculated_revision,
+      data.input_revision,
+    );
     this.store.inputRevision = Math.max(
       this.store.inputRevision,
       data.input_revision,
@@ -702,14 +751,22 @@ export class PlanningGrid {
             { [cell.r]: { [cell.c]: value } },
             sheet,
             data.calculated_revision,
+            data.input_revision,
           );
       }
     }
   }
   releaseTemporary(cells) {
+    const blocks = new Set();
     for (const cell of cells)
       if (!this.cache.has(cell.sheet, cell.r))
-        this.store.cells.delete(`${cell.sheet}:${cell.r}:${cell.c}`);
+        blocks.add(
+          `${cell.sheet}:${Math.floor(cell.r / BLOCK_ROWS) * BLOCK_ROWS}`,
+        );
+    for (const key of blocks) {
+      const [sheet, start] = key.split(":").map(Number);
+      this.store.evict(sheet, start);
+    }
   }
   async edit(cells, action) {
     if (this.closed) return false;
@@ -1028,7 +1085,10 @@ export class PlanningGrid {
       );
       this.wsReceived.op++;
     }
-    if (message.type === "calc") this.wsReceived.calc++;
+    if (message.type === "calc") {
+      this.wsReceived.calc++;
+      this.growCalcExtents(message.changes);
+    }
     this.controller.remote(message);
     if (message.type === "op" && message.at == null)
       await this.refreshOpDetails(message);

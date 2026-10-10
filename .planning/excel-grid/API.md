@@ -69,7 +69,8 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   - `{type: "op", op_id, input_revision, by: {id,name}, at: "<ISO-8601 server time>", action, cells: [{sheet, r, c, v, ver}]}`
     `at` is the authoritative server-clock ISO-8601 timestamp persisted for the operation's history rows. For a legacy event with no `at`, the client stores `null`
     immediately and refetches cell detail; the detail version must still match before metadata is applied.
-  - `{type: "calc", calculated_revision, changes: [{sheet, r, c, v}]}` (complete batch per revision, monotonic)
+  - `{type: "calc", calculated_revision, changes: [{sheet, r, c, v, s?, k?, ver?, by?, at?}]}` (complete batch per revision, monotonic)
+    New publications include authoritative style and kind so spill expansion creates cells and contraction restores the underlying template cell. A null value with kind `f` is a calculated blank, not a deletion. Input records restored after contraction include their current input metadata. Legacy value-only events retain their prior replay behavior.
   - `{type: "calc_state", input_revision, calculated_revision}` ("calculating" while they differ)
   - `{type: "presence", users: [{id, name, color, sheet, sel}]}`
   - `{type: "resync"}` when the client is too far behind: client re-fetches visible rows.

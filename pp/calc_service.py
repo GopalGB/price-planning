@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from .values import exactly_equal
+from .workbook_service import TemplateCatalog
 
 
 @dataclass(frozen=True)
@@ -14,9 +15,20 @@ class CalculationPublication:
     results: list[tuple]
 
 
+@dataclass(frozen=True)
+class CalculationDelta:
+    copy_id: str
+    current: dict
+    coordinates: list[tuple]
+
+
 class CalculationService:
-    def __init__(self, database):
+    def __init__(self, database, templates=None):
         self.database = database
+        self.templates = (
+            templates if templates is None or isinstance(templates, TemplateCatalog)
+            else TemplateCatalog(database, templates)
+        )
 
     def complete(self, publication: CalculationPublication) -> bool:
         now = _now()
@@ -31,11 +43,13 @@ class CalculationService:
                 return False
             if revision > copy["input_revision"]:
                 return False
-            changes = _published_changes(connection, copy_id, publication.results)
+            delta = _published_delta(connection, publication)
+            snapshot = self.templates.get(connection, copy["template_id"]) if self.templates else None
             _replace_results(connection, publication)
+            changes = (_authoritative_changes(connection, snapshot, delta)
+                       if snapshot else _legacy_changes(delta))
             payload = {"type": "calc", "calculated_revision": revision,
-                       "changes": [{"sheet": sheet, "r": row, "c": col, "v": value}
-                                   for sheet, row, col, value in changes]}
+                       "changes": changes}
             connection.execute("UPDATE pp_copies SET calculated_revision=?,updated_at=? WHERE id=?",
                                (revision, now, copy_id))
             connection.execute("UPDATE pp_calc_jobs SET status='complete',updated_at=?,last_error=NULL WHERE copy_id=? AND revision=?",
@@ -65,16 +79,56 @@ def _replace_results(connection, publication):
     )
 
 
-def _published_changes(connection, copy_id, results):
+def _published_delta(connection, publication):
     rows = connection.execute(
-        "SELECT sheet,row,col,value_json FROM pp_results WHERE copy_id=?", (copy_id,)
+        "SELECT sheet,row,col,value_json FROM pp_results WHERE copy_id=?", (publication.copy_id,)
     ).fetchall()
     published = {(row["sheet"], row["row"], row["col"]): json.loads(row["value_json"]) for row in rows}
-    current = {item[:3]: item[3] for item in results}
-    changes = [item for item in results
-               if item[:3] not in published or not exactly_equal(published[item[:3]], item[3])]
-    changes.extend((*coordinate, None) for coordinate in sorted(published.keys() - current.keys()))
+    current = {item[:3]: item[3] for item in publication.results}
+    coordinates = [item[:3] for item in publication.results
+                   if item[:3] not in published or not exactly_equal(published[item[:3]], item[3])]
+    coordinates.extend(sorted(published.keys() - current.keys()))
+    return CalculationDelta(publication.copy_id, current, coordinates)
+
+
+def _legacy_changes(delta):
+    changes = []
+    for coordinate in delta.coordinates:
+        sheet, row, col = coordinate
+        changes.append({"sheet": sheet, "r": row, "c": col,
+                        "v": delta.current.get(coordinate)})
     return changes
+
+
+def _authoritative_changes(connection, snapshot, delta):
+    overrides = _override_records(connection, delta.copy_id)
+    changes = []
+    for coordinate in delta.coordinates:
+        sheet, row, col = coordinate
+        record = dict(snapshot.cell(sheet, row, col))
+        record.pop("formula", None)
+        if coordinate in delta.current:
+            record.update({"v": delta.current[coordinate], "k": "f"})
+        elif record["k"] == "i":
+            record.update(overrides.get(coordinate, {"ver": 0}))
+        elif record["k"] == "f":
+            record["v"] = None
+        changes.append({"sheet": sheet, "r": row, "c": col, **record})
+    return changes
+
+
+def _override_records(connection, copy_id):
+    rows = connection.execute(
+        "SELECT o.*,u.name FROM pp_overrides o JOIN pp_users u ON u.id=o.updated_by "
+        "WHERE o.copy_id=?", (copy_id,),
+    ).fetchall()
+    return {
+        (row["sheet"], row["row"], row["col"]): {
+            "v": json.loads(row["value_json"]), "ver": row["version"],
+            "by": {"id": row["updated_by"], "name": row["name"]}, "at": row["updated_at"],
+        }
+        for row in rows
+    }
 
 
 def _now():

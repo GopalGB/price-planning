@@ -53,7 +53,7 @@ def create_runtime(root: str | Path) -> Runtime:
             changes = operations.revision_changes(copy_id, revision)
             return pool.apply(CalculationRequest(copy_id, revision, source, changes))
 
-        recover_unfinished(database, calculate)
+        recover_unfinished(database, calculate, snapshot)
         app = create_app(ServiceContext(database, snapshot, config, pool))
         return Runtime(config, database, snapshot, pool, app)
     except Exception:

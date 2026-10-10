@@ -3,6 +3,8 @@ import { getPatternPreview } from "@univerjs/sheets-numfmt";
 export const BLOCK_ROWS = 256;
 export const MAX_OP_CELLS = 10000;
 export const keyOf = ({ sheet, r, c }) => `${sheet}:${r}:${c}`;
+const blockStart = (row) => Math.floor(row / BLOCK_ROWS) * BLOCK_ROWS;
+const blockKey = (sheet, row) => `${sheet}:${blockStart(row)}`;
 export function cellName({ r, c }) {
   let col = "";
   for (let n = c + 1; n > 0; n = Math.floor((n - 1) / 26))
@@ -93,6 +95,7 @@ export function rollback(store, op) {
 export class CellStore {
   constructor(rows = {}, sheet = 0) {
     this.cells = new Map();
+    this.cellInputRevisions = new Map();
     this.blockRevisions = new Map();
     this.calcBatches = new Set();
     this.inputRevision = 0;
@@ -102,7 +105,14 @@ export class CellStore {
   get(sheet, r, c) {
     return this.cells.get(keyOf({ sheet, r, c }));
   }
-  merge(rows, sheet, revision = this.calculatedRevision) {
+  merge(
+    rows,
+    sheet,
+    revision = this.calculatedRevision,
+    inputRevision = this.inputRevision,
+  ) {
+    for (const r of Object.keys(rows))
+      this.blockRevisions.set(blockKey(sheet, Number(r)), revision);
     for (const [r, columns] of Object.entries(rows))
       for (const [c, cell] of Object.entries(columns)) {
         const key = keyOf({ sheet, r, c }),
@@ -112,11 +122,14 @@ export class CellStore {
         if (
           !current?.pending &&
           (!current || (current.ver ?? 0) <= (cell.ver ?? 0))
-        )
+        ) {
           this.cells.set(key, {
             ...cell,
             ...(cell.k === "f" ? { calcRevision: revision } : {}),
           });
+          if (cell.k === "i") this.cellInputRevisions.set(key, inputRevision);
+          else this.cellInputRevisions.delete(key);
+        }
       }
   }
   optimistic(op) {
@@ -131,8 +144,9 @@ export class CellStore {
     this.inputRevision = Math.max(this.inputRevision, message.input_revision);
     for (const cell of message.cells) {
       const current = this.get(cell.sheet, cell.r, cell.c);
-      if (current && cell.ver > (current.ver ?? 0))
-        this.cells.set(keyOf(cell), {
+      if (current && cell.ver > (current.ver ?? 0)) {
+        const key = keyOf(cell);
+        this.cells.set(key, {
           ...current,
           v: cell.v,
           ver: cell.ver,
@@ -141,6 +155,8 @@ export class CellStore {
           lastOpId: message.op_id,
           pending: undefined,
         });
+        this.cellInputRevisions.set(key, message.input_revision);
+      }
     }
   }
   applyDetail(cell) {
@@ -159,21 +175,42 @@ export class CellStore {
       message.calculated_revision,
     );
     this.calcBatches.add(message.calculated_revision);
-    for (const cell of message.changes) {
-      const current = this.get(cell.sheet, cell.r, cell.c);
-      if (
-        current &&
-        current.k !== "i" &&
-        message.calculated_revision >= (current.calcRevision ?? -1)
-      )
-        this.cells.set(keyOf(cell), {
-          ...current,
-          v: cell.v,
-          calcRevision: message.calculated_revision,
-        });
-    }
+    for (const cell of message.changes)
+      if (Object.hasOwn(cell, "s") && Object.hasOwn(cell, "k"))
+        this.applyAuthoritativeCalc(message, cell);
+      else this.applyLegacyCalc(message, cell);
     this.advanceBlocks();
     return true;
+  }
+  applyLegacyCalc(message, cell) {
+    const current = this.get(cell.sheet, cell.r, cell.c);
+    if (
+      current &&
+      current.k !== "i" &&
+      message.calculated_revision >= (current.calcRevision ?? -1)
+    )
+      this.cells.set(keyOf(cell), {
+        ...current,
+        v: cell.v,
+        calcRevision: message.calculated_revision,
+      });
+  }
+  applyAuthoritativeCalc(message, cell) {
+    const key = keyOf(cell),
+      current = this.get(cell.sheet, cell.r, cell.c),
+      revision = message.calculated_revision;
+    if (!current && !this.blockRevisions.has(blockKey(cell.sheet, cell.r)))
+      return;
+    if (
+      current?.pending ||
+      revision < (current?.calcRevision ?? -1) ||
+      revision < (this.cellInputRevisions.get(key) ?? -1)
+    )
+      return;
+    const { sheet: _sheet, r: _row, c: _column, ...record } = cell;
+    this.cells.set(key, { ...current, ...record, calcRevision: revision });
+    if (record.k === "i") this.cellInputRevisions.set(key, revision);
+    else this.cellInputRevisions.delete(key);
   }
   registerBlock(sheet, start, revision) {
     this.blockRevisions.set(`${sheet}:${start}`, revision);
@@ -204,8 +241,10 @@ export class CellStore {
   evict(sheet, start) {
     for (const key of this.cells.keys()) {
       const [s, r] = key.split(":").map(Number);
-      if (s === sheet && r >= start && r < start + BLOCK_ROWS)
+      if (s === sheet && r >= start && r < start + BLOCK_ROWS) {
         this.cells.delete(key);
+        this.cellInputRevisions.delete(key);
+      }
     }
     this.blockRevisions.delete(`${sheet}:${start}`);
   }
@@ -217,7 +256,7 @@ export class RowCache {
     this.lastEvicted = [];
   }
   start(row) {
-    return Math.floor(row / BLOCK_ROWS) * BLOCK_ROWS;
+    return blockStart(row);
   }
   has(sheet, row) {
     return this.blocks.has(`${sheet}:${this.start(row)}`);
