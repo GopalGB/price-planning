@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, time
 import importlib.metadata
 from pathlib import Path
 import re
@@ -12,6 +13,7 @@ import xml.etree.ElementTree as ET
 import formualizer
 from openpyxl.formula.translate import Translator
 from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_to_tuple
+from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, to_excel
 
 from ops.typed import ENGINE_ERRORS, typed
 
@@ -53,6 +55,13 @@ def _sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
         target = targets[sheet.get(f"{RNS}id")].lstrip("/")
         parts.append((sheet.get("name", ""), target if target.startswith("xl/") else f"xl/{target}"))
     return parts
+
+
+def _uses_1904_date_system(path: Path) -> bool:
+    with zipfile.ZipFile(path) as archive:
+        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    properties = workbook.find(f"{NS}workbookPr")
+    return properties is not None and properties.get("date1904", "").lower() in {"1", "true"}
 
 
 def _column_number(letters: str) -> int:
@@ -155,7 +164,9 @@ def _rewrite_isformula(formula: str, lookup: FormulaLookup) -> str:
     return "".join(segments)
 
 
-def _json_value(value):
+def _json_value(value, date1904):
+    if isinstance(value, (date, time)):
+        return to_excel(value, MAC_EPOCH if date1904 else WINDOWS_EPOCH)
     if isinstance(value, str):
         return value
     kind, normalized = typed(value)
@@ -198,6 +209,7 @@ class FormualizerEngine:
     formula_anchors: frozenset[tuple[int, int, int]]
     formula_cells: frozenset[tuple[int, int, int]]
     formula_values: dict[tuple[int, int, int], object]
+    date1904: bool
 
     @classmethod
     def load(cls, template_path: str | Path) -> "FormualizerEngine":
@@ -205,6 +217,7 @@ class FormualizerEngine:
         try:
             path = Path(template_path)
             formula_cells, formulas, names = _formula_map(path)
+            date1904 = _uses_1904_date_system(path)
             workbook = formualizer.load_workbook(str(path))
             if list(workbook.sheet_names) != names:
                 raise EngineError("template engine sheet names do not match workbook XML")
@@ -217,7 +230,7 @@ class FormualizerEngine:
             raise
         except Exception as exc:
             raise EngineError("template calculation engine failed to load") from exc
-        engine = cls(workbook, formula_cells, frozenset(), {})
+        engine = cls(workbook, formula_cells, frozenset(), {}, date1904)
         engine.formula_cells = _spill_cells(workbook, formula_cells, names)
         engine.formula_values = {coordinate: engine.get(*coordinate)
                                  for coordinate in engine.formula_cells}
@@ -253,7 +266,7 @@ class FormualizerEngine:
     def get(self, sheet: int, row: int, col: int):
         try:
             value = self.workbook.get_value(self.workbook.sheet_names[sheet], row + 1, col + 1)
-            return _json_value(value)
+            return _json_value(value, self.date1904)
         except Exception as exc:
             raise EngineError("template calculation engine failed to read a cell") from exc
 

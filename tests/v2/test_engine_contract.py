@@ -1,15 +1,30 @@
 """The documented engine names must load and calculate a real fixture."""
 
-import json
+from datetime import date, datetime, time
 from pathlib import Path
 import tempfile
 import unittest
 
 from openpyxl import Workbook
+from openpyxl.utils.datetime import MAC_EPOCH
 
 import pp.engine as engines
-from ops.typed import ENGINE_ERRORS, ERRORS, typed
+from ops.typed import ENGINE_ERRORS, ERRORS
 from tests.v2.support import BackendFixture, TMP
+
+
+def _temporal_workbook(source, epoch=None):
+    workbook = Workbook()
+    if epoch is not None:
+        workbook.epoch = epoch
+    sheet = workbook.active
+    sheet["A1"] = "=DATE(2026,1,1)"
+    sheet["A2"] = "=TIME(12,30,0)"
+    sheet["A3"] = "=DATE(2026,1,1)+TIME(6,0,0)"
+    if epoch is None:
+        sheet["A4"] = "=DATE(1900,2,28)"
+        sheet["A5"] = "=DATE(1900,3,1)"
+    workbook.save(source)
 
 
 class PublicEngineContractTests(unittest.TestCase):
@@ -93,24 +108,35 @@ class PublicEngineContractTests(unittest.TestCase):
             values = {(sheet, row, col): value for sheet, row, col, value in changes}
             self.assertEqual(values[(1, 0, 0)], {"error": "#DIV/0!"})
 
-    def test_date_formulas_are_normalized_to_json_values(self):
-        """Native date objects must not strand a revision during JSON persistence."""
+    def test_temporal_formulas_use_1900_excel_serials(self):
+        """Stringifying native temporal values must not destroy Excel numeric semantics."""
         TMP.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
             source = Path(temp) / "dates.xlsm"
-            workbook = Workbook()
-            sheet = workbook.active
-            sheet["A1"] = "=DATE(2026,1,1)"
-            sheet["A2"] = "=TODAY()"
-            workbook.save(source)
+            _temporal_workbook(source)
             engine = engines.FormualizerEngine.load(source)
 
-            for row in range(2):
-                with self.subTest(row=row):
-                    native = engine.workbook.get_value("Sheet", row + 1, 1)
-                    value = engine.get(0, row, 0)
-                    self.assertEqual(value, typed(native)[1])
-                    json.dumps(value)
+            native = [engine.workbook.get_value("Sheet", row, 1) for row in range(1, 4)]
+            self.assertIs(type(native[0]), date)
+            self.assertIs(type(native[1]), time)
+            self.assertIs(type(native[2]), datetime)
+            self.assertEqual(engine.get(0, 0, 0), 46023)
+            self.assertAlmostEqual(engine.get(0, 1, 0), 0.5208333333333333, places=15)
+            self.assertEqual(engine.get(0, 2, 0), 46023.25)
+            self.assertEqual((engine.get(0, 3, 0), engine.get(0, 4, 0)), (59, 61))
+
+    def test_temporal_formulas_use_the_source_workbook_1904_date_system(self):
+        """Ignoring date1904 must not shift native date and datetime results by 1,462 days."""
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "dates-1904.xlsm"
+            _temporal_workbook(source, MAC_EPOCH)
+
+            engine = engines.FormualizerEngine.load(source)
+
+            self.assertEqual(engine.get(0, 0, 0), 44561)
+            self.assertAlmostEqual(engine.get(0, 1, 0), 0.5208333333333333, places=15)
+            self.assertEqual(engine.get(0, 2, 0), 44561.25)
 
     def test_api_error_tokens_are_all_supported_by_the_native_engine(self):
         self.assertLessEqual(ERRORS, set(ENGINE_ERRORS.values()))
