@@ -91,6 +91,7 @@ def main(argv=None):
     parser.add_argument('--db', type=Path, default=default_db, help='live database (default: %(default)s)')
     parser.add_argument('--dest', type=Path, help='backup folder (default: <repo>/backups); with --restore, a new empty folder')
     parser.add_argument('--restore', type=Path, metavar='BACKUP', help='restore this backup file into --dest')
+    parser.add_argument('--backup', action='store_true', help=argparse.SUPPRESS)  # run_v2 launchers pass it through
     args = parser.parse_args(argv)
     try:
         if args.restore:
