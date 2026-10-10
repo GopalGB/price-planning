@@ -23,3 +23,7 @@ test('synthetic export is an OOXML macro-enabled package with escaped inputs and
  assert.match(files.get('xl/worksheets/sheet1.xml'),/<f>B3\*2<\/f><v>50<\/v>/);
  assert.equal(zip.readUInt32LE(zip.length-22),0x06054b50);
 });
+test('synthetic export preserves text-returning formulas and removes invalid XML characters',()=>{
+ const files=entries(syntheticExport([{index:0,name:'Demo',rows:2,cols:4}],(s,r,c)=>({v:'ok\u000b\ud800',formula:c===2?'=B2':null})));
+ const xml=files.get('xl/worksheets/sheet1.xml');assert.match(xml,/<c r="C2" t="str"><f>B2<\/f><v>ok<\/v><\/c>/);assert.ok(!xml.includes('\u000b'));assert.ok(!xml.includes('\ufffd'));
+});

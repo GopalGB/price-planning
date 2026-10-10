@@ -1,7 +1,12 @@
 import { parseInput, MAX_OP_CELLS } from './model.mjs';
 export function serverUndoShortcut(event,typing,inGrid) {
- if(!(event.ctrlKey||event.metaKey)||(typing&&!inGrid))return null;
+ if(event.editing||!(event.ctrlKey||event.metaKey)||(typing&&!inGrid))return null;
  const key=event.key.toLowerCase();return key==='z'?(event.shiftKey?'redo':'undo'):key==='y'?'redo':null;
+}
+export function commandSelection(event,sheetId) {
+ const p=event.params;
+ if(event.id!=='sheet.operation.set-selections'||p?.unitId!=='planning'||p.subUnitId!==sheetId)return null;
+ return p.selections?.map(selection=>selection.range)??null;
 }
 export function renderCell(cell) {
  // The server's formula text is deliberately absent from Univer's model.

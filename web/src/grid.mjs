@@ -4,8 +4,8 @@ import enUS from '@univerjs/preset-sheets-core/locales/en-US';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import { CellStore, RowCache, BLOCK_ROWS, parseInput, cellName, selectionStats, formatNumber } from './model.mjs';
 import { EditController } from './client.mjs';
-import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut } from './grid-data.mjs';
-import { escapeHTML as e, syncFormula } from './views.mjs';
+import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut, commandSelection } from './grid-data.mjs';
+import { escapeHTML as e, syncFormula, formulaDisplay } from './views.mjs';
 const $=id=>document.getElementById(id);
 export class PlanningGrid {
  constructor({api,copy,meta,user,toast}) {
@@ -23,9 +23,17 @@ export class PlanningGrid {
  on(name,handler) {this.disposables.push(this.u.addEvent(this.u.Event[name],handler));}
  bindEvents() {
   this.on('BeforeCommandExecute',event=>this.command(event));
+  // 1.0.4's render-scoped SelectionChanged/Scroll bridge can miss its service.
+  // Core command events are reliable and are emitted after the native state changes.
+  this.on('CommandExecuted',event=>{
+   const ranges=commandSelection(event,`s${this.sheet}`);
+   if(ranges?.length){this.selection=ranges;this.scheduleVisible();this.selectionInfo();this.sendPresence();}
+   if(event.id==='sheet.operation.set-scroll')this.scheduleVisible();
+  });
   this.on('BeforeSheetEditStart',event=>{
    const cell=this.store.get(this.sheet,event.row,event.column);
    if(this.copy.my_role==='viewer'||cell?.k!=='i'){event.cancel=true;this.toast(`${cellName({r:event.row,c:event.column})}: ${this.copy.my_role==='viewer'?'Viewer access is read only':'Locked template cell'}`);}
+   else this.cellDraft={sheet:this.sheet,r:event.row,c:event.column,expected_version:cell.ver??0};
   });
   this.on('BeforeSheetEditEnd',event=>this.endEdit(event));
   this.on('BeforeClipboardPaste',event=>{event.cancel=true;const text=event.text||this.htmlToTsv(event.html);if(text)this.attempt(()=>this.edit(pasteChanges(text,this.origin()),'paste'));});
@@ -38,11 +46,11 @@ export class PlanningGrid {
   this.disposables.push(this.u.getFormula().calculationStart(()=>this.clientCalculations++));
  }
  endEdit(event) {
-  if(this.closingEditor||!event.isConfirm)return;event.cancel=true;
+  if(this.closingEditor)return;if(!event.isConfirm){this.cellDraft=null;return;}event.cancel=true;
   const text=event.value?.getData?.().body?.dataStream?.replace(/\r?\n$/,'')??'',sheet=this.sheet;
-  this.closingEditor=true;
+  const draft=this.cellDraft;this.cellDraft=null;this.closingEditor=true;
   setTimeout(async()=>{
-   try {await this.u.getActiveWorkbook()?.endEditingAsync(false);this.attempt(()=>this.edit([{sheet,r:event.row,c:event.column,v:parseInput(text)}],'edit'));}
+   try {await this.u.getActiveWorkbook()?.endEditingAsync(false);this.attempt(()=>this.edit([{sheet,r:event.row,c:event.column,v:parseInput(text),...(draft?.sheet===sheet&&draft.r===event.row&&draft.c===event.column?{expected_version:draft.expected_version}:{})}],'edit'));}
    finally{this.closingEditor=false;}
   },0);
  }
@@ -128,9 +136,10 @@ export class PlanningGrid {
  async selectionInfo(force=false) {
   if(this.closed||!this.worksheet)return;
   const selected=this.origin(),cell=this.store.get(selected.sheet,selected.r,selected.c),key=`${this.sheet}:${selected.r}:${selected.c}`;
-  const display=cell?.v===null?'':typeof cell?.v==='object'?cell.v.error:String(cell?.v??'');
+  const display=formulaDisplay(cell,key===this.detailKey?this.formulaText:undefined);
+  if(key!==this.detailKey)$('validation-controls')?.remove();
   if(document.activeElement!==$('name-box'))$('name-box').value=cellName(selected);
-  syncFormula($('formula-input'),{value:cell?.k==='f'&&key===this.detailKey?this.formulaText??display:display,readOnly:this.copy.my_role==='viewer'||cell?.k!=='i'},document.activeElement===$('formula-input'));
+  syncFormula($('formula-input'),{value:display,readOnly:this.copy.my_role==='viewer'||cell?.k!=='i'},document.activeElement===$('formula-input'));
   $('formula-note').textContent=cell?.k==='i'?(cell.by?`Input · ${cell.by.name} · ${new Date(cell.at).toLocaleString()}`:'Input cell'):'Locked template cell';
   this.stats();if(!cell)return;
   if(key===this.detailKey&&!force)return;this.detailKey=key;this.formulaText=undefined;const token=++this.selectionToken;this.validation=null;
@@ -147,20 +156,20 @@ export class PlanningGrid {
  }
  validationControl(validation) {
   $('validation-controls')?.remove();if(this.copy.my_role==='viewer'||!validation)return;
-  const box=document.createElement('span');box.id='validation-controls';box.className='validation-controls';
+  const target={...this.origin()},box=document.createElement('span');box.id='validation-controls';box.className='validation-controls';
   if(validation.type==='list'&&Array.isArray(validation.list)) {
-   const select=document.createElement('select');select.setAttribute('aria-label','Allowed cell values');select.innerHTML='<option value="">Choose value</option>'+validation.list.map(v=>`<option>${e(v)}</option>`).join('');select.onchange=()=>this.formulaEdit(select.value);box.append(select);
+   const select=document.createElement('select');select.setAttribute('aria-label','Allowed cell values');select.innerHTML='<option value="">Choose value</option>'+validation.list.map(v=>`<option>${e(v)}</option>`).join('');select.onchange=()=>this.formulaEdit(select.value,false,{target,validation});box.append(select);
   }
-  if(validation.type==='date'){const input=document.createElement('input');input.type='date';input.setAttribute('aria-label','Cell date');input.onchange=()=>this.edit([{...this.origin(),v:(Date.parse(input.value)-Date.UTC(1899,11,30))/86400000}]);box.append(input);}
+  if(validation.type==='date'){const input=document.createElement('input');input.type='date';input.setAttribute('aria-label','Cell date');input.onchange=()=>this.attempt(()=>this.edit([{...target,v:(Date.parse(input.value)-Date.UTC(1899,11,30))/86400000}]));box.append(input);}
   document.querySelector('.formula-bar').append(box);
  }
  beginFormulaDraft() {const origin=this.origin();this.formulaDraft={...origin,expected_version:this.store.get(origin.sheet,origin.r,origin.c)?.ver??0};}
- cancelFormulaDraft() {this.beginFormulaDraft();const value=this.store.get(this.sheet,this.formulaDraft.r,this.formulaDraft.c)?.v;$('formula-input').value=value??'';}
- formulaEdit(text,useDraft=false) {this.attempt(async()=>{
-  const v=parseInput(text),rule=this.validation;if(rule?.list&&!rule.list.includes(v))throw new Error('Choose a permitted value');
+ cancelFormulaDraft() {this.beginFormulaDraft();const cell=this.store.get(this.sheet,this.formulaDraft.r,this.formulaDraft.c);$('formula-input').value=formulaDisplay(cell,this.formulaText);}
+ formulaEdit(text,useDraft=false,context=null) {this.attempt(async()=>{
+  const v=parseInput(text),rule=context?.validation??this.validation;if(rule?.list&&!rule.list.includes(v))throw new Error('Choose a permitted value');
   if(typeof v==='number'&&((rule?.min!==undefined&&v<rule.min)||(rule?.max!==undefined&&v>rule.max)))throw new Error('Value is outside the allowed range');
-  const result=await this.edit([{...(useDraft&&this.formulaDraft?this.formulaDraft:this.origin()),v}],'edit');
-  if(useDraft)this.cancelFormulaDraft();return result;
+  const result=await this.edit([{...(useDraft&&this.formulaDraft?this.formulaDraft:context?.target??this.origin()),v}],'edit');
+  if(useDraft&&result)this.cancelFormulaDraft();return result;
  });}
  async hydrate(cells) {
   const needed=new Map();
@@ -196,7 +205,7 @@ export class PlanningGrid {
  }
  keyDown(event) {
   if(this.closed||$('modal').open)return;const input=event.target.closest('input,textarea,select,[contenteditable=true]');
-  const mod=event.ctrlKey||event.metaKey,key=event.key.toLowerCase(),undo=serverUndoShortcut(event,!!input,!!event.target.closest('#grid'));
+  const mod=event.ctrlKey||event.metaKey,key=event.key.toLowerCase(),undo=serverUndoShortcut({key:event.key,ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,editing:this.u.getActiveWorkbook()?.isCellEditing()},!!input,!!event.target.closest('#grid'));
   if(undo){event.preventDefault();event.stopImmediatePropagation();this.attempt(()=>this.undo(undo==='redo'));return;}
   if(mod&&key==='f'){event.preventDefault();event.stopImmediatePropagation();$('find-input').focus();return;}if(input)return;
   if(mod&&['z','y','d','r','c'].includes(key)){event.preventDefault();event.stopImmediatePropagation();if(key==='z'||key==='y')this.attempt(()=>this.undo(key==='y'||event.shiftKey));else if(key==='c')this.attempt(()=>this.copySelection());else this.copyDirection(key==='r');}

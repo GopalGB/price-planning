@@ -1,6 +1,7 @@
 export const escapeHTML=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const e=escapeHTML;
 export function syncFormula(field,display,focused) {field.readOnly=display.readOnly;if(!focused||display.readOnly)field.value=display.value;}
+export function formulaDisplay(cell,formula) {return cell?.k==='f'&&formula!==undefined?formula:typeof cell?.v==='object'&&cell?.v!==null?cell.v.error:String(cell?.v??'');}
 export const roleOptions=(selected='editor')=>['editor','viewer'].map(role=>`<option value="${role}" ${selected===role?'selected':''}>${role==='editor'?'Editor':'Viewer'}</option>`).join('');
 export function authView(signup=false) {
  return `<section class="auth"><div class="auth-card"><span class="mark">P</span><h1>Price Planning</h1><p>One plan. Your team's inputs, together.</p><form id="auth-form">${signup?'<label>Your name<input name="name" autocomplete="name" required maxlength="80"></label>':''}<label>Email<input name="email" type="email" autocomplete="username" required></label><label>Password<input name="password" type="password" minlength="12" autocomplete="${signup?'new-password':'current-password'}" required></label><p id="auth-error" role="alert"></p><button class="primary" type="submit">${signup?'Create account':'Sign in'}</button></form><button id="auth-switch" class="link">${signup?'Already have an account? Sign in':'New here? Create an account'}</button></div></section>`;

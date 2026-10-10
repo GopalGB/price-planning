@@ -1,6 +1,6 @@
 import { deflateRawSync } from 'node:zlib';
 // Synthetic OOXML only. There is no VBA project or original template in this mock.
-const xml=value=>String(value).replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
+const xml=value=>String(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\uD800-\uDFFF\uFFFE\uFFFF]/gu,'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
 function crc32(bytes) {
  let crc=0xffffffff;
  for(const byte of bytes){crc^=byte;for(let bit=0;bit<8;bit++)crc=(crc>>>1)^((crc&1)?0xedb88320:0);}
@@ -19,7 +19,7 @@ function archive(files) {
 }
 function cellXML(ref,cell) {
  const formula=cell.formula?`<f>${xml(cell.formula.replace(/^=/,''))}</f>`:'';
- if(typeof cell.v==='string')return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xml(cell.v)}</t></is></c>`;
+ if(typeof cell.v==='string')return formula?`<c r="${ref}" t="str">${formula}<v>${xml(cell.v)}</v></c>`:`<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${xml(cell.v)}</t></is></c>`;
  if(cell.v&&typeof cell.v==='object')return `<c r="${ref}" t="e">${formula}<v>${xml(cell.v.error)}</v></c>`;
  if(cell.v===null)return `<c r="${ref}">${formula}</c>`;
  return `<c r="${ref}"${typeof cell.v==='boolean'?' t="b"':''}>${formula}<v>${Number(cell.v)}</v></c>`;

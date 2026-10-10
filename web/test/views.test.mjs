@@ -1,5 +1,8 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import { authView, homeView, workspaceView, escapeHTML } from '../src/views.mjs';
+test('formula display preserves locked formula text and renders error values',async()=>{
+ const {formulaDisplay}=await import('../src/views.mjs');assert.equal(formulaDisplay({k:'f',v:8},'=B2*2'),'=B2*2');assert.equal(formulaDisplay({k:'i',v:{error:'#VALUE!'}}),'#VALUE!');assert.equal(formulaDisplay({k:'i',v:null}),'');
+});
 test('auth uses real form fields and signup password length constraint',()=>{
  const html=authView(true);assert.match(html,/name="email"/);assert.match(html,/name="password"[^>]*minlength="12"/);assert.match(html,/Create account/);
 });

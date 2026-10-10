@@ -7,4 +7,5 @@ test('server undo shortcuts work when Univer retains focus in its hidden text in
  assert.equal(serverUndoShortcut({key:'y',ctrlKey:true},false,false),'redo');
  assert.equal(serverUndoShortcut({key:'z',ctrlKey:true},true,false),null);
  assert.equal(serverUndoShortcut({key:'z'},false,true),null);
+ assert.equal(serverUndoShortcut({key:'z',ctrlKey:true,editing:true},true,true),null);
 });
