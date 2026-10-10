@@ -165,7 +165,10 @@ class ExportXlsm(unittest.TestCase):
         self.assertEqual(load_workbook(self.out)['Lookup']['B4'].value, 'only')
 
     def test_xstring_escapes_round_trip(self):
-        texts = ['a\rb\r\nc', 'pre_x0041_post', '_x000D_', 'tab\tnl\nend']
+        texts = [
+            'a\rb\r\nc', 'pre_x0041_post', '_x000D_', 'tab\tnl\nend',
+            '_x0041_x0041_', '_x0041\r',
+        ]
         self.export([(0, 1 + i, 1, t) for i, t in enumerate(texts)])
         ws = load_workbook(self.out)['Inputs']
         # openpyxl 3.1.5 returns cell text still ST_Xstring-encoded; decode with its own helper, as Excel does

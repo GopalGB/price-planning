@@ -79,8 +79,12 @@ def _cell_xml(p, ref, style, v):
         return f'<{p}c r="{ref}"{s} t="b"><{p}v>{int(v)}</{p}v></{p}c>'
     if isinstance(v, (int, float)):
         return f'<{p}c r="{ref}"{s}><{p}v>{v!r}</{p}v></{p}c>'
-    # ST_Xstring: protect literal _xHHHH_ first, then encode CR, which XML parsers would otherwise normalise away
-    text = re.sub(r'_(x[0-9A-Fa-f]{4}_)', r'_x005F_\1', v).replace('\r', '_x000D_')
+    # ST_Xstring: escape CR and literal escape prefixes together so neither pass can expose a new token.
+    text = re.sub(
+        r'\r|_(?=x[0-9A-Fa-f]{4}(?:_|\r))',
+        lambda match: '_x000D_' if match.group() == '\r' else '_x005F_',
+        v,
+    )
     text = escape(text, {'"': '&quot;'})
     return f'<{p}c r="{ref}"{s} t="inlineStr"><{p}is><{p}t xml:space="preserve">{text}</{p}t></{p}is></{p}c>'
 

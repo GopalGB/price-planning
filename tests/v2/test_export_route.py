@@ -14,29 +14,35 @@ from tests.v2.test_template_importer import default_style_fixture, rewrite_membe
 class ExportRouteTests(unittest.TestCase):
     def test_implicit_blank_input_round_trips_via_ops_and_export(self):
         """An unlocked missing XML cell must be created with OOXML-safe text intact."""
-        fixture = APIFixture(default_style_fixture)
-        self.addCleanup(fixture.close)
-        client, csrf, _ = fixture.signup("implicit@example.test", "Implicit Export")
-        _, copy = fixture.make_copy(client, csrf)
-        value = "tab\tline\nreturn\r literal _x000D_ & <"
-        with zipfile.ZipFile(fixture.snapshot.source_path) as archive:
-            original = archive.read("xl/worksheets/sheet1.xml")
-        self.assertNotIn(b'r="B2"', original)
-        self.assertTrue(fixture.snapshot.is_input(0, 1, 1))
+        values = [
+            "tab\tline\nreturn\r literal _x000D_ & <",
+            "_x0041_x0041_",
+            "_x0041\r",
+        ]
+        for index, value in enumerate(values):
+            with self.subTest(value=value):
+                fixture = APIFixture(default_style_fixture)
+                self.addCleanup(fixture.close)
+                client, csrf, _ = fixture.signup(f"implicit-{index}@example.test", "Implicit Export")
+                _, copy = fixture.make_copy(client, csrf)
+                with zipfile.ZipFile(fixture.snapshot.source_path) as archive:
+                    original = archive.read("xl/worksheets/sheet1.xml")
+                self.assertNotIn(b'r="B2"', original)
+                self.assertTrue(fixture.snapshot.is_input(0, 1, 1))
 
-        edited = client.post(f"/api/copies/{copy['id']}/ops", {
-            "op_id": "implicit-edit", "action": "edit",
-            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": value, "expected_version": 0}],
-        }, {"x-csrf-token": csrf})
-        self.assertEqual(edited.status_code, 200, edited.body)
-        response = client.get(f"/api/copies/{copy['id']}/export.xlsm")
-        self.assertEqual(response.status_code, 200, response.body)
-        with zipfile.ZipFile(io.BytesIO(response.body)) as archive:
-            exported = archive.read("xl/worksheets/sheet1.xml")
-        self.assertIn(b'r="B2"', exported)
-        workbook = load_workbook(io.BytesIO(response.body), keep_vba=True)
-        self.addCleanup(workbook.close)
-        self.assertEqual(unescape(workbook["Styled Inputs"]["B2"].value), value)
+                edited = client.post(f"/api/copies/{copy['id']}/ops", {
+                    "op_id": "implicit-edit", "action": "edit",
+                    "cells": [{"sheet": 0, "r": 1, "c": 1, "v": value, "expected_version": 0}],
+                }, {"x-csrf-token": csrf})
+                self.assertEqual(edited.status_code, 200, edited.body)
+                response = client.get(f"/api/copies/{copy['id']}/export.xlsm")
+                self.assertEqual(response.status_code, 200, response.body)
+                with zipfile.ZipFile(io.BytesIO(response.body)) as archive:
+                    exported = archive.read("xl/worksheets/sheet1.xml")
+                self.assertIn(b'r="B2"', exported)
+                workbook = load_workbook(io.BytesIO(response.body), keep_vba=True)
+                self.addCleanup(workbook.close)
+                self.assertEqual(unescape(workbook["Styled Inputs"]["B2"].value), value)
 
     def test_edited_input_download_preserves_the_package(self):
         fixture = APIFixture()
