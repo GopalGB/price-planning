@@ -53,6 +53,22 @@ class Bench(unittest.TestCase):
         self.assertEqual(r.returncode, 3, r.stderr)
         self.assertEqual(pub['status'], 'aborted')
         self.assertIn('time', pub['aborted_reason'])
+    def test_time_limit_enforced_when_watchdog_is_starved(self):
+        # The watchdog thread can miss a short run (GIL held by native calls, 0.25 s polling); completion must still check.
+        import bench_real
+        from unittest import mock
+        manifest = self.dir / 'm.json'
+        manifest.write_text(json.dumps({'parity_sheets': ['Calc'], 'parity_sample': 50,
+                                        'candidate_inputs': self.meta['inputs'], 'edit_values': [12, 30], 'repeats': 3}))
+        args = ['--xlsm', str(self.wb), '--manifest', str(manifest), '--public-dir', str(self.dir / 'pub'),
+                '--private-dir', str(self.dir / 'priv'), '--max-seconds', '0.001']
+        with mock.patch.object(bench_real, 'watchdog', lambda *a: None), mock.patch('builtins.print'):
+            with self.assertRaises(SystemExit) as raised:
+                bench_real.main(args)
+        self.assertEqual(raised.exception.code, 3)
+        pub = json.loads(next((self.dir / 'pub').glob('*.json')).read_text())
+        self.assertEqual(pub['status'], 'aborted')
+        self.assertIn('time', pub['aborted_reason'])
     def test_watchdog_writes_partial_report(self):
         r, pub = self.run_bench('--max-rss-mb', '1')
         self.assertEqual(pub['status'], 'aborted')
