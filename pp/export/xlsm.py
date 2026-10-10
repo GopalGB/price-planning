@@ -49,6 +49,8 @@ def _check(cell):
         raise ValueError(f'cell outside the Excel grid: {cell!r}')
     if isinstance(v, float) and not math.isfinite(v):
         raise ValueError(f'non-finite number in {cell!r}')
+    if isinstance(v, str) and len(v) > 32767:
+        raise ValueError(f'text longer than the Excel cell limit of 32767 characters at {cell[:3]!r}')
     if isinstance(v, str) and ILLEGAL_XML.search(v):
         raise ValueError(f'text holds a character XML cannot store: {cell!r}')
     if v is not None and not isinstance(v, (bool, int, float, str)):

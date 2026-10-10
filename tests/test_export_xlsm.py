@@ -142,6 +142,31 @@ class ExportXlsm(unittest.TestCase):
         with self.assertRaises(ValueError):
             xlsm.export_xlsm(self.src, [(0, 1, 1, 1)], self.src)
 
+    def with_sheet2(self, xml):
+        alt = self.src.with_name('alt.xlsm')
+        with zipfile.ZipFile(self.src) as zin, zipfile.ZipFile(alt, 'w', zipfile.ZIP_DEFLATED) as zout:
+            for info in zin.infolist():
+                data = zin.read(info)
+                if info.filename == 'xl/worksheets/sheet2.xml':
+                    data = ('<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                            + xml + '</worksheet>').encode()
+                zout.writestr(info, data)
+        return alt
+
+    def test_implicit_refs_and_empty_sheetdata(self):
+        alt = self.with_sheet2('<sheetData><row><c><v>1</v></c><c><v>2</v></c></row><row><c><v>3</v></c></row></sheetData>')
+        xlsm.export_xlsm(alt, [(1, 0, 1, 9), (1, 1, 2, 'x'), (1, 2, 0, 5)], self.out)
+        ws = load_workbook(self.out)['Lookup']
+        self.assertEqual([[c.value for c in row] for row in ws.iter_rows(max_col=3)],
+                         [[1, 9, None], [3, None, 'x'], [5, None, None]])
+        alt = self.with_sheet2('<sheetData/>')
+        xlsm.export_xlsm(alt, [(1, 3, 1, 'only')], self.out)
+        self.assertEqual(load_workbook(self.out)['Lookup']['B4'].value, 'only')
+
+    def test_text_over_excel_limit_refused(self):
+        with self.assertRaises(ValueError):
+            self.export([(0, 1, 1, 'x' * 32768)])
+
     def test_big_sheet_is_streamed(self):
         import tracemalloc
         big = self.src.with_name('big.xlsm')
