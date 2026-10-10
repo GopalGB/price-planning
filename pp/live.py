@@ -131,7 +131,7 @@ class LiveHub:
             return self._pipeline_locks.setdefault(copy_id, threading.Lock())
 
     def _replay(self, copy_id, last_revision):
-        with self.database.connect() as database:
+        with self.database.read_transaction() as database:
             copy = database.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
             if last_revision > copy["input_revision"] or copy["input_revision"] - last_revision > self.replay_window:
                 return copy, None

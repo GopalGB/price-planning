@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import tempfile
@@ -7,6 +8,43 @@ from ops.fixtures import make_semantic
 
 ROOT = Path(__file__).resolve().parents[2]
 TMP = ROOT / "results-private" / "tmp"
+
+
+class QueryBoundaryConnection:
+    def __init__(self, connection, owner):
+        self._connection = connection
+        self._owner = owner
+
+    def execute(self, sql, parameters=()):
+        cursor = self._connection.execute(sql, parameters)
+        if not self._owner.triggered and self._owner.marker in sql:
+            self._owner.triggered = True
+            self._owner.action()
+        return cursor
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+class QueryBoundaryDatabase:
+    def __init__(self, database, marker, action):
+        self._database = database
+        self.marker = marker
+        self.action = action
+        self.triggered = False
+
+    @contextmanager
+    def connect(self):
+        with self._database.connect() as connection:
+            yield QueryBoundaryConnection(connection, self)
+
+    @contextmanager
+    def read_transaction(self):
+        with self._database.read_transaction() as connection:
+            yield QueryBoundaryConnection(connection, self)
+
+    def __getattr__(self, name):
+        return getattr(self._database, name)
 
 
 class BackendFixture:

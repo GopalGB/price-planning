@@ -1,13 +1,14 @@
 import unittest
 
 from tests.v2.api_support import APIFixture
+from tests.v2.support import QueryBoundaryDatabase
 from tests.v2.test_template_importer import default_style_fixture
 
 
 class WorkbookAPIContractTests(unittest.TestCase):
     def setUp(self):
         self.fixture = APIFixture()
-        self.client, self.csrf, _ = self.fixture.signup("workbook@example.test", "Workbook Owner")
+        self.client, self.csrf, self.user = self.fixture.signup("workbook@example.test", "Workbook Owner")
         _, self.copy = self.fixture.make_copy(self.client, self.csrf)
 
     def tearDown(self):
@@ -41,6 +42,35 @@ class WorkbookAPIContractTests(unittest.TestCase):
         outsider, _, _ = self.fixture.signup("outsider@example.test", "Outsider")
         response = outsider.get(f"/api/copies/{self.copy['id']}/workbook")
         self.assertEqual((response.status_code, response.json()["error"]), (404, "not_found"))
+
+    def test_rows_use_one_snapshot_when_calculation_publishes_between_queries(self):
+        """Reading results after newer metadata must not mislabel a mixed SQLite snapshot."""
+        from pp.calc_service import CalculationPublication, CalculationService
+        from pp.workbook_service import RowQuery, WorkbookService
+
+        services = self.fixture.app.state.services
+        services.operations.apply(self.copy["id"], self.user["id"], {
+            "op_id": "pending-calc", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        })
+        calculations = CalculationService(self.fixture.database)
+
+        def publish():
+            self.assertTrue(calculations.complete(CalculationPublication(
+                self.copy["id"], 1, [(2, 1, 1, 222)],
+            )))
+
+        interleaved = QueryBoundaryDatabase(
+            self.fixture.database, "SELECT * FROM pp_copies WHERE id=?", publish,
+        )
+        query = RowQuery(self.copy["id"], self.user["id"], 2, 1, 1)
+
+        body = WorkbookService(interleaved, self.fixture.snapshot).rows(query)
+
+        self.assertTrue(interleaved.triggered)
+        self.assertEqual((body["calculated_revision"], body["rows"]["1"]["1"]["v"]), (0, 20))
+        fresh = services.workbooks.rows(query)
+        self.assertEqual((fresh["calculated_revision"], fresh["rows"]["1"]["1"]["v"]), (1, 222))
 
 
 class DefaultStyleWorkbookAPIContractTests(unittest.TestCase):

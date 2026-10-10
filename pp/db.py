@@ -66,6 +66,19 @@ class Database:
         finally:
             connection.close()
 
+    @contextmanager
+    def read_transaction(self):
+        connection = self._open()
+        try:
+            connection.execute("BEGIN")
+            yield connection
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
     def _migrate_users(self, connection: sqlite3.Connection) -> None:
         if not _table_exists(connection, "users"):
             return

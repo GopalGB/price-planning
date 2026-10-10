@@ -153,7 +153,7 @@ class WorkbookService:
                 "sheets": sheets, "styles": snapshot.styles}
 
     def rows(self, query: RowQuery) -> dict:
-        with self.database.connect() as connection:
+        with self.database.read_transaction() as connection:
             copy = self._copy(connection, query.copy_id, query.user_id)
             snapshot = self.templates.get(connection, copy["template_id"])
             if (not 0 <= query.sheet < len(snapshot.sheets) or query.start < 0

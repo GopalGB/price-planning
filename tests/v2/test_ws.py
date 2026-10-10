@@ -7,6 +7,7 @@ from unittest import mock
 
 from pp.db import token_hash
 from tests.v2.api_support import APIFixture
+from tests.v2.support import QueryBoundaryDatabase
 from tests.v2.ws_client import WebSocketClient
 
 
@@ -329,6 +330,50 @@ class WebSocketContractTests(unittest.TestCase):
         calc = reconnect.receive_json()
         self.assertEqual((calc["type"], calc["calculated_revision"]), ("calc", 1))
         self.assertEqual(reconnect.receive_json()["type"], "calc_state")
+
+    def test_hello_replay_uses_one_snapshot_across_metadata_and_events(self):
+        """A calculation published mid-replay must not precede an older calc_state or be lost."""
+        from pp.calc_service import CalculationPublication, CalculationService
+        from pp.live import Connection, LiveHub
+
+        class RecordingSocket:
+            def __init__(self):
+                self.messages = []
+
+            async def send_json(self, payload):
+                self.messages.append(payload)
+
+        services = self.fixture.app.state.services
+        services.operations.apply(self.copy["id"], self.owner_user["id"], {
+            "op_id": "offline-pending", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        })
+        calculations = CalculationService(self.fixture.database)
+
+        def publish():
+            self.assertTrue(calculations.complete(CalculationPublication(
+                self.copy["id"], 1, [(2, 1, 1, 222)],
+            )))
+
+        database = QueryBoundaryDatabase(
+            self.fixture.database, "SELECT * FROM pp_copies WHERE id=?", publish,
+        )
+        hub, socket = LiveHub(database, 100), RecordingSocket()
+        connection = Connection(socket, self.copy["id"], self.identity(self.owner, self.owner_user))
+        calc = {"type": "calc", "calculated_revision": 1, "changes": []}
+        hub.add(connection)
+        try:
+            asyncio.run(hub.hello(connection, 1))
+            asyncio.run(hub.broadcast(self.copy["id"], calc))
+            asyncio.run(hub.broadcast(self.copy["id"], calc))
+        finally:
+            hub.discard(connection)
+
+        self.assertTrue(database.triggered)
+        self.assertEqual([(item["type"], item["calculated_revision"]) for item in socket.messages], [
+            ("calc_state", 0), ("calc", 1),
+        ])
+        self.assertEqual(socket.messages[0]["input_revision"], 1)
 
     def test_cursor_zero_replays_baseline_calc_missed_after_pending_fetch(self):
         """A pending baseline fetch followed by hello(0) must recover missed values."""
