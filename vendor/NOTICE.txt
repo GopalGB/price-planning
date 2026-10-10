@@ -1,0 +1,7 @@
+This package redistributes the unmodified pure-Python wheel for Waitress 3.0.2.
+Project: https://github.com/Pylons/waitress
+Documentation: https://docs.pylonsproject.org/projects/waitress/en/stable/
+License: Zope Public License 2.1; full text in waitress-LICENSE.txt and the wheel.
+Wheel: waitress-3.0.2-py3-none-any.whl
+SHA-256: c56d67fd6e87c2ee598b76abdd4e96cfad1f24cacdea5078d382b1f9d7b5ed2e
+The wheel is added to Python's import path at startup. Nothing is installed globally.

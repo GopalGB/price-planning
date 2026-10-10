@@ -1,0 +1,41 @@
+# Company data never enters git (SPEC D1). Copy the template onto the server by hand.
+*.xlsm
+*.xlsx
+*.xls
+*.xlsb
+*.csv
+*.docx
+*.doc
+*.pptx
+*.pdf
+logo.png
+sources/*
+!sources/.keep
+
+# Workbook-derived material (VBA source, cell values, ranges) stays local
+docs/vba_audit/
+docs/workbook_audit.json
+docs/parity_report.json
+results-private/
+.planning/excel-grid/results-private/
+
+# Runtime state and secrets
+/data/
+/backups/
+/settings.json
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+*.log
+logs/
+
+# Tooling
+/.venv/
+/python/
+__pycache__/
+*.pyc
+node_modules/
+.DS_Store
+strix_runs/

@@ -1,0 +1,29 @@
+CATALYST BRANDS PRICE PLANNING - LAN DEMO
+
+1. Extract the entire ZIP to a writable local folder on the server.
+2. Put your Catalyst Brands logo.png beside run.bat.
+3. Double-click run.bat normally. Do not select Run as administrator.
+4. Wait for the first workbook import; there are no admin-account questions.
+5. Share the printed team URL, such as http://10.0.0.25:8000.
+6. Each user opens that URL, chooses Create demo account, and creates a working copy.
+7. Owners use Manage access to share a copy with colleagues for live updates.
+8. Keep the server window open. Ctrl+C stops it; run.bat restarts it with saved data.
+
+REQUIRES: existing Python 3.10+ (3.12 recommended), a writable local folder,
+          and existing network access to the server's chosen port.
+NO APP REQUIREMENT: Windows admin elevation, administrator account setup,
+                    Docker, pip installation, or startup downloads.
+
+The server's actual LAN IP is detected. The program cannot assign a new 10.x IP.
+If localhost works but colleagues cannot connect, confirm the IP/network/VPN;
+a blocked company firewall port requires IT to allow the connection.
+
+From Command Prompt:
+  run.bat --configure   Set another port or an explicit LAN URL; choose demo accounts Y.
+  run.bat --backup      Save a verified online database backup.
+
+Passwords are hashed. Users receive ordinary planner accounts with private copies.
+Self-signup is for this internal demo; email ownership is not verified.
+
+VALIDATION BUILD: Complete Excel formula/VBA/pivot/source parity is pending.
+Windows execution still needs checking on your server; see README.md and docs/validation.md.
