@@ -16,6 +16,7 @@ import {
 import { EditController } from "./client.mjs";
 import {
   makeSnapshot,
+  displayWidth,
   renderCell,
   cellsFromMatrix,
   pasteChanges,
@@ -503,11 +504,13 @@ export class PlanningGrid {
       this.styleMap ??= new Map(
         (this.meta.styles ?? []).map((style) => [String(style.id), style]),
       );
-      const next = renderCell(
-          cell,
-          this.styleMap.get(String(cell.s)),
-          this.inputHighlight,
-        ),
+      const next = renderCell(cell, this.styleMap.get(String(cell.s)), {
+          inputHighlight: this.inputHighlight,
+          width: displayWidth(
+            this.meta.sheets.find((sheet) => sheet.index === this.sheet),
+            { r, c },
+          ),
+        }),
         signature = JSON.stringify(next);
       if (this.rendered.get(`${r}:${c}`) === signature) continue;
       (changed[r] ??= {})[c] = next;

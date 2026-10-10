@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { getPatternPreview } from '@univerjs/sheets-numfmt';
 import { makeSnapshot, cellsFromMatrix, pasteChanges, fillChanges, inputFill } from '../src/grid-data.mjs';
 import { CellStore, RowCache } from '../src/model.mjs';
 import { EditController } from '../src/client.mjs';
@@ -22,11 +23,48 @@ function navigationHarness(request) {
  Object.assign(grid,{api:{request},copy:{id:'one',my_role:'editor'},meta,sheet:0,store,cache:new RowCache(3),closed:false,showHidden:false,worksheet:activeWorksheet,rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:1,endColumn:1}],generation:0,copyToken:0,goToToken:0,internal:0,toast:()=>{},mutate:()=>{},selectionInfo:async()=>{},u:{getActiveWorkbook:()=>workbook,disposeUnit:()=>{workbook=null;},createWorkbook:snapshot=>{activeWorksheet=makeWorksheet(Number(snapshot.sheetOrder[0].slice(1)));worksheets.push(activeWorksheet);workbook={getSheetBySheetId:()=>activeWorksheet};}}});
  grid.controller=new EditController({store,api:grid.api,copyId:'one',role:'editor',paint:()=>grid.paint(),toast:()=>{}});return {grid,worksheets,elements};
 }
+function displayed(cell, styles) {
+ const style=typeof cell.s==='object'?cell.s:styles[Number(cell.s)];
+ return getPatternPreview(style.n.pattern,cell.v);
+}
 test('metadata preserves dimensions, hidden rows, merges, formats and freeze without any formulas',()=>{
  const meta={template:{name:'Synthetic'},styles:[{id:0,nf:'0.00',bold:true,fill:'#EAF2FB'}],sheets:[{index:0,name:'Sheet',rows:4088,cols:312,freeze:{rows:1,cols:2},merges:[[0,1,0,2]],col_widths:{1:120},row_heights:{0:32},hidden_rows:[5],hidden_cols:[8]}]};
  const data=makeSnapshot(meta,0,{rows:{1:{1:{v:10,s:0,k:'i',formula:'=bad'}}}});
  assert.equal(data.sheets['s0'].rowCount,4088);assert.equal(data.sheets['s0'].rowData[5].hd,1);assert.equal(data.sheets['s0'].columnData[8].hd,1);
  assert.equal(data.sheets['s0'].freeze.xSplit,2);assert.equal(data.styles[0].n.pattern,'0.00');assert.equal(data.sheets['s0'].cellData[1][1].f,undefined);
+});
+test('snapshot and paint literally display the synthetic format sweep',()=>{
+ // Microsoft General guidance: https://support.microsoft.com/en-us/excel/reset-a-number-to-the-general-format
+ // Custom/date format guidance: https://support.microsoft.com/en-us/excel/review-guidelines-for-customizing-a-number-format
+ // Date format guidance: https://support.microsoft.com/en-us/excel/format-a-date-the-way-you-want-in-excel
+ const fixture=[
+  ['General',1-10/24,'0.583333'],['General',-12,'-12'],['General',12,'12'],['General',0,'0'],
+  ['General',9999999999,'1E+10'],['General',1e11,'1E+11'],['General',1e-9,'1E-09'],['General',1e-10,'1E-10'],
+  ['General',9.9999996,'10'],['General',1-10/24,'0.583333333'],['General',1-10/24,'0.6'],
+  ['0',12.5,'13'],['0.00',12.5,'12.50'],['#,##0',1234.5,'1,235'],['#,##0.00',1234.5,'1,234.50'],
+  ['0%',0.125,'13%'],['0.0%',0.125,'12.5%'],['$#,##0.00',1234.5,'$1,234.50'],['[$$-409]#,##0.00',1234.5,'$1,234.50'],
+  ['m/d/yy',45293,'1/2/24'],['mm/dd/yyyy',45293,'01/02/2024'],['d-mmm',45293,'2-Jan'],
+  ['0.00;[Red](0.00)',-12.5,'(12.50)'],['@','text','text'],
+ ];
+ const styles=fixture.map(([nf],id)=>({id,nf})),rows={0:Object.fromEntries(fixture.map(([,v],index)=>[index,{v,s:index,k:'f'}]))};
+ const widths={9:160,10:40},sheet={index:0,name:'Calc',rows:1,cols:fixture.length,col_widths:widths};
+ const snapshot=makeSnapshot({template:{name:'Synthetic'},styles,sheets:[sheet]},0,{rows});
+ const cells=snapshot.sheets.s0.cellData[0];
+ fixture.forEach(([,v,want],index)=>assert.equal(displayed(cells[index],snapshot.styles).result,want));
+ assert.equal(displayed(cells[22],snapshot.styles).color,'red');
+ fixture.forEach(([,v],index)=>assert.equal(cells[index].v,v));
+ const {grid,mutations}=gridHarness(new Map(),styles);grid.meta.sheets=[sheet];grid.store.merge(rows,0);grid.paint();
+ const painted=mutations.at(-1)[0];
+ fixture.forEach(([,v,want],index)=>assert.equal(displayed(painted[index],snapshot.styles).result,want));
+ assert.equal(displayed(painted[22],snapshot.styles).color,'red');
+});
+test('merged numeric anchors use the full width in snapshot and paint',()=>{
+ const styles=[{id:0,nf:'General'}],sheet={index:0,name:'Calc',rows:1,cols:2,merges:[[0,0,0,1]],col_widths:{0:40,1:40}},rows={0:{0:{v:123456,s:0,k:'f'}}};
+ const meta={template:{name:'Synthetic'},styles,sheets:[sheet]};
+ const snapshot=makeSnapshot(meta,0,{rows}),cell=snapshot.sheets.s0.cellData[0][0];
+ assert.equal(displayed(cell,snapshot.styles).result,'123456');
+ const {grid,mutations}=gridHarness(new Map(),styles);grid.meta.sheets=[sheet];grid.store.merge(rows,0);grid.paint();
+ assert.equal(displayed(mutations.at(-1)[0][0],snapshot.styles).result,'123456');
 });
 test('snapshot highlights only inputs without an explicit template fill',()=>{
  const meta={template:{name:'Synthetic'},styles:[{id:0,fill:null},{id:1,fill:'#FFD966'}],sheets:[{index:0,name:'Sheet',rows:10,cols:3}]},rows={1:{0:{v:1,s:0,k:'i'},1:{v:2,s:1,k:'i'},2:{v:3,s:0,k:'f'}}};
@@ -34,16 +72,20 @@ test('snapshot highlights only inputs without an explicit template fill',()=>{
  assert.equal(inputFill(rows[1][0],meta.styles[0],true),'#EAF2FB');
  assert.equal(typeof highlighted[0].s,'object');
  assert.equal(highlighted[0].s.bg.rgb,'#EAF2FB');
- assert.equal(highlighted[1].s,'1');
- assert.equal(highlighted[2].s,'0');
+ assert.equal(displayed(highlighted[1],meta.styles).result,'2');
+ assert.equal(highlighted[1].s.bg.rgb,'#FFD966');
+ assert.equal(displayed(highlighted[2],meta.styles).result,'3');
+ assert.equal(highlighted[2].s.bg.rgb,'#fff');
  const disabled=makeSnapshot(meta,0,{rows,inputHighlight:false}).sheets.s0.cellData[1];
- assert.equal(disabled[0].s,'0');
+ assert.equal(displayed(disabled[0],meta.styles).result,'1');
+ assert.equal(disabled[0].s.bg.rgb,'#fff');
 });
 test('snapshot options carry rows and highlight state within three parameters',()=>{
  const meta={template:{name:'Synthetic'},styles:[{id:0,fill:null}],sheets:[{index:0,name:'Sheet',rows:10,cols:1}]},rows={1:{0:{v:1,s:0,k:'i'}}};
  const cell=makeSnapshot(meta,0,{rows,inputHighlight:false}).sheets.s0.cellData[1]?.[0];
  assert.equal(cell?.v,1);
- assert.equal(cell?.s,'0');
+ assert.equal(displayed(cell,meta.styles).result,'1');
+ assert.equal(cell.s.bg.rgb,'#fff');
 });
 test('toggle repaints loaded input cells and restores their template style',()=>{
  const {grid,mutations}=gridHarness(new Map(),[{id:0,fill:null}]);
@@ -51,8 +93,11 @@ test('toggle repaints loaded input cells and restores their template style',()=>
  grid.paint();
  assert.equal(typeof mutations.at(-1)[0][1].s,'object');
  assert.equal(mutations.at(-1)[0][1].s.bg.rgb,'#EAF2FB');
+ const beforeToggle=mutations.length;
  grid.refreshInputHighlight(false);
- assert.equal(mutations.at(-1)[0][1].s,'0');
+ assert.ok(mutations.length>beforeToggle);
+ assert.equal(displayed(mutations.at(-1)[0][1],[{id:0,fill:null}]).result,'4');
+ assert.equal(mutations.at(-1)[0][1].s.bg.rgb,'#fff');
 });
 test('paste and fill build one complete input batch, reject unsafe text and support series',()=>{
  const store=new CellStore({1:{1:{v:1,k:'i',ver:0}},2:{1:{v:3,k:'i',ver:0}},3:{1:{v:0,k:'i',ver:0}},4:{1:{v:0,k:'i',ver:0}}});

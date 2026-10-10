@@ -1,3 +1,5 @@
+import { getPatternPreview } from "@univerjs/sheets-numfmt";
+
 export const BLOCK_ROWS = 256;
 export const MAX_OP_CELLS = 10000;
 export const keyOf = ({ sheet, r, c }) => `${sheet}:${r}:${c}`;
@@ -244,32 +246,54 @@ export function selectionStats(values) {
     count: numbers.length,
   };
 }
-export function formatNumber(value, format = "General") {
+const GENERAL_MAX_CHARS = 11;
+function generalBudget(width) {
+  if (width === undefined) return GENERAL_MAX_CHARS;
+  // Univer exposes pixels here but no text metric. Use a conservative
+  // 12 px per character estimate for the configured Segoe UI font.
+  const estimated = Math.floor(Math.max(0, width) / 12);
+  return Math.max(1, Math.min(GENERAL_MAX_CHARS, estimated));
+}
+function patternPreview(pattern, value) {
+  return getPatternPreview(pattern, value).result;
+}
+function usablePreview(pattern, value, budget) {
+  const result = patternPreview(pattern, value);
+  const trailingDot = result.endsWith(".") || /\.E[+-]/.test(result);
+  return result.length <= budget && !trailingDot ? result : null;
+}
+function plainPattern(value, budget) {
+  if (Number.isInteger(value))
+    return usablePreview("0", value, budget) === null ? null : "0";
+  for (let decimals = budget; decimals >= 0; decimals--) {
+    const pattern = decimals ? `0.${"#".repeat(decimals)}` : "0";
+    const result = usablePreview(pattern, value, budget);
+    if (result !== null && Number(result) !== 0) return pattern;
+  }
+  return null;
+}
+function scientificPattern(value, budget) {
+  for (let decimals = budget; decimals >= 0; decimals--) {
+    const pattern = decimals ? `0.${"#".repeat(decimals)}E+00` : "0E+00";
+    if (usablePreview(pattern, value, budget) !== null) return pattern;
+  }
+  const hashes = `"${"#".repeat(budget)}"`;
+  return `${hashes};${hashes}`;
+}
+export function generalPattern(value, width) {
+  const magnitude = Math.abs(value);
+  const budget = generalBudget(width);
+  if (magnitude >= 1e11 || (magnitude > 0 && magnitude < 1e-9))
+    return scientificPattern(value, budget);
+  return plainPattern(value, budget) ?? scientificPattern(value, budget);
+}
+export function formatNumber(value, format = "General", options = {}) {
   if (value === null || value === undefined) return "";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
   if (typeof value === "object") return value.error ?? "";
   if (typeof value !== "number") return String(value);
-  if (format === "General" || format === "@") return String(value);
-  const sections = format.split(";"),
-    code = sections[value < 0 ? 1 : 0] ?? sections[0];
-  const dateCode = code.replace(/"[^"]*"|\[[^\]]*\]/g, "");
-  if (/[yd]/i.test(dateCode) && !/[0#]/.test(dateCode)) {
-    const date = new Date(Date.UTC(1899, 11, 30) + value * 86400000);
-    return new Intl.DateTimeFormat("en-US", {
-      timeZone: "UTC",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(date);
-  }
-  const decimals = (code.match(/\.([0#]+)/)?.[1] ?? "").length,
-    percent = code.includes("%");
-  const numeric = new Intl.NumberFormat("en-US", {
-    useGrouping: code.includes(","),
-    minimumFractionDigits: decimals,
-    maximumFractionDigits: decimals,
-  }).format(Math.abs(value) * (percent ? 100 : 1));
-  const currency = code.match(/[$€£]/)?.[0] ?? "",
-    sign = value < 0 ? (code.includes("(") ? "(" : "-") : "";
-  return `${sign}${currency}${numeric}${percent ? "%" : ""}${value < 0 && code.includes("(") ? ")" : ""}`;
+  if (!Number.isFinite(value)) return String(value);
+  const pattern =
+    format === "General" ? generalPattern(value, options.width) : format;
+  return patternPreview(pattern, value);
 }

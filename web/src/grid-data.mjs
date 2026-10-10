@@ -1,4 +1,4 @@
-import { parseInput, MAX_OP_CELLS } from "./model.mjs";
+import { parseInput, MAX_OP_CELLS, generalPattern } from "./model.mjs";
 export function inputFill(cell, style, enabled = true) {
   return enabled && cell?.k === "i" && !style?.fill
     ? "#EAF2FB"
@@ -44,19 +44,35 @@ export function commandUndo(id, editing) {
         ? "redo"
         : null;
 }
-export function renderCell(cell, style, inputHighlight = true) {
+export function renderCell(cell, style, options = {}) {
+  const { inputHighlight = true, width } = options;
   // The server's formula text is deliberately absent from Univer's model.
   const rendered = {
     v: typeof cell.v === "object" && cell.v !== null ? cell.v.error : cell.v,
     s: String(cell.s),
     t: typeof cell.v === "number" ? 2 : typeof cell.v === "boolean" ? 3 : 1,
   };
-  if (inputHighlight && cell?.k === "i" && !style?.fill)
+  if (typeof cell.v === "number" && (style?.nf ?? "General") === "General")
     rendered.s = {
       ...styleData(style ?? {}),
+      n: { pattern: generalPattern(cell.v, width) },
+    };
+  if (inputHighlight && cell?.k === "i" && !style?.fill)
+    rendered.s = {
+      ...(typeof rendered.s === "object" ? rendered.s : styleData(style ?? {})),
       bg: { rgb: inputFill(cell, style, inputHighlight) },
     };
   return rendered;
+}
+export function displayWidth(sheet, { r, c }) {
+  const merge = (sheet?.merges ?? []).find(
+    ([startRow, startCol]) => startRow === r && startCol === c,
+  );
+  if (!merge) return sheet?.col_widths?.[c] ?? 96;
+  let width = 0;
+  for (let column = c; column <= merge[3]; column++)
+    width += sheet?.col_widths?.[column] ?? 96;
+  return width;
 }
 export function styleData(style) {
   const align = { left: 1, center: 2, right: 3 },
@@ -95,11 +111,10 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
   for (const [r, columns] of Object.entries(rows)) {
     cellData[r] = {};
     for (const [c, cell] of Object.entries(columns))
-      cellData[r][c] = renderCell(
-        cell,
-        styles.get(String(cell.s)),
+      cellData[r][c] = renderCell(cell, styles.get(String(cell.s)), {
         inputHighlight,
-      );
+        width: displayWidth(sheet, { r: Number(r), c: Number(c) }),
+      });
   }
   for (const [r, h] of Object.entries(sheet.row_heights ?? {}))
     rowData[r] = { h };

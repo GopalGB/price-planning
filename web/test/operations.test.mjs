@@ -37,13 +37,39 @@ test('old calc batches cannot regress authoritative displayed values', () => {
  store.applyCalc({calculated_revision:2,changes:[{sheet:0,r:0,c:2,v:40}]});
  assert.equal(store.get(0,0,2).v,60);
 });
-test('formats numbers, booleans, errors and numeric selection summary', () => {
+test('formats literal non-General displays through the installed formatter', () => {
  assert.equal(formatNumber(0.125,'0.0%'),'12.5%');
  assert.equal(formatNumber(1234.5,'#,##0.00'),'1,234.50');
  assert.equal(formatNumber(12.3,'$0.00'),'$12.30');
+ assert.equal(formatNumber(1234.5,'[$$-409]#,##0.00'),'$1,234.50');
+ assert.equal(formatNumber(45293,'m/d/yy'),'1/2/24');
+ assert.equal(formatNumber(45293,'mm/dd/yyyy'),'01/02/2024');
+ assert.equal(formatNumber(45293,'d-mmm'),'2-Jan');
+ assert.equal(formatNumber(-12.5,'0.00;[Red](0.00)'),'(12.50)');
  assert.equal(formatNumber({error:'#DIV/0!'},'General'),'#DIV/0!');
  assert.equal(formatNumber(true,'General'),'TRUE');
  assert.deepEqual(selectionStats([1,2,null,'3',false]),{sum:3,average:1.5,count:2});
+});
+test('General fallback enforces eleven-character sign and magnitude boundaries', () => {
+ const fraction=1-10/24;
+ const cases=[
+  [fraction,'0.583333333'],[-fraction,'-0.58333333'],
+  [99999999999,'99999999999'],[1e11,'1E+11'],
+  [1e-9,'0.000000001'],[1e-10,'1E-10'],
+  [99999999999.9,'1E+11'],[-99999999999,'-1E+11'],
+  [9.9999999996,'10'],
+ ];
+ for(const [value,want] of cases) assert.equal(formatNumber(value),want);
+});
+test('General known widths cap output and never round a nonzero value to zero', () => {
+ const fraction=1-10/24;
+ const cases=[
+  [fraction,96,'0.583333'],[fraction,160,'0.583333333'],[fraction,40,'0.6'],
+  [123456789,40,'###'],[-123456789,40,'###'],[1.2345e-7,40,'###'],
+  [123456789,60,'1E+08'],[-123456789,72,'-1E+08'],
+ ];
+ for(const [value,width,want] of cases)
+  assert.equal(formatNumber(value,'General',{width}),want);
 });
 test('cache retains at most three 256-row blocks and identifies evictions', () => {
  const cache=new RowCache(3); assert.equal(cache.start(300),256);
