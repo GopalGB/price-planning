@@ -8,6 +8,8 @@
     "mock": "node mock/server.mjs",
     "test": "node --test test/*.test.mjs",
     "build": "vite build && node scripts/build-manifest.mjs",
+    "format": "prettier --write src/*.mjs",
+    "format:check": "prettier --check src/*.mjs",
     "test:ego": "ego-browser nodejs < test/ego.mjs"
   },
   "dependencies": {
@@ -15,6 +17,7 @@
     "@univerjs/presets": "1.0.4"
   },
   "devDependencies": {
+    "prettier": "3.6.2",
     "vite": "6.4.4",
     "ws": "8.22.0"
   }

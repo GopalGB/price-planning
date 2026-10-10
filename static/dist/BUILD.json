@@ -1,5 +1,5 @@
 {
-  "source_sha256": "4ef0833ecc6afa47880ecc112997b27492f20bd2ae4bbdecedfff8b14e6b6119",
+  "source_sha256": "1e2c250c39fb8e23ada0d96dbb1a16afc4f3ec502803af779fd1aa99e68a59c6",
   "bundle_sha256": "9a06b98eeca33881b888da8c4100642686413ce17e64912e0c0d0ba633505239",
   "univer_version": "1.0.4",
   "licenses": [
@@ -791,6 +791,11 @@
     {
       "name": "postcss",
       "version": "8.5.29",
+      "license": "MIT"
+    },
+    {
+      "name": "prettier",
+      "version": "3.6.2",
       "license": "MIT"
     },
     {
