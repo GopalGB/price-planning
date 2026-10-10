@@ -348,46 +348,144 @@ export function selectionStats(values) {
     count: numbers.length,
   };
 }
+export const GRID_FONT_FAMILY = "Calibri, Arial, sans-serif";
+export const GRID_NUMBER_HORIZONTAL_PADDING = 1;
+const MAX_IMPORTED_FONT_NAME = 255;
+const UNSAFE_FONT_NAME = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u;
 const GENERAL_MAX_CHARS = 11;
-function generalBudget(width) {
-  if (width === undefined) return GENERAL_MAX_CHARS;
-  // Univer exposes pixels here but no text metric. Use a conservative
-  // 12 px per character estimate for the configured Segoe UI font.
-  const estimated = Math.floor(Math.max(0, width) / 12);
-  return Math.max(1, Math.min(GENERAL_MAX_CHARS, estimated));
+const GENERAL_CELL_PADDING = GRID_NUMBER_HORIZONTAL_PADDING * 2;
+const DEFAULT_FONT_POINTS = 11;
+const REFERENCE_FONT_PIXELS = 14.6667;
+const REFERENCE_DIGIT_WIDTH = 8.1522;
+const REFERENCE_GENERAL_WIDTH = 61.145294189453125;
+const FALLBACK_GLYPHS = {
+  ".": REFERENCE_GENERAL_WIDTH - REFERENCE_DIGIT_WIDTH * 7,
+  "-": 4.88,
+  "+": 8.56,
+  E: 9.78,
+  e: 9.78,
+};
+const BOLD_WIDTH_SCALE = 1.08;
+const ITALIC_WIDTH_SCALE = 1.01;
+let environmentMeasureText;
+function deterministicMeasureText(text, font) {
+  const resolvedFont = String(font ?? ""),
+    pixels = Number(/([0-9.]+)px/.exec(resolvedFont)?.[1]),
+    sizeScale =
+      Number.isFinite(pixels) && pixels > 0
+        ? pixels / REFERENCE_FONT_PIXELS
+        : 1,
+    emphasisScale =
+      (resolvedFont.includes("bold") ? BOLD_WIDTH_SCALE : 1) *
+      (resolvedFont.includes("italic") ? ITALIC_WIDTH_SCALE : 1);
+  const referenceWidth = [...String(text)].reduce(
+    (width, glyph) => width + (FALLBACK_GLYPHS[glyph] ?? REFERENCE_DIGIT_WIDTH),
+    0,
+  );
+  return referenceWidth * sizeScale * emphasisScale;
+}
+function browserCanvas() {
+  return globalThis.document?.createElement?.("canvas");
+}
+export function createTextMeasurer(canvasFactory = browserCanvas) {
+  const context = canvasFactory()?.getContext?.("2d");
+  if (!context) return deterministicMeasureText;
+  return (text, font) => {
+    context.font = font;
+    return context.measureText(String(text)).width;
+  };
+}
+function importedFontFamily(value) {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    value.length > MAX_IMPORTED_FONT_NAME ||
+    value.includes(",") ||
+    UNSAFE_FONT_NAME.test(value)
+  )
+    return null;
+  const escaped = value.trim().replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return `"${escaped}", ${GRID_FONT_FAMILY}`;
+}
+export function gridFontFamily(style = {}) {
+  return (
+    style.font_family ??
+    style.ff ??
+    importedFontFamily(style.font_name) ??
+    GRID_FONT_FAMILY
+  );
+}
+export function gridCanvasFont(style = {}) {
+  const configured = style.font_size ?? style.fs,
+    points =
+      Number.isFinite(configured) && configured > 0
+        ? configured
+        : DEFAULT_FONT_POINTS,
+    pixels = Number(((points * 96) / 72).toFixed(4)),
+    family = gridFontFamily(style);
+  return [
+    (style.italic ?? style.it) && "italic",
+    (style.bold ?? style.bl) && "bold",
+    `${pixels}px`,
+    family,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+function generalLayout(options) {
+  const config =
+    typeof options === "number" ? { width: options } : (options ?? {});
+  return {
+    width: Number.isFinite(config.width)
+      ? Math.max(0, config.width)
+      : undefined,
+    font: gridCanvasFont(config.style),
+    measureText:
+      config.measureText ?? (environmentMeasureText ??= createTextMeasurer()),
+  };
 }
 function patternPreview(pattern, value) {
   return getPatternPreview(pattern, value).result;
 }
-function usablePreview(pattern, value, budget) {
+function fitsGeneral(result, layout) {
+  if (result.length > GENERAL_MAX_CHARS) return false;
+  return (
+    layout.width === undefined ||
+    layout.measureText(result, layout.font) + GENERAL_CELL_PADDING <=
+      layout.width
+  );
+}
+function usablePreview(pattern, value, layout) {
   const result = patternPreview(pattern, value);
   const trailingDot = result.endsWith(".") || /\.E[+-]/.test(result);
-  return result.length <= budget && !trailingDot ? result : null;
+  return fitsGeneral(result, layout) && !trailingDot ? result : null;
 }
-function plainPattern(value, budget) {
+function plainPattern(value, layout) {
   if (Number.isInteger(value))
-    return usablePreview("0", value, budget) === null ? null : "0";
-  for (let decimals = budget; decimals >= 0; decimals--) {
+    return usablePreview("0", value, layout) === null ? null : "0";
+  for (let decimals = GENERAL_MAX_CHARS; decimals >= 0; decimals--) {
     const pattern = decimals ? `0.${"#".repeat(decimals)}` : "0";
-    const result = usablePreview(pattern, value, budget);
+    const result = usablePreview(pattern, value, layout);
     if (result !== null && Number(result) !== 0) return pattern;
   }
   return null;
 }
-function scientificPattern(value, budget) {
-  for (let decimals = budget; decimals >= 0; decimals--) {
+function scientificPattern(value, layout) {
+  for (let decimals = GENERAL_MAX_CHARS; decimals >= 0; decimals--) {
     const pattern = decimals ? `0.${"#".repeat(decimals)}E+00` : "0E+00";
-    if (usablePreview(pattern, value, budget) !== null) return pattern;
+    if (usablePreview(pattern, value, layout) !== null) return pattern;
   }
-  const hashes = `"${"#".repeat(budget)}"`;
+  let count = GENERAL_MAX_CHARS;
+  while (count > 1 && !fitsGeneral("#".repeat(count), layout)) count--;
+  const hashes = `"${"#".repeat(count)}"`;
   return `${hashes};${hashes}`;
 }
-export function generalPattern(value, width) {
+export function generalPattern(value, options = {}) {
   const magnitude = Math.abs(value);
-  const budget = generalBudget(width);
+  const layout = generalLayout(options);
   if (magnitude >= 1e11 || (magnitude > 0 && magnitude < 1e-9))
-    return scientificPattern(value, budget);
-  return plainPattern(value, budget) ?? scientificPattern(value, budget);
+    return scientificPattern(value, layout);
+  return plainPattern(value, layout) ?? scientificPattern(value, layout);
 }
 export function formatNumber(value, format = "General", options = {}) {
   if (value === null || value === undefined) return "";
@@ -396,6 +494,6 @@ export function formatNumber(value, format = "General", options = {}) {
   if (typeof value !== "number") return String(value);
   if (!Number.isFinite(value)) return String(value);
   const pattern =
-    format === "General" ? generalPattern(value, options.width) : format;
+    format === "General" ? generalPattern(value, options) : format;
   return patternPreview(pattern, value);
 }

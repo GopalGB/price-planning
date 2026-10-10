@@ -1,4 +1,12 @@
-import { parseInput, MAX_OP_CELLS, generalPattern, editableInput } from "./model.mjs";
+import {
+  parseInput,
+  MAX_OP_CELLS,
+  generalPattern,
+  gridFontFamily,
+  GRID_NUMBER_HORIZONTAL_PADDING,
+  editableInput,
+} from "./model.mjs";
+export const GRID_DEFAULT_COLUMN_WIDTH = 64;
 export function inputFill(cell, style, enabled = true) {
   return enabled && editableInput(cell) && !style?.fill
     ? "#EAF2FB"
@@ -45,7 +53,7 @@ export function commandUndo(id, editing) {
         : null;
 }
 export function renderCell(cell, style, options = {}) {
-  const { inputHighlight = true, width } = options;
+  const { inputHighlight = true, width, measureText } = options;
   // The server's formula text is deliberately absent from Univer's model.
   const rendered = {
     v: typeof cell.v === "object" && cell.v !== null ? cell.v.error : cell.v,
@@ -55,7 +63,13 @@ export function renderCell(cell, style, options = {}) {
   if (typeof cell.v === "number" && (style?.nf ?? "General") === "General")
     rendered.s = {
       ...styleData(style ?? {}),
-      n: { pattern: generalPattern(cell.v, width) },
+      pd: {
+        t: 0,
+        b: 2,
+        l: GRID_NUMBER_HORIZONTAL_PADDING,
+        r: GRID_NUMBER_HORIZONTAL_PADDING,
+      },
+      n: { pattern: generalPattern(cell.v, { width, style, measureText }) },
     };
   if (inputHighlight && editableInput(cell) && !style?.fill)
     rendered.s = {
@@ -68,10 +82,10 @@ export function displayWidth(sheet, { r, c }) {
   const merge = (sheet?.merges ?? []).find(
     ([startRow, startCol]) => startRow === r && startCol === c,
   );
-  if (!merge) return sheet?.col_widths?.[c] ?? 96;
+  if (!merge) return sheet?.col_widths?.[c] ?? GRID_DEFAULT_COLUMN_WIDTH;
   let width = 0;
   for (let column = c; column <= merge[3]; column++)
-    width += sheet?.col_widths?.[column] ?? 96;
+    width += sheet?.col_widths?.[column] ?? GRID_DEFAULT_COLUMN_WIDTH;
   return width;
 }
 export function styleData(style) {
@@ -90,7 +104,7 @@ export function styleData(style) {
     bl: style.bold ? 1 : 0,
     it: style.italic ? 1 : 0,
     fs: style.font_size ?? 11,
-    ff: "Segoe UI, system-ui, Arial, sans-serif",
+    ff: gridFontFamily(style),
     ht: align[style.align],
     vt: vertical[style.valign],
     tb: style.wrap ? 2 : 1,
@@ -99,7 +113,7 @@ export function styleData(style) {
   };
 }
 export function makeSnapshot(meta, sheetIndex, options = {}) {
-  const { rows = {}, inputHighlight = true } = options;
+  const { rows = {}, inputHighlight = true, measureText } = options;
   const sheet = meta.sheets.find((s) => s.index === sheetIndex),
     id = `s${sheet.index}`,
     styles = new Map(
@@ -114,6 +128,7 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
       cellData[r][c] = renderCell(cell, styles.get(String(cell.s)), {
         inputHighlight,
         width: displayWidth(sheet, { r: Number(r), c: Number(c) }),
+        measureText,
       });
   }
   for (const [r, h] of Object.entries(sheet.row_heights ?? {}))
@@ -140,7 +155,7 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
         rowCount: sheet.rows,
         columnCount: sheet.cols,
         defaultRowHeight: 28,
-        defaultColumnWidth: 96,
+        defaultColumnWidth: GRID_DEFAULT_COLUMN_WIDTH,
         cellData,
         rowData,
         columnData,

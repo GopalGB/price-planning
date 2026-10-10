@@ -12,6 +12,7 @@ import {
   cellName,
   selectionStats,
   formatNumber,
+  createTextMeasurer,
   editableInput,
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
@@ -66,6 +67,7 @@ export class PlanningGrid {
     this.copyToken = 0;
     this.goToToken = 0;
     this.loadTokens = new Map();
+    this.measureText = createTextMeasurer();
     this.controller = new EditController({
       store: this.store,
       api,
@@ -89,7 +91,7 @@ export class PlanningGrid {
           formulaBar: false,
           footer: false,
           contextMenu: false,
-          customFontFamily: "Segoe UI",
+          customFontFamily: [{ label: "Calibri", value: "Calibri" }],
           formula: { initialFormulaComputing: CalculationMode.NO_CALCULATION },
         }),
       ],
@@ -411,7 +413,10 @@ export class PlanningGrid {
     this.internal++;
     try {
       this.u.createWorkbook(
-        makeSnapshot(this.meta, index, { inputHighlight: this.inputHighlight }),
+        makeSnapshot(this.meta, index, {
+          inputHighlight: this.inputHighlight,
+          measureText: this.measureText,
+        }),
       );
     } finally {
       this.internal--;
@@ -560,6 +565,7 @@ export class PlanningGrid {
             this.meta.sheets.find((sheet) => sheet.index === this.sheet),
             { r, c },
           ),
+          measureText: this.measureText,
         }),
         signature = JSON.stringify(next);
       if (this.rendered.get(`${r}:${c}`) === signature) continue;

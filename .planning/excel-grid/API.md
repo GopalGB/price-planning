@@ -35,7 +35,7 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
 - `GET /api/copies/{id}/workbook` -> `{template: {hash, name}, input_revision, calculated_revision,
    sheets: [{index, name, hidden, rows, cols, freeze: {rows, cols}, col_widths: {c: px}, row_heights: {r: px},
    hidden_rows: [r], hidden_cols: [c], merges: [[r1,c1,r2,c2]]}],
-   styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, border: {t,r,b,l}}]}`
+   styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, font_name, border: {t,r,b,l}}]}`
 - `GET /api/copies/{id}/sheets/{sheet}/rows?start={r}&count={n<=500}` ->
   `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, input?, input_value?, ver?, by?, at?}}}}`
   where `s` = style id, `k` = kind: `"i"` input (editable), `"f"` formula (locked), `"c"` constant (locked);

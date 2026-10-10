@@ -5,6 +5,7 @@ import { makeSnapshot, cellsFromMatrix, pasteChanges, fillChanges, inputFill } f
 import { CellStore, RowCache } from '../src/model.mjs';
 import { EditController } from '../src/client.mjs';
 import { PlanningGrid } from '../src/grid.mjs';
+import { legacyMeasureText } from './fixtures/legacy-text-measurement.mjs';
 
 function gridHarness(responses, styles = []) {
  const chips={"save-chip":{textContent:'',classList:{toggle:()=>{}}},"edit-status":{textContent:''}};
@@ -47,13 +48,13 @@ test('snapshot and paint literally display the synthetic format sweep',()=>{
   ['0.00;[Red](0.00)',-12.5,'(12.50)'],['@','text','text'],
  ];
  const styles=fixture.map(([nf],id)=>({id,nf})),rows={0:Object.fromEntries(fixture.map(([,v],index)=>[index,{v,s:index,k:'f'}]))};
- const widths={9:160,10:40},sheet={index:0,name:'Calc',rows:1,cols:fixture.length,col_widths:widths};
- const snapshot=makeSnapshot({template:{name:'Synthetic'},styles,sheets:[sheet]},0,{rows});
+ const widths={0:96,1:96,2:96,3:96,4:96,5:96,6:96,7:96,8:96,9:160,10:40},sheet={index:0,name:'Calc',rows:1,cols:fixture.length,col_widths:widths};
+ const snapshot=makeSnapshot({template:{name:'Synthetic'},styles,sheets:[sheet]},0,{rows,measureText:legacyMeasureText});
  const cells=snapshot.sheets.s0.cellData[0];
  fixture.forEach(([,v,want],index)=>assert.equal(displayed(cells[index],snapshot.styles).result,want));
  assert.equal(displayed(cells[22],snapshot.styles).color,'red');
  fixture.forEach(([,v],index)=>assert.equal(cells[index].v,v));
- const {grid,mutations}=gridHarness(new Map(),styles);grid.meta.sheets=[sheet];grid.store.merge(rows,0);grid.paint();
+ const {grid,mutations}=gridHarness(new Map(),styles);grid.meta.sheets=[sheet];grid.measureText=legacyMeasureText;grid.store.merge(rows,0);grid.paint();
  const painted=mutations.at(-1)[0];
  fixture.forEach(([,v,want],index)=>assert.equal(displayed(painted[index],snapshot.styles).result,want));
  assert.equal(displayed(painted[22],snapshot.styles).color,'red');

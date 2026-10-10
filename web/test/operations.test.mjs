@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildOp, invertOp, rollback, CellStore, parseInput, formatNumber, selectionStats, RowCache } from '../src/model.mjs';
+import { legacyMeasureText } from './fixtures/legacy-text-measurement.mjs';
 
 const seed = () => new CellStore({0:{1:{v:10,k:'i',ver:4},2:{v:20,k:'f',s:1}}}, 0);
 test('a formula bar draft retains its original version after a concurrent update',()=>{
@@ -69,7 +70,7 @@ test('General known widths cap output and never round a nonzero value to zero', 
   [123456789,60,'1E+08'],[-123456789,72,'-1E+08'],
  ];
  for(const [value,width,want] of cases)
-  assert.equal(formatNumber(value,'General',{width}),want);
+  assert.equal(formatNumber(value,'General',{width,measureText:legacyMeasureText}),want);
 });
 test('cache retains at most three 256-row blocks and identifies evictions', () => {
  const cache=new RowCache(3); assert.equal(cache.start(300),256);

@@ -28,7 +28,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 4
+IMPORT_VERSION = 5
 
 
 class TemplateImportError(Exception):
@@ -149,6 +149,13 @@ def _color(node: ET.Element | None) -> str | None:
     return None
 
 
+def _font_name(font: ET.Element | None) -> str | None:
+    if font is None:
+        return None
+    name = font.find(f"{NS}name")
+    return name.get("val") if name is not None else None
+
+
 def _component(items: list[ET.Element], index: int) -> ET.Element | None:
     return items[index] if 0 <= index < len(items) else None
 
@@ -190,6 +197,7 @@ def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
         "id": index, "nf": custom.get(num_id, BUILTIN_FORMATS.get(num_id, "General")),
         "bold": font is not None and font.find(f"{NS}b") is not None,
         "italic": font is not None and font.find(f"{NS}i") is not None,
+        "font_name": _font_name(font),
         "color": _color(font.find(f"{NS}color") if font is not None else None),
         "fill": _color(fill.find(f"{NS}patternFill/{NS}fgColor") if fill is not None else None),
         "align": alignment.get("horizontal") if alignment is not None else None,
@@ -219,7 +227,7 @@ def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
 def _default_style() -> dict:
     return {"id": 0, "nf": "General", "bold": False, "italic": False, "color": None,
             "fill": None, "align": None, "valign": None, "wrap": False, "font_size": None,
-            "locked": True,
+            "font_name": None, "locked": True,
             "border": {"t": None, "r": None, "b": None, "l": None}}
 
 
