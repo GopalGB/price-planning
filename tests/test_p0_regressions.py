@@ -258,7 +258,9 @@ class Finding09(unittest.TestCase):
                     shim.mkdir()
                     trace = root / 'argv.txt'
                     script = shim / launcher
-                    script.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > "{trace}"\nexit {code}\n')
+                    # Answer the hook's liveness probe; record and fail only the guard call.
+                    script.write_text('#!/bin/sh\ncase " $* " in *" -c "*) exit 0;; esac\n'
+                                      f'printf "%s\\n" "$@" > "{trace}"\nexit {code}\n')
                     script.chmod(0o755)
                     git = shim / 'git'
                     git.write_text(f'#!/bin/sh\nprintf "%s\\n" "{root}"\n')
