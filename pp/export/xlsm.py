@@ -77,7 +77,9 @@ def _cell_xml(p, ref, style, v):
         return f'<{p}c r="{ref}"{s} t="b"><{p}v>{int(v)}</{p}v></{p}c>'
     if isinstance(v, (int, float)):
         return f'<{p}c r="{ref}"{s}><{p}v>{v!r}</{p}v></{p}c>'
-    text = escape(v, {'"': '&quot;'})
+    # ST_Xstring: protect literal _xHHHH_ first, then encode CR, which XML parsers would otherwise normalise away
+    text = re.sub(r'_(x[0-9A-Fa-f]{4}_)', r'_x005F_\1', v).replace('\r', '_x000D_')
+    text = escape(text, {'"': '&quot;'})
     return f'<{p}c r="{ref}"{s} t="inlineStr"><{p}is><{p}t xml:space="preserve">{text}</{p}t></{p}is></{p}c>'
 
 

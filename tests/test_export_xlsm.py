@@ -5,6 +5,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / 'ops'))
 import fixtures
 from openpyxl import load_workbook
+from openpyxl.utils.escape import unescape
 from pp.export import xlsm
 
 VBA = b'\xd0\xcf\x11\xe0fake-vba\x00\x01\x02' * 50
@@ -162,6 +163,16 @@ class ExportXlsm(unittest.TestCase):
         alt = self.with_sheet2('<sheetData/>')
         xlsm.export_xlsm(alt, [(1, 3, 1, 'only')], self.out)
         self.assertEqual(load_workbook(self.out)['Lookup']['B4'].value, 'only')
+
+    def test_xstring_escapes_round_trip(self):
+        texts = ['a\rb\r\nc', 'pre_x0041_post', '_x000D_', 'tab\tnl\nend']
+        self.export([(0, 1 + i, 1, t) for i, t in enumerate(texts)])
+        ws = load_workbook(self.out)['Inputs']
+        # openpyxl 3.1.5 returns cell text still ST_Xstring-encoded; decode with its own helper, as Excel does
+        self.assertEqual([unescape(ws.cell(2 + i, 2).value) for i in range(len(texts))], texts)
+        raw = members(self.out)['xl/worksheets/sheet1.xml'].decode()
+        self.assertIn('a_x000D_b_x000D_\nc', raw)
+        self.assertIn('pre_x005F_x0041_post', raw)
 
     def test_text_over_excel_limit_refused(self):
         with self.assertRaises(ValueError):
