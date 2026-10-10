@@ -106,12 +106,12 @@ def _qualified(sheet: str, row: int, col: int) -> str:
 
 
 @dataclass
-class FormualizerAdapter:
+class FormualizerEngine:
     workbook: object
     formula_cells: frozenset[tuple[int, int, int]]
 
     @classmethod
-    def load(cls, template_path: str | Path) -> "FormualizerAdapter":
+    def load(cls, template_path: str | Path) -> "FormualizerEngine":
         _require_version()
         try:
             path = Path(template_path)
@@ -166,3 +166,6 @@ def _normalize_address(address: str) -> str:
         return address
     normalized = sheet.strip("'").replace("''", "'")
     return f"{quote_sheetname(normalized)}!{cell}"
+
+
+FormualizerAdapter = FormualizerEngine

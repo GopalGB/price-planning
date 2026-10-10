@@ -1,5 +1,8 @@
 """Calculation adapters and process-pool primitives."""
 
-from .formualizer import FormualizerAdapter
+from .formualizer import FormualizerEngine
+from .protocol import Engine
 
-__all__ = ["FormualizerAdapter"]
+FormualizerAdapter = FormualizerEngine
+
+__all__ = ["Engine", "FormualizerEngine", "FormualizerAdapter"]
