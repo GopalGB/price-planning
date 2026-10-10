@@ -8,6 +8,11 @@ export function commandSelection(event,sheetId) {
  if(event.id!=='sheet.operation.set-selections'||p?.unitId!=='planning'||p.subUnitId!==sheetId)return null;
  return p.selections?.map(selection=>selection.range)??null;
 }
+export function advanceDetail(state,key,force=false) {
+ if(key===state.detailKey&&!force)return false;
+ state.detailKey=key;state.selectionToken++;state.validation=null;state.formulaText=undefined;state.detailRequested=false;return true;
+}
+export function commandUndo(id,editing) {return editing?null:id==='univer.command.undo'?'undo':id==='univer.command.redo'?'redo':null;}
 export function renderCell(cell) {
  // The server's formula text is deliberately absent from Univer's model.
  return {v:typeof cell.v==='object'&&cell.v!==null?cell.v.error:cell.v,s:String(cell.s),t:typeof cell.v==='number'?2:typeof cell.v==='boolean'?3:1};

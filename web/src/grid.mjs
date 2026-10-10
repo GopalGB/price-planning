@@ -4,7 +4,7 @@ import enUS from '@univerjs/preset-sheets-core/locales/en-US';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import { CellStore, RowCache, BLOCK_ROWS, parseInput, cellName, selectionStats, formatNumber } from './model.mjs';
 import { EditController } from './client.mjs';
-import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut, commandSelection } from './grid-data.mjs';
+import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut, commandSelection, advanceDetail, commandUndo } from './grid-data.mjs';
 import { escapeHTML as e, syncFormula, formulaDisplay } from './views.mjs';
 const $=id=>document.getElementById(id);
 export class PlanningGrid {
@@ -63,7 +63,8 @@ export class PlanningGrid {
   if(['sheet.command.clear-selection-content','sheet.command.clear-selection-all'].includes(id)){event.cancel=true;this.clearSelection();return;}
   if(id==='sheet.command.auto-fill'){event.cancel=true;if(params.applyType==='ONLY_FORMAT')return;this.attempt(()=>this.edit(fillChanges(this.store,{sheet:this.sheet,sourceRange:params.sourceRange,targetRange:params.targetRange,series:params.applyType!=='COPY'}),'fill'));return;}
   if(['sheet.command.copy-down','sheet.command.copy-right'].includes(id)){event.cancel=true;this.copyDirection(id.endsWith('right'));return;}
-  if(id==='univer.command.undo'||id==='univer.command.redo'){event.cancel=true;this.undo(id.endsWith('redo'));return;}
+  const undo=commandUndo(id,this.u.getActiveWorkbook()?.isCellEditing());
+  if(undo){event.cancel=true;this.undo(undo==='redo');return;}
   if(id.startsWith('sheet.mutation.')){event.cancel=true;return;}
   if(id.startsWith('sheet.command.')&&/(insert|delete|remove|merge|sort|move-range|set-range|set-worksheet|format|refill)/.test(id)){event.cancel=true;this.toast('Template structure and formatting are locked');}
  }
@@ -136,27 +137,27 @@ export class PlanningGrid {
  async selectionInfo(force=false) {
   if(this.closed||!this.worksheet)return;
   const selected=this.origin(),cell=this.store.get(selected.sheet,selected.r,selected.c),key=`${this.sheet}:${selected.r}:${selected.c}`;
-  const display=formulaDisplay(cell,key===this.detailKey?this.formulaText:undefined);
-  if(key!==this.detailKey)$('validation-controls')?.remove();
+  if(advanceDetail(this,key,force))$('validation-controls')?.remove();
+  const display=formulaDisplay(cell,this.formulaText);
   if(document.activeElement!==$('name-box'))$('name-box').value=cellName(selected);
   syncFormula($('formula-input'),{value:display,readOnly:this.copy.my_role==='viewer'||cell?.k!=='i'},document.activeElement===$('formula-input'));
   $('formula-note').textContent=cell?.k==='i'?(cell.by?`Input · ${cell.by.name} · ${new Date(cell.at).toLocaleString()}`:'Input cell'):'Locked template cell';
   this.stats();if(!cell)return;
-  if(key===this.detailKey&&!force)return;this.detailKey=key;this.formulaText=undefined;const token=++this.selectionToken;this.validation=null;
+  if(this.detailRequested)return;const token=this.selectionToken;this.detailRequested=true;
   try {
    const detail=await this.api.request(`/copies/${this.copy.id}/sheets/${this.sheet}/cell?r=${selected.r}&c=${selected.c}`);
    if(this.closed||token!==this.selectionToken)return;this.validation=detail.validation;
    this.formulaText=detail.formula;if(detail.k==='f')$('formula-input').value=detail.formula??'';
-   this.validationControl(detail.validation);if(!$('history-panel').hidden)await this.history(selected,token);
-  }catch(error){if(token===this.selectionToken)this.detailKey='';this.toast(error.message);}
+   this.validationControl(detail.validation,selected);if(!$('history-panel').hidden)await this.history(selected,token);
+  }catch(error){if(token===this.selectionToken)this.detailRequested=false;this.toast(error.message);}
  }
  stats() {
   const values=[];let partial=false;try{for(const range of this.selection)for(const cell of rangeCells(range,this.sheet)){const stored=this.store.get(cell.sheet,cell.r,cell.c);if(stored)values.push(stored.v);else partial=true;}}catch{partial=true;}
   const stats=selectionStats(values);$('selection-stats').textContent=`Sum ${formatNumber(stats.sum,'#,##0.00')}   Average ${formatNumber(stats.average,'#,##0.00')}   Count ${stats.count}${partial?' (loaded cells only)':''}`;
  }
- validationControl(validation) {
+ validationControl(validation,selected) {
   $('validation-controls')?.remove();if(this.copy.my_role==='viewer'||!validation)return;
-  const target={...this.origin()},box=document.createElement('span');box.id='validation-controls';box.className='validation-controls';
+  const target={...selected},box=document.createElement('span');box.id='validation-controls';box.className='validation-controls';
   if(validation.type==='list'&&Array.isArray(validation.list)) {
    const select=document.createElement('select');select.setAttribute('aria-label','Allowed cell values');select.innerHTML='<option value="">Choose value</option>'+validation.list.map(v=>`<option>${e(v)}</option>`).join('');select.onchange=()=>this.formulaEdit(select.value,false,{target,validation});box.append(select);
   }
