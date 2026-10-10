@@ -16,7 +16,7 @@ function template() {
 function syntheticCell(copy,sheet,r,c) {
  const overlay=copy.overrides.get(keyOf({sheet,r,c}));
  if(r===0)return {v:c===0?'Scenario':c===1?'Input':c===2?'Result (2 x input)':`Field ${c+1}`,s:3,k:'c',formula:null,validation:null};
- const input=copy.overrides.get(keyOf({sheet,r,c:1}))?.v??r;
+ const inputCell=copy.overrides.get(keyOf({sheet,r,c:1})),input=inputCell?inputCell.v:r;
  const result=typeof input==='number'?input*2:input===null?0:{error:'#VALUE!'};
  return {...{v:c===0?`Scenario ${r}`:c===1?r:c===2?result:c===3?(typeof input==='number'?input*3:result):0,s:c===1?1:c===0?0:2,k:c===1?'i':c===0?'c':'f',ver:0},...overlay,formula:c>=2?`=B${r+1}*${c===2?2:c===3?3:0}`:null,validation:c===1?{type:'decimal'}:null};
 }

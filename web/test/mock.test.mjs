@@ -34,6 +34,9 @@ test('mock API enforces atomic edits, versions, deduplication, roles, fork and W
  const fork=(await req(`/copies/${copy.id}/fork`,'POST',{name:'Fork'})).copy;
  assert.equal((await req(`/copies/${fork.id}/sheets/0/cell?r=1&c=1`)).v,25);
  assert.equal((await req(`/copies/${copy.id}/history?sheet=0&r=1&c=1`)).entries.length,1);
+ assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{op_id:'clear',action:'clear',cells:[{...cells[0],v:null,expected_version:1}]})).status,200);
+ assert.equal((await req(`/copies/${copy.id}/sheets/0/cell?r=1&c=2`)).v,0);
+ assert.equal((await req(`/copies/${fork.id}/sheets/0/cell?r=1&c=1`)).v,25);
  const ownerCookie=cookie,ownerCsrf=csrf;
  await req('/auth/signup','POST',{email:'viewer@example.test',name:'Viewer',password:'synthetic-password'});
  await req('/auth/login','POST',{email:'viewer@example.test',password:'synthetic-password'});
