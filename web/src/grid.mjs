@@ -661,9 +661,21 @@ export class PlanningGrid {
       select.setAttribute("aria-label", "Allowed cell values");
       select.innerHTML =
         '<option value="">Choose value</option>' +
-        validation.list.map((v) => `<option>${e(v)}</option>`).join("");
-      select.onchange = () =>
-        this.formulaEdit(select.value, false, { target, validation });
+        validation.list
+          .map((v, index) => `<option value="${index}">${e(v)}</option>`)
+          .join("");
+      select.onchange = () => {
+        const index = Number(select.value);
+        if (
+          select.value !== "" &&
+          Number.isInteger(index) &&
+          index >= 0 &&
+          index < validation.list.length
+        )
+          this.attempt(() =>
+            this.validatedEdit(validation.list[index], { target, validation }),
+          );
+      };
       box.append(select);
     }
     if (validation.type === "date") {
@@ -701,31 +713,33 @@ export class PlanningGrid {
     $("formula-input").value = formulaDisplay(cell, this.formulaText);
   }
   formulaEdit(text, useDraft = false, context = null) {
-    this.attempt(async () => {
-      const v = parseInput(text),
-        rule = context?.validation ?? this.validation;
-      if (rule?.list && !rule.list.includes(v))
-        throw new Error("Choose a permitted value");
-      if (
-        typeof v === "number" &&
-        ((rule?.min !== undefined && v < rule.min) ||
-          (rule?.max !== undefined && v > rule.max))
-      )
-        throw new Error("Value is outside the allowed range");
-      const result = await this.edit(
-        [
-          {
-            ...(useDraft && this.formulaDraft
-              ? this.formulaDraft
-              : (context?.target ?? this.origin())),
-            v,
-          },
-        ],
-        "edit",
-      );
-      if (useDraft && result) this.cancelFormulaDraft();
-      return result;
-    });
+    this.attempt(() =>
+      this.validatedEdit(parseInput(text), { ...context, useDraft }),
+    );
+  }
+  async validatedEdit(v, context = {}) {
+    const rule = context.validation ?? this.validation;
+    if (rule?.list && !rule.list.includes(v))
+      throw new Error("Choose a permitted value");
+    if (
+      typeof v === "number" &&
+      ((rule?.min !== undefined && v < rule.min) ||
+        (rule?.max !== undefined && v > rule.max))
+    )
+      throw new Error("Value is outside the allowed range");
+    const result = await this.edit(
+      [
+        {
+          ...(context.useDraft && this.formulaDraft
+            ? this.formulaDraft
+            : (context.target ?? this.origin())),
+          v,
+        },
+      ],
+      "edit",
+    );
+    if (context.useDraft && result) this.cancelFormulaDraft();
+    return result;
   }
   async hydrate(cells) {
     const needed = new Map();
