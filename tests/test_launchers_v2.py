@@ -9,7 +9,8 @@ class LaunchersV2(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='pp launcher ')
         self.repo = Path(self.tmp.name)
         shutil.copy(ROOT / 'run_v2.sh', self.repo)
-        shutil.copytree(ROOT / 'pp', self.repo / 'pp', ignore=shutil.ignore_patterns('__pycache__'))
+        for pkg in ('pp', 'app'):
+            shutil.copytree(ROOT / pkg, self.repo / pkg, ignore=shutil.ignore_patterns('__pycache__'))
         (self.repo / 'ops').mkdir()
         # stub installer: the launcher only needs the venv interpreter path on stdout
         (self.repo / 'ops' / 'install_env.py').write_text('import sys\nprint(sys.executable)\n')

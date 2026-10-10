@@ -11,6 +11,8 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.runtime import DEFAULTS, read_settings, resolve_data_dir, validate_settings
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -73,22 +75,36 @@ def restore(backup_path, new_dir):
         raise ValueError('backup checksum does not match its record; the file is damaged')
     new_dir.mkdir(parents=True, exist_ok=True)
     target = new_dir / 'planning.db'
-    shutil.copyfile(backup_path, target)  # the backup is a closed file, not the live database
+    fd, staging = tempfile.mkstemp(prefix='.restore-', suffix='.partial', dir=new_dir)
+    os.close(fd)
+    staging = Path(staging)
     try:
-        if _sha256(target) != expected:
+        shutil.copyfile(backup_path, staging)  # the backup is a closed file, not the live database
+        if _sha256(staging) != expected:
             raise ValueError('restored copy does not match the backup checksum')
-        with closing(sqlite3.connect(target)) as con:
+        with closing(sqlite3.connect(staging.as_uri() + '?mode=ro', uri=True)) as con:
             _verify(con)
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
+        try:
+            os.link(staging, target)  # atomic publish that never overwrites (NTFS, APFS, ext4)
+        except FileExistsError:
+            raise ValueError('%s already exists; nothing was overwritten' % target) from None
+    finally:
+        staging.unlink(missing_ok=True)
     return target
+
+
+def default_db(settings_path=ROOT / 'settings.json'):
+    """Same data folder the server uses: DATA_DIR, then settings.json data_dir, then <repo>/data."""
+    settings_path = Path(settings_path)
+    cfg = read_settings(settings_path) if settings_path.exists() else validate_settings(DEFAULTS)
+    return resolve_data_dir(cfg) / 'planning.db'
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m pp.backup', description='Verified SQLite backup and restore.')
-    default_db = Path(os.environ.get('DATA_DIR', ROOT / 'data')) / 'planning.db'
-    parser.add_argument('--db', type=Path, default=default_db, help='live database (default: %(default)s)')
+    parser.add_argument('--db', type=Path, help='live database (default: the server data folder from DATA_DIR, '
+                        'settings.json data_dir, or <repo>/data)')
+    parser.add_argument('--settings', type=Path, default=ROOT / 'settings.json', help='settings file (default: %(default)s)')
     parser.add_argument('--dest', type=Path, help='backup folder (default: <repo>/backups); with --restore, a new empty folder')
     parser.add_argument('--restore', type=Path, metavar='BACKUP', help='restore this backup file into --dest')
     parser.add_argument('--backup', action='store_true', help=argparse.SUPPRESS)  # run_v2 launchers pass it through
@@ -99,7 +115,7 @@ def main(argv=None):
                 parser.error('--restore needs --dest (a new empty folder)')
             print(restore(args.restore, args.dest))
         else:
-            print(backup(args.db, args.dest or ROOT / 'backups'))
+            print(backup(args.db or default_db(args.settings), args.dest or ROOT / 'backups'))
     except (ValueError, OSError) as e:
         print('Backup error: %s' % e, file=sys.stderr)
         return 1

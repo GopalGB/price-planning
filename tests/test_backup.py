@@ -1,4 +1,5 @@
-import hashlib, json, sqlite3, subprocess, sys, tempfile, unittest
+import errno, hashlib, json, os, sqlite3, subprocess, sys, tempfile, unittest
+from unittest import mock
 from contextlib import closing
 from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,6 +77,62 @@ class Backup(unittest.TestCase):
         with self.assertRaises(ValueError):
             bk.restore(out, self.d / 'new2')
         self.assertFalse((self.d / 'new2' / 'planning.db').exists())
+
+    def test_restore_copy_failure_leaves_nothing_and_retry_works(self):
+        out = bk.backup(self.db, self.d / 'backups')
+        def boom(src, dst):
+            Path(dst).write_bytes(b'partial')
+            raise OSError(errno.ENOSPC, 'No space left on device')
+        with mock.patch.object(bk.shutil, 'copyfile', side_effect=boom):
+            with self.assertRaises(OSError):
+                bk.restore(out, self.d / 'new')
+        self.assertEqual(list((self.d / 'new').iterdir()), [])
+        self.assertEqual(rows(bk.restore(out, self.d / 'new')), ['a', 'b'])
+        self.assertEqual([p.name for p in (self.d / 'new').iterdir()], ['planning.db'])
+
+    def test_second_restore_refuses_and_keeps_existing(self):
+        out = bk.backup(self.db, self.d / 'backups')
+        target = bk.restore(out, self.d / 'new')
+        before = target.read_bytes()
+        with self.assertRaises(ValueError):
+            bk.restore(out, self.d / 'new')
+        self.assertEqual(target.read_bytes(), before)
+        # publish never overwrites, even if the target appears after the emptiness check
+        real_copy = bk.shutil.copyfile
+        def racer(src, dst):
+            real_copy(src, dst)
+            (self.d / 'race' / 'planning.db').write_bytes(b'someone else')
+        with mock.patch.object(bk.shutil, 'copyfile', side_effect=racer):
+            with self.assertRaises(ValueError):
+                bk.restore(out, self.d / 'race')
+        self.assertEqual((self.d / 'race' / 'planning.db').read_bytes(), b'someone else')
+        self.assertEqual([p.name for p in (self.d / 'race').iterdir()], ['planning.db'])
+
+    def test_default_db_follows_server_precedence(self):
+        configured = self.d / 'configured'
+        settings = self.d / 'settings.json'
+        settings.write_text(json.dumps({'data_dir': str(configured)}))
+        env = {k: v for k, v in os.environ.items() if k != 'DATA_DIR'}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(bk.default_db(settings), configured.resolve() / 'planning.db')
+            self.assertEqual(bk.default_db(self.d / 'missing.json'), (bk.ROOT / 'data').resolve() / 'planning.db')
+            settings.write_text(json.dumps({'data_dir': 'rel-data'}))
+            self.assertEqual(bk.default_db(settings), (bk.ROOT / 'rel-data').resolve() / 'planning.db')
+            with mock.patch.dict(os.environ, {'DATA_DIR': str(self.d / 'envdir')}):
+                self.assertEqual(bk.default_db(settings), (self.d / 'envdir').resolve() / 'planning.db')
+
+    def test_cli_backs_up_configured_db_not_default(self):
+        configured = self.d / 'configured'; configured.mkdir()
+        with closing(sqlite3.connect(configured / 'planning.db')) as con:
+            con.execute('CREATE TABLE item (id INTEGER PRIMARY KEY, v TEXT)')
+            con.execute("INSERT INTO item (v) VALUES ('configured')"); con.commit()
+        settings = self.d / 'settings.json'
+        settings.write_text(json.dumps({'data_dir': str(configured)}))
+        env = {k: v for k, v in os.environ.items() if k != 'DATA_DIR'}
+        made = subprocess.run([sys.executable, '-m', 'pp.backup', '--settings', str(settings), '--dest', str(self.d / 'bk')],
+                              cwd=ROOT, capture_output=True, text=True, env=env)
+        self.assertEqual(made.returncode, 0, made.stderr)
+        self.assertEqual(rows(made.stdout.strip().splitlines()[-1]), ['configured'])
 
     def test_cli(self):
         run = lambda *a: subprocess.run([sys.executable, '-m', 'pp.backup', *a], cwd=ROOT, capture_output=True, text=True)
