@@ -73,7 +73,7 @@ def _share_urls(bind: str, port: int, origins: tuple[str, ...]) -> tuple[str, ..
 
 def _print_share_urls(bind: str, port: int, origins: tuple[str, ...]) -> None:
     for origin in _share_urls(bind, port, origins):
-        print(f"Share with your team: {origin}")
+        print(f"Share with your team: {origin}", flush=True)
 
 
 def main(argv=None) -> int:

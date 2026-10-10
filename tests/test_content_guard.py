@@ -113,3 +113,22 @@ class StubInterpreterTests(unittest.TestCase):
             r = subprocess.run(['/bin/sh', '.githooks/pre-commit'], cwd=repo, env=env, capture_output=True, text=True)
             self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
             self.assertIn('BLOCKED bad.xlsx', r.stdout)
+
+
+class AllModeTests(unittest.TestCase):
+    def test_all_skips_tracked_files_deleted_in_worktree(self):
+        # A rebuild deletes old hashed bundle files before they are staged; --all must not crash.
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d)
+            (repo / 'ops').mkdir()
+            for rel in ('ops/content_guard.py', 'ops/large_file_allowlist.json'):
+                (repo / rel).write_bytes((ROOT / rel).read_bytes())
+            (repo / 'present.txt').write_text('clean\n')
+            shim = repo / 'bin'
+            shim.mkdir()
+            (shim / 'git').write_text('#!/bin/sh\nprintf "gone.js\\0present.txt\\0"\n')
+            (shim / 'git').chmod(0o755)
+            env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run([sys.executable, 'ops/content_guard.py', '--all'], cwd=repo,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

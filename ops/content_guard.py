@@ -100,7 +100,8 @@ def main(argv=None):
         paths = [path for path in _git('diff', '--cached', '--name-only', '--diff-filter=d', '-z').decode().split('\0') if path]
         read = lambda path: _git('show', f':{path}')
     else:
-        paths = [path for path in _git('ls-files', '-z').decode().split('\0') if path]
+        # tracked files deleted in the worktree (e.g. replaced bundle chunks) are not content
+        paths = [path for path in _git('ls-files', '-z').decode().split('\0') if path and (ROOT / path).exists()]
         read = lambda path: (ROOT / path).read_bytes()
     deny_file = ROOT / '.content-denylist'
     deny = deny_file.read_text(encoding='utf-8-sig').splitlines() if deny_file.exists() else []
