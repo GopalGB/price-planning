@@ -16,12 +16,13 @@ import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
 
+from ..values import validate_text
+
 CHUNK = 1 << 20
 MAX_ROWS, MAX_COLS = 1_048_576, 16_384
 MAIN_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
 REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
 PKG_REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
-ILLEGAL_XML = re.compile('[\x00-\x08\x0b\x0c\x0e-\x1f￾￿]')
 
 
 def col_letters(c):
@@ -49,10 +50,11 @@ def _check(cell):
         raise ValueError(f'cell outside the Excel grid: {cell!r}')
     if isinstance(v, float) and not math.isfinite(v):
         raise ValueError(f'non-finite number in {cell!r}')
-    if isinstance(v, str) and len(v) > 32767:
-        raise ValueError(f'text longer than the Excel cell limit of 32767 characters at {cell[:3]!r}')
-    if isinstance(v, str) and ILLEGAL_XML.search(v):
-        raise ValueError(f'text holds a character XML cannot store: {cell!r}')
+    if isinstance(v, str):
+        try:
+            validate_text(v)
+        except ValueError as exc:
+            raise ValueError(f'{exc} at {cell[:3]!r}') from exc
     if v is not None and not isinstance(v, (bool, int, float, str)):
         raise ValueError(f'unsupported value type {type(v).__name__} in {cell!r}')
 

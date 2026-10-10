@@ -134,10 +134,35 @@ class OperationAPIContractTests(unittest.TestCase):
                     "op_id": f"bad-action-{index}", "action": action,
                     "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
                 }, {"x-csrf-token": self.csrf})
-                self.assertEqual((response.status_code, response.json()["error"]), (422, "invalid"))
+                self.assertEqual(response.status_code, 422, response.body)
+                self.assertEqual(response.json()["error"], "invalid")
         after = self.fixture.count("pp_history"), self.fixture.count("pp_calc_jobs")
         self.assertEqual(after, before)
         self.assertEqual(self.fixture.copy()["input_revision"], 0)
+
+    def test_ops_rejects_unexportable_text_without_committing_any_cells(self):
+        """Every persisted string must be valid OOXML text before the transaction commits."""
+        invalid_values = ("a\x00b", "a\x01b", "a\ufffeb", "a\uffffb", "a\ud800b", "x" * 32768)
+        for index, value in enumerate(invalid_values):
+            with self.subTest(value=repr(value)):
+                fixture = APIFixture()
+                self.addCleanup(fixture.close)
+                client, csrf, _ = fixture.signup(f"invalid-{index}@example.test", "Invalid Text")
+                _, copy = fixture.make_copy(client, csrf)
+                before = tuple(fixture.count(table) for table in ("pp_overrides", "pp_history", "pp_ops"))
+
+                response = client.post(f"/api/copies/{copy['id']}/ops", {
+                    "op_id": f"reject-text-{index}", "action": "paste",
+                    "cells": [
+                        {"sheet": 0, "r": 1, "c": 1, "v": 99, "expected_version": 0},
+                        {"sheet": 0, "r": 2, "c": 1, "v": value, "expected_version": 0},
+                    ],
+                }, {"x-csrf-token": csrf})
+
+                self.assertEqual(response.status_code, 422, response.body)
+                self.assertEqual(response.json()["error"], "invalid")
+                self.assertEqual(tuple(fixture.count(table) for table in ("pp_overrides", "pp_history", "pp_ops")), before)
+                self.assertEqual(fixture.copy()["input_revision"], 0)
 
     def test_stale_precheck_cannot_recalculate_an_idempotent_retry(self):
         """The transaction that stores an op must decide whether calculation runs."""
