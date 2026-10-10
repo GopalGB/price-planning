@@ -68,4 +68,7 @@ function membersModal() {
 }
 $('modal-close').onclick=()=>$('modal').close();$('modal-cancel').onclick=()=>$('modal').close();
 $('home-button').onclick=()=>{if(user)safe(showHome());};$('logout-button').onclick=()=>safe(api.request('/auth/logout',{method:'POST'}).then(()=>{user=null;showAuth();}));
-try{const result=await api.request('/me');user=result.user;await showHome();}catch{showAuth();}
+async function bootstrap() {
+ try{const result=await api.request('/me');user=result.user;await showHome();}catch{showAuth();}
+}
+bootstrap();

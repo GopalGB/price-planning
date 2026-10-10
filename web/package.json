@@ -11,11 +11,11 @@
     "test:ego": "ego-browser nodejs < test/ego.mjs"
   },
   "dependencies": {
-    "@univerjs/presets": "1.0.4",
-    "@univerjs/preset-sheets-core": "1.0.4"
+    "@univerjs/preset-sheets-core": "1.0.4",
+    "@univerjs/presets": "1.0.4"
   },
   "devDependencies": {
-    "vite": "6.3.5",
-    "ws": "8.18.3"
+    "vite": "6.4.4",
+    "ws": "8.22.0"
   }
 }
