@@ -26,7 +26,7 @@ export class EditController {
   } catch(error) {
    if(accepted) {
     for(const cell of op.cells){const current=this.store.get(cell.sheet,cell.r,cell.c);if(current?.pending===op.op_id)delete current.pending;}
-    await this.refresh();this.toast(error.message);return false;
+    this.undoStack=[];this.redoStack=[];await this.refresh();this.toast(`${error.message}. Undo history was reset`);return false;
    }
    rollback(this.store,op);
    if(error.status===409 && error.cells)this.store.applyOp({input_revision:this.store.inputRevision,cells:error.cells.map(c=>({...c,v:c.current_v,ver:c.current_version}))});

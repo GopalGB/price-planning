@@ -1,4 +1,8 @@
 import { parseInput, MAX_OP_CELLS } from './model.mjs';
+export function serverUndoShortcut(event,typing,inGrid) {
+ if(!(event.ctrlKey||event.metaKey)||(typing&&!inGrid))return null;
+ const key=event.key.toLowerCase();return key==='z'?(event.shiftKey?'redo':'undo'):key==='y'?'redo':null;
+}
 export function renderCell(cell) {
  // The server's formula text is deliberately absent from Univer's model.
  return {v:typeof cell.v==='object'&&cell.v!==null?cell.v.error:cell.v,s:String(cell.s),t:typeof cell.v==='number'?2:typeof cell.v==='boolean'?3:1};

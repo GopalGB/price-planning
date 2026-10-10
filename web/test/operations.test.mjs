@@ -3,6 +3,12 @@ import assert from 'node:assert/strict';
 import { buildOp, invertOp, rollback, CellStore, parseInput, formatNumber, selectionStats, RowCache } from '../src/model.mjs';
 
 const seed = () => new CellStore({0:{1:{v:10,k:'i',ver:4},2:{v:20,k:'f',s:1}}}, 0);
+test('a formula bar draft retains its original version after a concurrent update',()=>{
+ const store=seed();store.applyOp({op_id:'remote',input_revision:2,cells:[{sheet:0,r:0,c:1,v:99,ver:5}]});
+ const op=buildOp(store,[{sheet:0,r:0,c:1,v:12,expected_version:4}]);
+ assert.equal(op.cells[0].expected_version,4);assert.equal(op.before['0:0:1'].v,99);
+ const cache=new RowCache();cache.put(0,0,{});assert.equal(cache.has(0,1),true);
+});
 test('edit carries expected versions and never accepts formulas or locked cells', () => {
  const store=seed();
  const op=buildOp(store,[{sheet:0,r:0,c:1,v:12}],'edit','one');

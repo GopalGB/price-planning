@@ -46,3 +46,9 @@ test('actual WS versions may increase by more than one',async()=>{
  controller=new EditController({store,copyId:'one',role:'editor',api,paint:()=>{},toast:()=>{}});
  await controller.edit([{sheet:0,r:0,c:1,v:1}]);assert.equal(store.get(0,0,1).ver,10);assert.equal(await controller.undo(),true);assert.equal(store.get(0,0,1).ver,20);
 });
+test('accepted operation without live confirmation resets undo history after authoritative refresh',async()=>{
+ const store=new CellStore({0:{1:{v:0,k:'i',ver:0}}});let controller,miss=false,refreshed=false;const toasts=[];
+ controller=new EditController({store,copyId:'one',role:'editor',api:{request:async(path,{body})=>{if(!miss)controller.remote({type:'op',op_id:body.op_id,input_revision:1,cells:body.cells.map(c=>({...c,ver:1}))});return {input_revision:2};}},paint:()=>{},toast:v=>toasts.push(v),refresh:async()=>{refreshed=true;}});
+ await controller.edit([{sheet:0,r:0,c:1,v:1}]);miss=true;controller.receipt=async()=>{throw new Error('Live confirmation missing');};
+ await controller.undo();assert.equal(refreshed,true);assert.equal(controller.undoStack.length,0);assert.equal(controller.redoStack.length,0);assert.match(toasts.at(-1),/history.*reset/i);
+});

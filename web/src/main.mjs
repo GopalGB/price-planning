@@ -43,7 +43,8 @@ async function openCopy(copy) {
  $('zoom').onchange=event=>grid.setZoom(parseInt(event.target.value,10)/100);
  $('hidden-button').onclick=()=>grid.toggleHidden();
  $('name-box').onkeydown=event=>{if(event.key==='Enter')safe(grid.goTo(event.target.value));};
- $('formula-input').onkeydown=event=>{if(event.key==='Enter'&&!event.target.readOnly){event.preventDefault();grid.formulaEdit(event.target.value);}if(event.key==='Escape')grid.selectionInfo();};
+ $('formula-input').onfocus=()=>grid.beginFormulaDraft();$('formula-input').onblur=()=>{grid.formulaDraft=null;};
+ $('formula-input').onkeydown=event=>{if(event.key==='Enter'&&!event.target.readOnly){event.preventDefault();grid.formulaEdit(event.target.value,true);}if(event.key==='Escape')grid.cancelFormulaDraft();};
 }
 function safe(promise){promise.catch(error=>{toast(error.message);if(error.status===401)showAuth();});}
 function modal(title,body,submit,label='Save') {

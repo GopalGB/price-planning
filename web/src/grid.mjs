@@ -4,7 +4,7 @@ import enUS from '@univerjs/preset-sheets-core/locales/en-US';
 import '@univerjs/preset-sheets-core/lib/index.css';
 import { CellStore, RowCache, BLOCK_ROWS, parseInput, cellName, selectionStats, formatNumber } from './model.mjs';
 import { EditController } from './client.mjs';
-import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence } from './grid-data.mjs';
+import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut } from './grid-data.mjs';
 import { escapeHTML as e, syncFormula } from './views.mjs';
 const $=id=>document.getElementById(id);
 export class PlanningGrid {
@@ -133,13 +133,13 @@ export class PlanningGrid {
   syncFormula($('formula-input'),{value:cell?.k==='f'&&key===this.detailKey?this.formulaText??display:display,readOnly:this.copy.my_role==='viewer'||cell?.k!=='i'},document.activeElement===$('formula-input'));
   $('formula-note').textContent=cell?.k==='i'?(cell.by?`Input · ${cell.by.name} · ${new Date(cell.at).toLocaleString()}`:'Input cell'):'Locked template cell';
   this.stats();if(!cell)return;
-  if(key===this.detailKey&&!force)return;this.detailKey=key;const token=++this.selectionToken;this.validation=null;
+  if(key===this.detailKey&&!force)return;this.detailKey=key;this.formulaText=undefined;const token=++this.selectionToken;this.validation=null;
   try {
    const detail=await this.api.request(`/copies/${this.copy.id}/sheets/${this.sheet}/cell?r=${selected.r}&c=${selected.c}`);
    if(this.closed||token!==this.selectionToken)return;this.validation=detail.validation;
    this.formulaText=detail.formula;if(detail.k==='f')$('formula-input').value=detail.formula??'';
    this.validationControl(detail.validation);if(!$('history-panel').hidden)await this.history(selected,token);
-  }catch(error){this.toast(error.message);}
+  }catch(error){if(token===this.selectionToken)this.detailKey='';this.toast(error.message);}
  }
  stats() {
   const values=[];let partial=false;try{for(const range of this.selection)for(const cell of rangeCells(range,this.sheet)){const stored=this.store.get(cell.sheet,cell.r,cell.c);if(stored)values.push(stored.v);else partial=true;}}catch{partial=true;}
@@ -154,10 +154,13 @@ export class PlanningGrid {
   if(validation.type==='date'){const input=document.createElement('input');input.type='date';input.setAttribute('aria-label','Cell date');input.onchange=()=>this.edit([{...this.origin(),v:(Date.parse(input.value)-Date.UTC(1899,11,30))/86400000}]);box.append(input);}
   document.querySelector('.formula-bar').append(box);
  }
- formulaEdit(text) {this.attempt(()=>{
+ beginFormulaDraft() {const origin=this.origin();this.formulaDraft={...origin,expected_version:this.store.get(origin.sheet,origin.r,origin.c)?.ver??0};}
+ cancelFormulaDraft() {this.beginFormulaDraft();const value=this.store.get(this.sheet,this.formulaDraft.r,this.formulaDraft.c)?.v;$('formula-input').value=value??'';}
+ formulaEdit(text,useDraft=false) {this.attempt(async()=>{
   const v=parseInput(text),rule=this.validation;if(rule?.list&&!rule.list.includes(v))throw new Error('Choose a permitted value');
   if(typeof v==='number'&&((rule?.min!==undefined&&v<rule.min)||(rule?.max!==undefined&&v>rule.max)))throw new Error('Value is outside the allowed range');
-  return this.edit([{...this.origin(),v}],'edit');
+  const result=await this.edit([{...(useDraft&&this.formulaDraft?this.formulaDraft:this.origin()),v}],'edit');
+  if(useDraft)this.cancelFormulaDraft();return result;
  });}
  async hydrate(cells) {
   const needed=new Map();
@@ -193,7 +196,8 @@ export class PlanningGrid {
  }
  keyDown(event) {
   if(this.closed||$('modal').open)return;const input=event.target.closest('input,textarea,select,[contenteditable=true]');
-  const mod=event.ctrlKey||event.metaKey,key=event.key.toLowerCase();
+  const mod=event.ctrlKey||event.metaKey,key=event.key.toLowerCase(),undo=serverUndoShortcut(event,!!input,!!event.target.closest('#grid'));
+  if(undo){event.preventDefault();event.stopImmediatePropagation();this.attempt(()=>this.undo(undo==='redo'));return;}
   if(mod&&key==='f'){event.preventDefault();event.stopImmediatePropagation();$('find-input').focus();return;}if(input)return;
   if(mod&&['z','y','d','r','c'].includes(key)){event.preventDefault();event.stopImmediatePropagation();if(key==='z'||key==='y')this.attempt(()=>this.undo(key==='y'||event.shiftKey));else if(key==='c')this.attempt(()=>this.copySelection());else this.copyDirection(key==='r');}
   if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();event.stopImmediatePropagation();this.clearSelection();}

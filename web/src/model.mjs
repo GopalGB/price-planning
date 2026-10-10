@@ -25,7 +25,9 @@ export function buildOp(store,changes,action='edit',id=crypto.randomUUID()) {
   if(seen.has(key)) throw new Error(`Duplicate cell ${cellName(change)}`); seen.add(key);
   if(!cell || cell.k!=='i') throw new Error(`${cellName(change)} is locked or not loaded`);
   validateValue(v); if(cell.pending) throw new Error(`${cellName(change)} is waiting for the server`);
-  before[key]={...cell}; return {sheet,r,c,v,expected_version:cell.ver??0};
+  const expected=change.expected_version??cell.ver??0;
+  if(!Number.isInteger(expected)||expected<0)throw new Error(`Invalid version at ${cellName(change)}`);
+  before[key]={...cell}; return {sheet,r,c,v,expected_version:expected};
  });
  return {op_id:id,action,cells,before};
 }
@@ -34,7 +36,7 @@ export function invertOp(store,op,id=crypto.randomUUID()) {
   const current=store.get(cell.sheet,cell.r,cell.c);
   const expected=op.afterVersions?.[keyOf(cell)]??(current?.lastOpId===op.op_id?current.ver:null);
   if(!current || current.pending || current.ver!==expected) throw new Error(`Undo is stale at ${cellName(cell)}; another edit followed yours`);
-  return {...cell,v:op.before[keyOf(cell)].v};
+  return {...cell,v:op.before[keyOf(cell)].v,expected_version:current.ver};
  });
  return buildOp(store,changes,'undo',id);
 }
