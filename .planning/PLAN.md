@@ -14,3 +14,17 @@ Goal: one coherent synthetic-tested v2 app using the merged tracks.
 
 Out of scope: company workbook access, real data, push, PR, merge, deployment, Windows/Excel/office LAN acceptance, paid Strix run.
 Evidence: ignored results-private/integration/. Preserve full outputs there.
+
+## Review round 2, approved 2026-10-11
+
+User GO-TOKEN approves STEP 0 and all A-E phases in this worktree on `feat/v2-integration`. Scope remains local, synthetic and without dependency changes or push.
+
+- [x] STEP 0: merge `feat/v2-frontend` with `--no-ff`, choose frontend conflicted sources, preserve round 1 semantics, format/rebuild, retain STATE headings. Success: merge `88188de`, Python 242 tests and web 47 tests green before A-E.
+- [x] A: XML-compatible input text and length validation, API edit/export implicit blank round trip. Files: pp/values.py, pp/export/xlsm.py, tests/v2. Validation failed as intended for five unsupported-text cases; focused four-test green. Track C implicit blank behavior already passed. Commit `7930a6b`.
+- [x] B: persisted session revalidation within every mutation transaction after body and pipeline waits. Files: pp/auth.py, pp/server.py, mutation services and tests/v2. Behavioral mutation red: 10 expected failures across revoked routes, expiry and pipeline wait; auth module green 9/9. Full logs B-mutation-red-2.log and B-green-2.log.
+- [x] C: coherent replay/rows read snapshots and monotonic WebSocket calculation state. Files: pp/db.py, pp/live.py, pp/workbook_service.py, tests/v2. Both query-boundary interleavings failed as intended, then passed. Evidence: C-red.log and C-green.log.
+- [x] D: temporal engine results in Excel serial units, honoring template date1904. Files: pp/engine/formualizer.py, tests/v2. Both 1900/1904 tests failed as intended, then passed; literal DATE/TIME/datetime and leap-day boundary expectations. Evidence: D-red.log and D-green.log.
+- [x] E: inherited fork input editor/time and history provenance; local edits clear origin markers. Files: pp/copies.py, pp/ops.py, pp/workbook_service.py, tests/v2. Alice/Bob attribution regression failed as intended; provenance pinned against later parent edits and local edit/undo markers pass. Evidence: E-red.log and E-green.log. Commit `79ea428`.
+- [x] Verify and handoff: exact `claude-opus-5-5` identity and final SHIP, fresh planner A-E and incremental SHIP, security-auditor with retained broad findings disclosed, hooked merge/code commits, Python 251/251 twice, web 47/47 twice, content guard exit 0. Review-discovered escaping blocker reproduced red and fixed in `3340943` (26 export tests green). Review round 2 appended; STATE headings intact. Full evidence in results-private/review-round-2; no push.
+
+Execution uses one model worker; controller handles authorized Git operations because linked-worktree metadata is outside the worker sandbox. Office/Excel/real-workbook/P5 acceptance remains outside this scope.

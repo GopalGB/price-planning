@@ -42,10 +42,16 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   input cells carry `ver` (cell version, 0 if never edited), `by` {id,name}, `at` ISO time of last edit.
 - `GET /api/copies/{id}/sheets/{sheet}/cell?r=&c=` -> `{v, s, k, ver?, by?, at?, formula: "=..." | null, validation: {type, list?, min?, max?} | null}`
 - `GET /api/copies/{id}/history?sheet=&r=&c=&limit=50` (cell when r,c given, else whole copy) ->
-  `{entries: [{op_id, revision, at, by: {id,name}, sheet, r, c, before, after, action: "edit"|"paste"|"fill"|"clear"|"undo"}]}`
+  `{entries: [{op_id, revision, at, by: {id,name}, sheet, r, c, before, after, action: "edit"|"paste"|"fill"|"clear"|"undo", origin?: {copy_id, name, revision}}]}`
+  Fork history includes parent entries only through the recorded fork revision, retaining their original editor and time.
+  Inherited entries carry `origin`; local entries omit it. Nested forks retain ancestor revision cutoffs.
+  A local edit or undo clears inherited markers on the current input without erasing its earlier history.
 
 ## Edits (owner/editor)
 - `POST /api/copies/{id}/ops {op_id, action, cells: [{sheet, r, c, v, expected_version}]}` (<= 10,000 cells)
+  Text longer than 32767 characters or containing unsupported XML characters returns 422 `invalid` atomically.
+  Unsupported characters include C0 controls except tab/LF/CR, U+FFFE/U+FFFF and lone surrogates.
+  Authenticated mutations revalidate their persisted, unexpired session inside the write transaction after body and pipeline waits.
   -> 200 `{op_id, input_revision, accepted: n}` | 409 `{error: "conflict", cells: [{sheet,r,c, current_version, current_v, by}]}`
   | 422 `{error: "locked"|"invalid", cells: [...], message}`. All-or-nothing. Values starting with `= + - @` as
   text are rejected 422 ("Formulas can't be typed into input cells"). Identical retry of an op_id returns the
