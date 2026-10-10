@@ -1,17 +1,17 @@
 import { createUniver, LocaleType, mergeLocales } from '@univerjs/presets';
 import { CalculationMode, UniverSheetsCorePreset } from '@univerjs/preset-sheets-core';
 import enUS from '@univerjs/preset-sheets-core/locales/en-US';
-import '@univerjs/preset-sheets-core/lib/index.css';
 import { CellStore, RowCache, BLOCK_ROWS, parseInput, cellName, selectionStats, formatNumber } from './model.mjs';
 import { EditController } from './client.mjs';
 import { makeSnapshot, renderCell, cellsFromMatrix, pasteChanges, fillChanges, rangeCells, clipboardValue, validPresence, serverUndoShortcut, commandSelection, advanceDetail, commandUndo } from './grid-data.mjs';
-import { escapeHTML as e, syncFormula, formulaDisplay } from './views.mjs';
+import { escapeHTML as e, syncFormula, formulaDisplay, editorDisplay } from './views.mjs';
 const $=id=>document.getElementById(id);
+const DETAIL_REFRESH_LIMIT=8;
 export class PlanningGrid {
  constructor({api,copy,meta,user,toast}) {
   Object.assign(this,{api,copy,meta,user,toast});this.sheet=meta.sheets.find(s=>!s.hidden).index;
   this.store=new CellStore();this.cache=new RowCache(3);this.store.inputRevision=meta.input_revision;this.store.calculatedRevision=meta.calculated_revision;
-  this.selection=[{startRow:1,endRow:1,startColumn:1,endColumn:1}];this.disposables=[];this.highlights=[];this.internal=0;this.closingEditor=false;this.closed=false;this.showHidden=false;this.loadQueue=Promise.resolve();this.rendered=new Map();this.wsReceived={op:0,calc:0};this.clientCalculations=0;this.selectionToken=0;
+  this.selection=[{startRow:1,endRow:1,startColumn:1,endColumn:1}];this.disposables=[];this.highlights=[];this.internal=0;this.closingEditor=false;this.closed=false;this.showHidden=false;this.loadQueue=Promise.resolve();this.rendered=new Map();this.wsReceived={op:0,calc:0};this.clientCalculations=0;this.selectionToken=0;this.generation=0;this.copyToken=0;this.goToToken=0;this.loadTokens=new Map();
   this.controller=new EditController({store:this.store,api,copyId:copy.id,role:copy.my_role,paint:cells=>this.paint(cells??[]),toast,refresh:()=>this.resync(),onDenied:()=>this.refreshRole()});
  }
  async start() {
@@ -41,7 +41,7 @@ export class PlanningGrid {
   this.on('Scroll',()=>this.scheduleVisible());
   this.on('CellHover',event=>{
    const cell=this.store.get(this.sheet,event.row,event.column);
-   $('grid').title=cell?.k==='i'?`${cellName({r:event.row,c:event.column})}: ${cell.by?`${cell.by.name} · ${new Date(cell.at).toLocaleString()}`:'No edits recorded'}`:'';
+   $('grid').title=cell?.k==='i'?`${cellName({r:event.row,c:event.column})}: ${editorDisplay(cell)||'No edits recorded'}`:'';
   });
   this.disposables.push(this.u.getFormula().calculationStart(()=>this.clientCalculations++));
  }
@@ -84,6 +84,7 @@ export class PlanningGrid {
  attempt(fn) {try{const result=fn();if(result?.catch)result.catch(error=>this.toast(error.message));}catch(error){this.toast(error.message);}}
  origin() {const s=this.selection[0];return {sheet:this.sheet,r:s.startRow,c:s.startColumn};}
  currentSheet() {return this.meta.sheets.find(s=>s.index===this.sheet);}
+ viewMatches(context) {return !this.closed&&this.sheet===context.sheet&&this.worksheet===context.worksheet&&this.generation===context.generation;}
  mutate(cellValue) {
   this.internal++;
   try {this.u.syncExecuteCommand('sheet.mutation.set-range-values',{unitId:'planning',subUnitId:`s${this.sheet}`,cellValue},{localOnly:true});}
@@ -92,10 +93,10 @@ export class PlanningGrid {
  async switchSheet(index) {
   if(this.controller.busy||this.preparing){this.toast('Wait for your edit to finish');return;}
   if(!this.meta.sheets.some(s=>s.index===index&&(!s.hidden||this.showHidden)))return;
-  this.sheet=index;this.detailKey='';this.cache=new RowCache(3);this.store.cells.clear();this.rendered.clear();this.selection=[{startRow:1,endRow:1,startColumn:1,endColumn:1}];
+  const generation=++this.generation;this.sheet=index;this.detailKey='';this.cache=new RowCache(3);this.loadTokens=new Map();this.store.cells.clear();this.store.resetBlocks();this.rendered.clear();this.selection=[{startRow:1,endRow:1,startColumn:1,endColumn:1}];
   if(this.u.getActiveWorkbook())this.u.disposeUnit('planning');
   this.internal++;try{this.u.createWorkbook(makeSnapshot(this.meta,index));}finally{this.internal--;}
-  this.worksheet=this.u.getActiveWorkbook().getSheetBySheetId(`s${index}`);this.tabs();await this.loadBlock(0,true);if(this.closed||this.sheet!==index)return;this.paint();this.worksheet.getRange(1,1).activate();this.selectionInfo();
+  this.worksheet=this.u.getActiveWorkbook().getSheetBySheetId(`s${index}`);const context={sheet:index,worksheet:this.worksheet,generation};this.tabs();await this.loadBlock(0,true);if(!this.viewMatches(context))return false;this.paint();context.worksheet.getRange(1,1).activate();this.selectionInfo();return true;
  }
  tabs() {
   $('sheet-tabs').innerHTML=this.meta.sheets.filter(s=>!s.hidden||this.showHidden).map(s=>`<button data-sheet="${s.index}" role="tab" aria-selected="${s.index===this.sheet}">${e(s.name)}${s.hidden?' (hidden)':''}</button>`).join('');
@@ -103,17 +104,19 @@ export class PlanningGrid {
  }
  toggleHidden() {this.showHidden=!this.showHidden;$('hidden-button').textContent=this.showHidden?'Hide hidden sheets':'Show hidden sheets';if(!this.showHidden&&this.currentSheet().hidden)this.attempt(()=>this.switchSheet(this.meta.sheets.find(s=>!s.hidden).index));else this.tabs();}
  async loadBlock(row,force=false) {
-  const start=this.cache.start(row),sheet=this.sheet,shape=this.currentSheet();if(this.closed||start<0||start>=shape.rows||(!force&&this.cache.has(sheet,start)))return;
+  const cache=this.cache,start=cache.start(row),sheet=this.sheet,shape=this.currentSheet(),context={sheet,worksheet:this.worksheet,generation:this.generation};if(this.closed||start<0||start>=shape.rows||(!force&&cache.has(sheet,start)))return;
+  this.loadTokens??=new Map();const key=`${sheet}:${start}`,token=(this.loadTokens.get(key)??0)+1;this.loadTokens.set(key,token);const current=()=>this.viewMatches(context)&&cache===this.cache&&this.loadTokens.get(key)===token;
   const path=`/copies/${this.copy.id}/sheets/${sheet}/rows?start=${start}&count=${Math.min(BLOCK_ROWS,shape.rows-start)}`;
   let data=await this.api.request(path);
-  if(data.calculated_revision<this.store.calculatedRevision)data=await this.api.request(path);
+  if(!current())return false;if(data.calculated_revision<this.store.calculatedRevision)data=await this.api.request(path);
+  if(!current())return false;
   if(data.calculated_revision<this.store.calculatedRevision)return;
-  if(this.closed||this.sheet!==sheet)return;this.cache.put(sheet,start,data);
-  for(const evicted of this.cache.lastEvicted) {
+  cache.put(sheet,start,data);this.store.registerBlock(sheet,start,data.calculated_revision);
+  for(const evicted of cache.lastEvicted) {
    const cleared={};for(let r=evicted.start;r<Math.min(evicted.start+BLOCK_ROWS,shape.rows);r++){cleared[r]={};for(let c=0;c<shape.cols;c++){cleared[r][c]=null;this.rendered.delete(`${r}:${c}`);}}
    this.mutate(cleared);this.store.evict(evicted.sheet,evicted.start);
   }
-  this.store.merge(data.rows,sheet,data.calculated_revision);this.store.inputRevision=Math.max(this.store.inputRevision,data.input_revision);this.store.calculatedRevision=Math.max(this.store.calculatedRevision,data.calculated_revision);this.paint();
+  this.store.merge(data.rows,sheet,data.calculated_revision);this.store.inputRevision=Math.max(this.store.inputRevision,data.input_revision);this.store.calculatedRevision=Math.max(this.store.calculatedRevision,data.calculated_revision);this.paint();return true;
  }
  scheduleVisible() {
   clearTimeout(this.scrollTimer);this.scrollTimer=setTimeout(()=>{
@@ -130,7 +133,7 @@ export class PlanningGrid {
    (changed[r]??={})[c]=next;this.rendered.set(`${r}:${c}`,signature);
   }
   if(Object.keys(changed).length)this.mutate(changed);
-  const busy=this.store.calculatedRevision<this.store.inputRevision||this.controller.busy;
+  const busy=!this.store.blocksCalculated(this.store.inputRevision)||this.controller.busy;
   $('save-chip').textContent=busy?'Calculating...':`Saved · rev ${this.store.inputRevision}`;$('save-chip').classList.toggle('busy',busy);
   $('edit-status').textContent=this.controller.busy?'Saving...':'Ready';this.selectionInfo();
  }
@@ -141,7 +144,7 @@ export class PlanningGrid {
   const display=formulaDisplay(cell,this.formulaText);
   if(document.activeElement!==$('name-box'))$('name-box').value=cellName(selected);
   syncFormula($('formula-input'),{value:display,readOnly:this.copy.my_role==='viewer'||cell?.k!=='i'},document.activeElement===$('formula-input'));
-  $('formula-note').textContent=cell?.k==='i'?(cell.by?`Input · ${cell.by.name} · ${new Date(cell.at).toLocaleString()}`:'Input cell'):'Locked template cell';
+  $('formula-note').textContent=cell?.k==='i'?(cell.by?`Input · ${editorDisplay(cell)}`:'Input cell'):'Locked template cell';
   this.stats();if(!cell)return;
   if(this.detailRequested)return;const token=this.selectionToken;this.detailRequested=true;
   try {
@@ -213,16 +216,16 @@ export class PlanningGrid {
   if(event.key==='Delete'||event.key==='Backspace'){event.preventDefault();event.stopImmediatePropagation();this.clearSelection();}
  }
  async copySelection() {
-  const range=this.selection[0],area=(range.endRow-range.startRow+1)*(range.endColumn-range.startColumn+1);if(area>10000)throw new Error('Copy at most 10,000 cells');
-  const lines=[];for(let start=range.startRow;start<=range.endRow;start+=BLOCK_ROWS){const count=Math.min(BLOCK_ROWS,range.endRow-start+1),data=await this.api.request(`/copies/${this.copy.id}/sheets/${this.sheet}/rows?start=${start}&count=${count}`);for(let r=start;r<start+count;r++){const values=[];for(let c=range.startColumn;c<=range.endColumn;c++)values.push(clipboardValue(data.rows[r]?.[c]?.v));lines.push(values.join('\t'));}}
+  const range={...this.selection[0]},context={sheet:this.sheet,worksheet:this.worksheet,generation:this.generation},token=++this.copyToken,area=(range.endRow-range.startRow+1)*(range.endColumn-range.startColumn+1);if(area>10000)throw new Error('Copy at most 10,000 cells');
+  const current=()=>this.copyToken===token&&this.viewMatches(context),lines=[];for(let start=range.startRow;start<=range.endRow;start+=BLOCK_ROWS){if(!current())return false;const count=Math.min(BLOCK_ROWS,range.endRow-start+1),data=await this.api.request(`/copies/${this.copy.id}/sheets/${context.sheet}/rows?start=${start}&count=${count}`);if(!current())return false;for(let r=start;r<start+count;r++){const values=[];for(let c=range.startColumn;c<=range.endColumn;c++)values.push(clipboardValue(data.rows[r]?.[c]?.v));lines.push(values.join('\t'));}}
   const text=lines.join('\n');try{await navigator.clipboard.writeText(text);}catch{const area=document.createElement('textarea');area.value=text;area.style.position='fixed';area.style.left='-10000px';document.body.append(area);area.select();const ok=document.execCommand('copy');area.remove();if(!ok)throw new Error('Press Ctrl+C to copy using your browser clipboard');}
-  this.toast('Selection copied');
+  if(!current())return false;this.toast('Selection copied');return true;
  }
  async pasteClipboard() {try{const text=await navigator.clipboard.readText();if(text)await this.edit(pasteChanges(text,this.origin()),'paste');}catch{this.toast('Press Ctrl+V in the grid to paste clipboard values');}}
  async goTo(ref) {
   const match=/^([A-Z]+)([1-9]\d*)$/i.exec(ref.trim());if(!match)throw new Error('Enter a cell address such as B2');
-  const c=[...match[1].toUpperCase()].reduce((sum,ch)=>sum*26+ch.charCodeAt(0)-64,0)-1,r=Number(match[2])-1,shape=this.currentSheet();if(r>=shape.rows||c>=shape.cols)throw new Error('Cell is outside this sheet');
-  await this.loadBlock(r);this.worksheet.getRange(r,c).activate();this.worksheet.scrollToCell(r,c);this.selection=[{startRow:r,endRow:r,startColumn:c,endColumn:c}];this.selectionInfo();
+  const c=[...match[1].toUpperCase()].reduce((sum,ch)=>sum*26+ch.charCodeAt(0)-64,0)-1,r=Number(match[2])-1,shape=this.currentSheet(),context={sheet:this.sheet,worksheet:this.worksheet,generation:this.generation},token=++this.goToToken;if(r>=shape.rows||c>=shape.cols)throw new Error('Cell is outside this sheet');
+  await this.loadBlock(r);if(this.goToToken!==token||!this.viewMatches(context))return false;context.worksheet.getRange(r,c).activate();context.worksheet.scrollToCell(r,c);this.selection=[{startRow:r,endRow:r,startColumn:c,endColumn:c}];this.selectionInfo();return true;
  }
  async find(query) {
   if(!query.trim())return;const needle=query.toLowerCase(),shape=this.currentSheet(),start=this.origin().r+1,sequence=[];
@@ -236,7 +239,7 @@ export class PlanningGrid {
  toggleHistory(force) {$('history-panel').hidden=force===undefined?!$('history-panel').hidden:!force;$('history-button').setAttribute('aria-expanded',String(!$('history-panel').hidden));this.selectionInfo(true);}
  async history(selected,token) {
   const root=`/copies/${this.copy.id}/history`,[cell,copy]=await Promise.all([this.api.request(`${root}?sheet=${selected.sheet}&r=${selected.r}&c=${selected.c}&limit=50`),this.api.request(`${root}?limit=50`)]);if(this.closed||token!==this.selectionToken)return;
-  $('history-title').textContent=`Cell history: ${cellName(selected)}`;const current=this.store.get(selected.sheet,selected.r,selected.c);$('last-editor').textContent=current?.by?`${current.by.name} · ${new Date(current.at).toLocaleString()}`:'No edits recorded';
+  $('history-title').textContent=`Cell history: ${cellName(selected)}`;const current=this.store.get(selected.sheet,selected.r,selected.c);$('last-editor').textContent=editorDisplay(current)||'No edits recorded';
   const entries=list=>list.length?list.map(entry=>`<div class="history-entry"><b>${e(entry.by.name)}</b><small>${e(new Date(entry.at).toLocaleString())} · ${e(entry.action)} · revision ${entry.revision}</small>${e(cellName(entry))}: ${e(formatNumber(entry.before))||'Blank'} → <b>${e(formatNumber(entry.after))||'Blank'}</b></div>`).join(''):'<p class="muted">No edits recorded.</p>';
   $('cell-history').innerHTML=entries(cell.entries);$('copy-activity').innerHTML=entries(copy.entries);
  }
@@ -245,12 +248,26 @@ export class PlanningGrid {
   this.socket.onopen=()=>{this.socket.send(JSON.stringify({type:'hello',last_revision:this.lastRevision??this.meta.input_revision}));this.sendPresence();if(this.reconnecting)this.resync();};
   this.socket.onmessage=event=>{
    try{const message=JSON.parse(event.data);if(message.type==='resync'){this.resync();return;}if(message.type==='presence'){this.presence(message.users);return;}
-    if(message.type==='op'){this.lastRevision=Math.max(this.lastRevision??0,message.input_revision);this.wsReceived.op++;}if(message.type==='calc')this.wsReceived.calc++;this.controller.remote(message);
+    this.handleRemote(message).catch(()=>{this.toast('Live update details could not be applied; refreshing visible rows');this.resync();});
    }catch{this.toast('Live update could not be applied; refreshing visible rows');this.resync();}
   };
   this.socket.onclose=event=>{if(this.closed)return;if(event.code===4403){this.refreshRole();return;}this.reconnecting=true;$('save-chip').textContent='Reconnecting...';this.reconnectTimer=setTimeout(()=>this.connect(),1000);};
  }
- async resync() {try{for(const key of [...this.cache.blocks.keys()]){const [sheet,start]=key.split(':').map(Number);if(sheet===this.sheet)await this.loadBlock(start,true);}this.lastRevision=this.store.inputRevision;this.selectionInfo();}catch(error){this.toast(error.message);}}
+ async handleRemote(message) {
+  if(message.type==='op'){this.lastRevision=Math.max(this.lastRevision??0,message.input_revision);this.wsReceived.op++;}
+  if(message.type==='calc')this.wsReceived.calc++;this.controller.remote(message);
+  if(message.type==='op'&&message.at==null)await this.refreshOpDetails(message);
+ }
+ async refreshOpDetails(message) {
+  const context={sheet:this.sheet,worksheet:this.worksheet,generation:this.generation,cache:this.cache},cells=message.cells.filter(cell=>cell.at==null&&this.store.get(cell.sheet,cell.r,cell.c)?.ver===cell.ver);
+  if(cells.length>DETAIL_REFRESH_LIMIT){await this.refreshOpBlocks(cells,context);return;}
+  await Promise.all(cells.map(async cell=>{const detail=await this.api.request(`/copies/${this.copy.id}/sheets/${cell.sheet}/cell?r=${cell.r}&c=${cell.c}`);if(!this.viewMatches(context))return;if(this.store.applyDetail({...detail,sheet:cell.sheet,r:cell.r,c:cell.c}))this.paint([cell]);}));
+ }
+ async refreshOpBlocks(cells,context) {
+  const starts=[...new Set(cells.filter(cell=>cell.sheet===context.sheet&&context.cache.has(cell.sheet,cell.r)).map(cell=>context.cache.start(cell.r)))].sort((a,b)=>a-b);
+  for(const start of starts){if(!this.viewMatches(context)||this.cache!==context.cache)return;await this.loadBlock(start,true);}
+ }
+ async resync() {const context={sheet:this.sheet,worksheet:this.worksheet,generation:this.generation};try{for(const key of [...this.cache.blocks.keys()]){if(!this.viewMatches(context))return false;const [sheet,start]=key.split(':').map(Number);if(sheet===context.sheet)await this.loadBlock(start,true);}if(!this.viewMatches(context))return false;this.lastRevision=this.store.inputRevision;this.selectionInfo();return true;}catch(error){this.toast(error.message);return false;}}
  async refreshRole() {
   try {
    const copies=(await this.api.request('/copies')).copies,copy=copies.find(c=>c.id===this.copy.id);

@@ -1,6 +1,7 @@
 import './style.css';
+import '@univerjs/preset-sheets-core/lib/index.css';
 import { ApiClient } from './client.mjs';
-import { authView, homeView, workspaceView, escapeHTML as e, roleOptions } from './views.mjs';
+import { authView, homeView, workspaceView, escapeHTML as e, roleOptions, loadHome } from './views.mjs';
 const $=id=>document.getElementById(id),api=new ApiClient();
 let user=null,categories=[],copies=[],categoryId='',activeCopy=null,grid=null,signup=false,toastTimer,navigation=0;
 export function toast(text) { $('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500); }
@@ -17,11 +18,11 @@ function showAuth() {
 async function showHome() {
  navigation++;
  grid?.dispose();grid=null;activeCopy=null;$('workspace-actions').hidden=true;$('presence').replaceChildren();$('logout-button').hidden=false;$('save-chip').textContent=user.name;$('save-chip').classList.remove('busy');
- categories=(await api.request('/categories')).categories;if(!categories.some(c=>c.id===categoryId))categoryId=categories[0]?.id??'';
- copies=(await api.request(`/copies${categoryId?`?category=${encodeURIComponent(categoryId)}`:''}`)).copies;
- $('breadcrumb').textContent=`${categories.find(c=>c.id===categoryId)?.name??'Your workspace'} / Copies`;$('view').innerHTML=homeView(categories,copies,categoryId);
+ const home=await loadHome(api,categoryId);categories=home.categories;copies=home.copies;categoryId=home.categoryId;
+ $('breadcrumb').textContent=`${categoryId===null?'Shared with me':categories.find(c=>c.id===categoryId)?.name??'Your workspace'} / Copies`;$('view').innerHTML=homeView(categories,copies,categoryId);
  $('view').onclick=event=>{const button=event.target.closest('button');if(!button)return;
-  if(button.dataset.category){categoryId=button.dataset.category;safe(showHome());}
+  if(button.dataset.shared!==undefined){categoryId=null;safe(showHome());}
+  if(button.dataset.category!==undefined){categoryId=button.dataset.category;safe(showHome());}
   if(button.dataset.open)safe(openCopy(copies.find(c=>c.id===button.dataset.open)));
   if(button.dataset.fork)forkModal(copies.find(c=>c.id===button.dataset.fork));
   if(button.dataset.share)shareModal(copies.find(c=>c.id===button.dataset.share));

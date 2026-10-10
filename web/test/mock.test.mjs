@@ -29,11 +29,11 @@ test('mock API enforces atomic edits, versions, deduplication, roles, fork and W
  assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{...op,cells:[{...cells[0],v:99}]})).status,409);
  assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{...op,op_id:'stale'})).status,409);
  const bad=await req(`/copies/${copy.id}/ops`,'POST',{op_id:'bad',action:'paste',cells:[{...cells[0],expected_version:1,v:30},{sheet:0,r:1,c:2,v:90,expected_version:0}]}); assert.equal(bad.status,422);
- assert.equal((await req(`/copies/${copy.id}/sheets/0/cell?r=1&c=1`)).v,25);
+ const opMessage=messages.find(message=>message.type==='op'&&message.op_id==='test1'),detail=await req(`/copies/${copy.id}/sheets/0/cell?r=1&c=1`);assert.equal(detail.v,25);assert.equal(opMessage.at,detail.at);
  assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{op_id:'formula',action:'edit',cells:[{...cells[0],expected_version:1,v:'=2'}]})).status,422);
  const fork=(await req(`/copies/${copy.id}/fork`,'POST',{name:'Fork'})).copy;
  assert.equal((await req(`/copies/${fork.id}/sheets/0/cell?r=1&c=1`)).v,25);
- assert.equal((await req(`/copies/${copy.id}/history?sheet=0&r=1&c=1`)).entries.length,1);
+ const history=await req(`/copies/${copy.id}/history?sheet=0&r=1&c=1`);assert.equal(history.entries.length,1);assert.equal(opMessage.at,history.entries[0].at);
  assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{op_id:'clear',action:'clear',cells:[{...cells[0],v:null,expected_version:1}]})).status,200);
  assert.equal((await req(`/copies/${copy.id}/sheets/0/cell?r=1&c=2`)).v,0);
  assert.equal((await req(`/copies/${fork.id}/sheets/0/cell?r=1&c=1`)).v,25);
@@ -48,4 +48,13 @@ test('mock API enforces atomic edits, versions, deduplication, roles, fork and W
  const exported=await fetch(server.url+`/api/copies/${copy.id}/export.xlsm`,{headers:{Cookie:cookie}});
  assert.equal(exported.status,200);assert.match(exported.headers.get('content-disposition'),/synthetic-planning.xlsm/);
  assert.equal(Buffer.from(await exported.arrayBuffer()).readUInt32LE(0),0x04034b50);
+});
+test('unfiltered copies include a named private share outside the recipient category',async t=>{
+ const server=await createMockServer({port:0});t.after(()=>server.close());const owner={},recipient={};
+ async function req(auth,path,method='GET',data) {const res=await fetch(server.url+'/api'+path,{method,headers:{Cookie:auth.cookie??'','X-CSRF-Token':auth.csrf??'','Content-Type':'application/json'},body:data?JSON.stringify(data):undefined});const set=res.headers.get('set-cookie');if(set)auth.cookie=set.split(';')[0];const body=res.status===204?{}:await res.json();if(body.csrf)auth.csrf=body.csrf;return {status:res.status,...body};}
+ await req(owner,'/auth/signup','POST',{email:'owner-b@example.test',name:'Owner B',password:'synthetic-password'});await req(owner,'/auth/login','POST',{email:'owner-b@example.test',password:'synthetic-password'});
+ const categoryB=(await req(owner,'/categories','POST',{name:'Category B'})).category,copy=(await req(owner,'/copies','POST',{name:'Private B plan',category_id:categoryB.id,visibility:'private',default_role:'viewer'})).copy;
+ await req(recipient,'/auth/signup','POST',{email:'recipient-a@example.test',name:'Recipient A',password:'synthetic-password'});await req(recipient,'/auth/login','POST',{email:'recipient-a@example.test',password:'synthetic-password'});
+ await req(owner,`/copies/${copy.id}/shares`,'PUT',{email:'recipient-a@example.test',role:'viewer'});
+ assert.equal((await req(recipient,'/copies?category=category-a')).copies.some(item=>item.id===copy.id),false);assert.equal((await req(recipient,'/copies')).copies.find(item=>item.id===copy.id).my_role,'viewer');
 });

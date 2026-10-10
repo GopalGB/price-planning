@@ -1,7 +1,27 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeSnapshot, cellsFromMatrix, pasteChanges, fillChanges } from '../src/grid-data.mjs';
-import { CellStore } from '../src/model.mjs';
+import { CellStore, RowCache } from '../src/model.mjs';
+import { EditController } from '../src/client.mjs';
+import { PlanningGrid } from '../src/grid.mjs';
+
+function gridHarness(responses) {
+ const chips={"save-chip":{textContent:'',classList:{toggle:()=>{}}},"edit-status":{textContent:''}};
+ globalThis.document={getElementById:id=>chips[id]};
+ const grid=Object.create(PlanningGrid.prototype);const store=new CellStore();
+ Object.assign(grid,{api:{request:async path=>{const start=Number(new URL(path,'http://test').searchParams.get('start'));return responses.get(start).shift();}},copy:{id:'one'},meta:{sheets:[{index:0,name:'Plan',rows:512,cols:3}]},sheet:0,store,cache:new RowCache(3),closed:false,worksheet:{},rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:0,endColumn:0}],mutate:()=>{},selectionInfo:async()=>{}});
+ grid.controller=new EditController({store,api:grid.api,copyId:'one',role:'editor',paint:()=>grid.paint(),toast:()=>{}});
+ return {grid,chips};
+}
+const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+function navigationHarness(request) {
+ const elements=new Map(),element=id=>{if(!elements.has(id))elements.set(id,{id,textContent:'',innerHTML:'',classList:{toggle:()=>{}},getRange:()=>{}});return elements.get(id);};
+ globalThis.document={getElementById:element};const worksheets=[],makeWorksheet=sheet=>({sheet,activations:[],scrolls:[],getRange(r,c){return {activate:()=>this.activations.push([r,c])};},scrollToCell(r,c){this.scrolls.push([r,c]);}});
+ let activeWorksheet=makeWorksheet(0),workbook={getSheetBySheetId:()=>activeWorksheet};worksheets.push(activeWorksheet);
+ const grid=Object.create(PlanningGrid.prototype),store=new CellStore(),meta={template:{name:'Test'},styles:[],sheets:[{index:0,name:'One',rows:512,cols:3},{index:1,name:'Two',rows:512,cols:3}]};
+ Object.assign(grid,{api:{request},copy:{id:'one',my_role:'editor'},meta,sheet:0,store,cache:new RowCache(3),closed:false,showHidden:false,worksheet:activeWorksheet,rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:1,endColumn:1}],generation:0,copyToken:0,goToToken:0,internal:0,toast:()=>{},mutate:()=>{},selectionInfo:async()=>{},u:{getActiveWorkbook:()=>workbook,disposeUnit:()=>{workbook=null;},createWorkbook:snapshot=>{activeWorksheet=makeWorksheet(Number(snapshot.sheetOrder[0].slice(1)));worksheets.push(activeWorksheet);workbook={getSheetBySheetId:()=>activeWorksheet};}}});
+ grid.controller=new EditController({store,api:grid.api,copyId:'one',role:'editor',paint:()=>grid.paint(),toast:()=>{}});return {grid,worksheets,elements};
+}
 test('metadata preserves dimensions, hidden rows, merges, formats and freeze without any formulas',()=>{
  const meta={template:{name:'Synthetic'},styles:[{id:0,nf:'0.00',bold:true,fill:'#EAF2FB'}],sheets:[{index:0,name:'Sheet',rows:4088,cols:312,freeze:{rows:1,cols:2},merges:[[0,1,0,2]],col_widths:{1:120},row_heights:{0:32},hidden_rows:[5],hidden_cols:[8]}]};
  const data=makeSnapshot(meta,0,{1:{1:{v:10,s:0,k:'i',formula:'=bad'}}});
@@ -24,4 +44,45 @@ test('clipboard preserves numeric types and quoted multiline text, malformed pre
  assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:0,sel:[2,1,1,2]}),false);
  assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:0,sel:[1,1,2,2]}),true);
  assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:'length',sel:[1,1,2,2]}),false);
+});
+test('real grid accepts an older formula calculation after a newer partial block snapshot',async()=>{
+ const rows=(r,columns)=>({[r]:columns});const responses=new Map([
+  [0,[{input_revision:0,calculated_revision:0,rows:rows(0,{1:{v:2,k:'f'}})},{input_revision:2,calculated_revision:2,rows:rows(0,{1:{v:4,k:'f'}})}]],
+  [256,[{input_revision:2,calculated_revision:2,rows:rows(256,{1:{v:7,k:'f'},2:{v:3,k:'f'}})}]],
+ ]);const {grid,chips}=gridHarness(responses);
+ await grid.loadBlock(0,true);await grid.loadBlock(256,true);assert.equal(chips['save-chip'].textContent,'Calculating...');
+ grid.controller.remote({type:'calc',calculated_revision:1,changes:[{sheet:0,r:0,c:1,v:4}]});assert.equal(grid.store.get(0,0,1).v,4);assert.equal(chips['save-chip'].textContent,'Calculating...');
+ grid.controller.remote({type:'calc',calculated_revision:2,changes:[{sheet:0,r:256,c:2,v:8}]});assert.equal(chips['save-chip'].textContent,'Saved · rev 2');
+ await grid.loadBlock(0,true);assert.equal(chips['save-chip'].textContent,'Saved · rev 2');
+});
+test('deferred multi-block copy cannot mix sheets or write a stale clipboard',async t=>{
+ const first=deferred(),paths=[],writes=[],rows={input_revision:0,calculated_revision:0,rows:{}};
+ const {grid}=navigationHarness(async path=>{paths.push(path);if(path.includes('/sheets/0/rows?start=0'))return first.promise;return rows;});grid.selection=[{startRow:0,endRow:256,startColumn:1,endColumn:1}];
+ const prior=Object.getOwnPropertyDescriptor(globalThis,'navigator');Object.defineProperty(globalThis,'navigator',{configurable:true,value:{clipboard:{writeText:async text=>writes.push(text)}}});t.after(()=>{if(prior)Object.defineProperty(globalThis,'navigator',prior);else delete globalThis.navigator;});
+ const copying=grid.copySelection();await Promise.resolve();await grid.switchSheet(1);first.resolve(rows);const result=await copying;
+ assert.equal(paths.filter(path=>path.includes('start=256')).length,0);assert.deepEqual(writes,[]);assert.equal(result,false);
+});
+test('deferred go-to cannot activate a replacement worksheet after switching away and back',async()=>{
+ const distant=deferred(),rows={input_revision:0,calculated_revision:0,rows:{}};
+ const {grid,worksheets}=navigationHarness(path=>path.includes('/sheets/0/rows?start=256')?distant.promise:Promise.resolve(rows));
+ const moving=grid.goTo('B257');await Promise.resolve();await grid.switchSheet(1);await grid.switchSheet(0);const replacement=worksheets.at(-1);distant.resolve(rows);const result=await moving;
+ assert.deepEqual(replacement.activations,[[1,1]]);assert.deepEqual(replacement.scrolls,[]);assert.equal(grid.store.get(0,256,1),undefined);assert.equal(result,false);
+});
+test('missing operation timestamp hydrates from detail and stale detail cannot regress metadata',async()=>{
+ const first=deferred(),second=deferred(),details=[first,second],requests=[],store=new CellStore({0:{1:{v:10,k:'i',ver:4,by:{name:'Old'},at:'2025-01-01T00:00:00.000Z'}}}),api={request:async path=>{requests.push(path);return details.shift().promise;}},grid=Object.create(PlanningGrid.prototype);
+ Object.assign(grid,{api,copy:{id:'one'},store,closed:false,sheet:0,generation:1,worksheet:{},wsReceived:{op:0,calc:0},paint:()=>{},toast:()=>{}});grid.controller=new EditController({store,api,copyId:'one',role:'editor',paint:()=>{},toast:()=>{}});
+ assert.equal(typeof grid.handleRemote,'function');const pending=grid.handleRemote({type:'op',op_id:'five',input_revision:5,by:{name:'Remote'},cells:[{sheet:0,r:0,c:1,v:11,ver:5}]});assert.equal(store.get(0,0,1).at,null);first.resolve({v:11,s:1,k:'i',ver:5,by:{name:'Remote'},at:'2026-01-02T00:00:00.000Z',formula:null,validation:null});await pending;assert.equal(store.get(0,0,1).at,'2026-01-02T00:00:00.000Z');
+ const stale=grid.handleRemote({type:'op',op_id:'six',input_revision:6,by:{name:'Remote'},cells:[{sheet:0,r:0,c:1,v:12,ver:6}]});assert.equal(store.get(0,0,1).at,null);await grid.handleRemote({type:'op',op_id:'seven',input_revision:7,by:{name:'Newer'},at:'2026-01-04T00:00:00.000Z',cells:[{sheet:0,r:0,c:1,v:13,ver:7}]});second.resolve({v:12,s:1,k:'i',ver:6,by:{name:'Remote'},at:'2026-01-03T00:00:00.000Z',formula:null,validation:null});await stale;
+ assert.match(requests[0],/\/sheets\/0\/cell\?r=0&c=1$/);assert.equal(store.get(0,0,1).ver,7);assert.equal(store.get(0,0,1).by.name,'Newer');assert.equal(store.get(0,0,1).at,'2026-01-04T00:00:00.000Z');
+});
+test('bulk missing timestamps reload cached blocks sequentially without per-cell requests',async()=>{
+ const first=deferred(),paths=[],store=new CellStore(),cache=new RowCache(3),grid=Object.create(PlanningGrid.prototype),cells=[];
+ for(let r=0;r<8;r++){store.merge({[r]:{1:{v:r,k:'i',ver:0}}},0);cells.push({sheet:0,r,c:1,v:r+10,ver:1});}store.merge({256:{1:{v:256,k:'i',ver:0}}},0);cells.push({sheet:0,r:256,c:1,v:266,ver:1});
+ const snapshot=start=>({input_revision:1,calculated_revision:0,rows:Object.fromEntries(cells.filter(cell=>Math.floor(cell.r/256)*256===start).map(cell=>[cell.r,{1:{v:cell.v,k:'i',ver:1,by:{name:'Remote'},at:'2026-01-05T00:00:00.000Z'}}]))});
+ cache.put(0,0,snapshot(0));cache.put(0,256,snapshot(256));store.registerBlock(0,0,0);store.registerBlock(0,256,0);
+ const api={request:async path=>{paths.push(path);if(path.includes('/cell?'))return {v:1,k:'i',ver:1,by:{name:'Remote'},at:'2026-01-05T00:00:00.000Z',formula:null,validation:null};return path.includes('start=0')?first.promise:snapshot(256);}};
+ Object.assign(grid,{api,copy:{id:'one'},meta:{sheets:[{index:0,rows:512,cols:3}]},sheet:0,store,cache,closed:false,generation:1,worksheet:{},loadTokens:new Map(),rendered:new Map(),wsReceived:{op:0,calc:0},paint:()=>{},toast:()=>{}});grid.controller=new EditController({store,api,copyId:'one',role:'editor',paint:()=>{},toast:()=>{}});
+ const pending=grid.handleRemote({type:'op',op_id:'bulk',input_revision:1,by:{name:'Remote'},cells});const initialRequests=paths.length;first.resolve(snapshot(0));await pending;
+ assert.equal(initialRequests,1);assert.equal(paths.length,2);assert.match(paths[0],/rows\?start=0/);assert.match(paths[1],/rows\?start=256/);
+ assert.equal(paths.filter(path=>path.includes('/cell?')).length,0);assert.ok(cells.every(cell=>store.get(cell.sheet,cell.r,cell.c).at==='2026-01-05T00:00:00.000Z'));
 });
