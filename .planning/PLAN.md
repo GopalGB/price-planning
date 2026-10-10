@@ -28,3 +28,17 @@ User GO-TOKEN approves STEP 0 and all A-E phases in this worktree on `feat/v2-in
 - [x] Verify and handoff: exact `claude-opus-5-5` identity and final SHIP, fresh planner A-E and incremental SHIP, security-auditor with retained broad findings disclosed, hooked merge/code commits, Python 251/251 twice, web 47/47 twice, content guard exit 0. Review-discovered escaping blocker reproduced red and fixed in `3340943` (26 export tests green). Review round 2 appended; STATE headings intact. Full evidence in results-private/review-round-2; no push.
 
 Execution uses one model worker; controller handles authorized Git operations because linked-worktree metadata is outside the worker sandbox. Office/Excel/real-workbook/P5 acceptance remains outside this scope.
+
+## Round 3, approved 2026-10-11
+
+User GO-TOKEN authorizes all phases, test-first local commits on feat/v2-integration.
+- [x] Office startup: create missing settings with LAN/demo defaults, derive exact local origins when empty, print share URLs with 10.x preference. Files: pp/config.py, run_v2.py, LAN helper if needed, tests/v2, docs/DEPLOY.md. Success: missing/empty/explicit/foreign regressions red then green.
+- [x] Input visibility: tint unfilled inputs #EAF2FB, preserve explicit fills, default-on storage toggle guarded by try/catch. Files: web/src, web/test, static/dist. Success: style and preference regressions red then green.
+- [x] First category: primary button in empty panel opens existing category modal. Files: web/src/views.mjs, web/test. Success: regression red then green.
+- [x] Review/security: exact claude-opus-5-5 identity, planner review, resolve blocking findings, scoped audit, hooked local commits.
+- [ ] Acceptance: Python twice, web twice, content guard, two identical builds; fresh temp runtime with synthetic template only and no settings; real browser signup on loopback and printed LAN URLs, category/copy/input/formula/export verified with openpyxl; one Ego TaskSpace finished keep: []; append Round 3 evidence and preserve STATE headings.
+
+Out of scope: push, dependency changes, real workbook/data, office Windows/Excel/load acceptance.
+Evidence: results-private/round-3/. Controller owns PLAN/STATE/report/browser/commits; executor owns scoped code/tests/docs/dist.
+
+Code commits: `067e965`, `80791ca`, `318515a`. Final exact Opus 5.5 and planner reviews SHIP. Controller Python 268/268 twice, web 53/53 twice, content guard exit 0, 170 dist files byte-identical including BUILD.json. Acceptance remains unchecked: required fresh-server browser flow is blocked by unrelated CitiPoints occupying port 8000, pending permission to stop and restore it or owner freeing the port. One Ego TaskSpace 39 is reserved; no app browser acceptance is claimed.
