@@ -2,18 +2,21 @@
 
 ## Current phase
 
-### Track B frontend handoff (2026-10-10)
+### Track B review fixes (requested 2026-10-10, verified 2026-10-11)
 
-Local synthetic P3 frontend complete with concerns on `feat/v2-frontend`. Implementation `1061a45`; bundle/evidence `6baab71`.
-Node 33/33 twice; Python 64/64 consecutive greens; content guard exit 0; exact claude-opus-5-5 review SHIP; Ego Lite full required flow passed with zero client calculation, 3 blocks / 768 populated rows and sampled heap 93.753361 MB.
-Report: `.planning/excel-grid/tracks/frontend.md`. Screenshots local only because existing content guard rejects PNG binaries. Backend directories unchanged; no push.
-Next: backend integration and remaining office/LAN/interaction acceptance listed in the frontend report. Prior P0 handoff below is preserved.
+All five Astra frontend defects fixed locally on `feat/v2-frontend`. Source commit `5d095431c07530b3b6f5e4f2171c144fcae319b7`; bundle commit `20f3c64b8565f8367871f00b06692964b9670cf6`.
+Node 47/47 twice; Python 64/64 twice; content guard exit 0; two identical builds. Independent planner review and exact `claude-opus-5-5` review: SHIP. Report: `.planning/excel-grid/tracks/frontend.md`, Review fixes section.
+API contract change: WS `op.at` is authoritative ISO server time; input cell detail carries `ver/by/at`. The real backend owner must add `at` at integration. Missing legacy time stays null while guarded metadata refetches run.
+Backend directories unchanged; no push or real workbook access. Final ordered checks are repeated after the handoff commit. Prior P0 handoff below is preserved.
 
 ## Prior P0 phase
 P0 Repo + rails (plan: .planning/excel-grid/PLAN-P0.md). Code complete on branch `feat/p0-rails`;
 acceptance waits on Sir's office steps below.
 
 ## Last handoff
+2026-10-11, frontend review fixes. Five deterministic RED/GREEN cycles plus the review-requested bulk timestamp regression completed. Source and bundle commits above; local metadata limitations and full evidence paths are in the track report. No new browser or office acceptance is claimed.
+
+### Prior P0 handoff
 2026-10-10, Mac / Claude (planner + reviewer), Codex gpt-6.1-sol high (executor), gpt-6-astra (reviewer).
 - Tasks 1-5 committed (guard, docs, locks + vendored Windows wheel, fixtures, benchmark).
 - Astra P0 review: 10 defects, all reproduced red then fixed (`.planning/excel-grid/sol/p0-fix-redlog.md`).
@@ -29,10 +32,9 @@ acceptance waits on Sir's office steps below.
 - Max HQ auto-commit hook now honours `git config max.autocommit false` (set in this repo).
 
 ## Next task
-1. Sir: push from Terminal.app (`git push -u origin main && git push -u origin feat/p0-rails`), open the PR, watch CI.
-2. Sir (office server): clone, copy the .xlsm in by hand, run `ops\office_p0.bat`, push `.planning\excel-grid\results\*.json`;
-   open the app from a second office PC (PLAN-P0 Task 8 Step 0).
-3. Then write PLAN-P1 (engine adapter, compat shims, typed-golden parity) from the office benchmark numbers.
+1. Backend owner: add authoritative ISO `at` to real WS operation messages and versioned editor/time metadata to input cell detail, matching API.md.
+2. Integrate the reviewed frontend bundle with the real backend and run the office/LAN/interaction acceptance listed in the track report.
+3. Complete the prior P0 office benchmark and parity acceptance before planning the engine adapter phase.
 
 ## Results waiting on Sir
 - Office benchmark report (aggregate only) and LAN second-machine pass/fail.
