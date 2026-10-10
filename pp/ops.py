@@ -124,7 +124,7 @@ class OperationService:
                 (commit.copy["id"], commit.op_id, revision, now, commit.actor_id, commit.action, cell["sheet"], cell["row"],
                  cell["col"], _json(cell["before"]), _json(cell["value"]), cell["version"]),
             )
-        event = {"type": "op", "op_id": commit.op_id, "input_revision": revision,
+        event = {"type": "op", "op_id": commit.op_id, "input_revision": revision, "at": now,
                  "by": {"id": actor["id"], "name": actor["name"]}, "action": commit.action,
                  "cells": [{"sheet": item["sheet"], "r": item["row"], "c": item["col"],
                             "v": item["value"], "ver": item["version"]} for item in commit.cells]}

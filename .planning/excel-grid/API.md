@@ -58,7 +58,7 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
 `WS /api/copies/{id}/ws` (cookie auth + Origin check; closed with 4403 on lost access).
 - client -> server: `{type: "hello", last_revision}`; `{type: "presence", sheet, sel: [r1,c1,r2,c2]}`
 - server -> client:
-  - `{type: "op", op_id, input_revision, by: {id,name}, action, cells: [{sheet, r, c, v, ver}]}`
+  - `{type: "op", op_id, input_revision, at, by: {id,name}, action, cells: [{sheet, r, c, v, ver}]}` where `at` is the ISO-8601 timestamp persisted for the operation's history rows.
   - `{type: "calc", calculated_revision, changes: [{sheet, r, c, v}]}` (complete batch per revision, monotonic)
   - `{type: "calc_state", input_revision, calculated_revision}` ("calculating" while they differ)
   - `{type: "presence", users: [{id, name, color, sheet, sel}]}`

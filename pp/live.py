@@ -92,7 +92,10 @@ class LiveHub:
                 await self._send(connection, {"type": "resync"})
             else:
                 for event in events:
-                    await self._send(connection, json.loads(event["payload_json"]))
+                    payload = json.loads(event["payload_json"])
+                    if payload.get("type") == "op" and "at" not in payload:
+                        payload["at"] = event["created_at"]
+                    await self._send(connection, payload)
             await self._send(connection, {"type": "calc_state", "input_revision": copy["input_revision"],
                                           "calculated_revision": copy["calculated_revision"]})
             connection.ready = True
@@ -230,7 +233,7 @@ def _color(user_id):
 
 def _replay_events(database, copy_id, last_revision):
     return database.execute(
-        "SELECT event_type,input_revision,payload_json FROM pp_events WHERE copy_id=? "
+        "SELECT event_type,input_revision,payload_json,created_at FROM pp_events WHERE copy_id=? "
         "AND (input_revision>? OR (event_type='calc' AND input_revision=?)) ORDER BY sequence",
         (copy_id, last_revision, last_revision),
     ).fetchall()

@@ -1,5 +1,6 @@
 import queue
 import asyncio
+import json
 import threading
 import unittest
 from unittest import mock
@@ -80,13 +81,47 @@ class WebSocketContractTests(unittest.TestCase):
         messages = [socket.receive_json() for _ in range(3)]
         types = [message["type"] for message in messages]
         self.assertLess(types.index("op"), types.index("calc"))
+        event = next(message for message in messages if message["type"] == "op")
+        history = self.owner.get(
+            f"/api/copies/{self.copy['id']}/history?sheet=0&r=1&c=1"
+        ).json()["entries"]
+        self.assertEqual(event["at"], history[0]["at"])
 
         replay = self.connect(self.member)
         replayed = self.hello(replay)
         replay_types = [message["type"] for message in replayed]
         self.assertEqual(replay_types, ["calc", "op", "calc", "calc_state"])
+        replay_event = next(message for message in replayed if message["type"] == "op")
+        self.assertEqual(replay_event["at"], event["at"])
         self.assertEqual([message["calculated_revision"] for message in replayed
                           if message["type"] == "calc"], [0, 1])
+
+    def test_replay_restores_legacy_op_timestamp_from_persisted_event_time(self):
+        """A migrated op payload without at must replay its durable event timestamp."""
+        response = self.owner.post(f"/api/copies/{self.copy['id']}/ops", {
+            "op_id": "legacy-time", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(response.status_code, 200)
+        history = self.owner.get(
+            f"/api/copies/{self.copy['id']}/history?sheet=0&r=1&c=1"
+        ).json()["entries"]
+        with self.fixture.database.transaction() as connection:
+            event = connection.execute(
+                "SELECT sequence,payload_json,created_at FROM pp_events "
+                "WHERE copy_id=? AND event_type='op' AND input_revision=1",
+                (self.copy["id"],),
+            ).fetchone()
+            payload = json.loads(event["payload_json"])
+            payload.pop("at")
+            connection.execute("UPDATE pp_events SET payload_json=? WHERE sequence=?",
+                               (json.dumps(payload, separators=(",", ":")), event["sequence"]))
+        self.assertEqual(event["created_at"], history[0]["at"])
+
+        replay = self.connect(self.member)
+        replayed = self.hello(replay)
+        replay_event = next(message for message in replayed if message["type"] == "op")
+        self.assertEqual(replay_event["at"], history[0]["at"])
 
     def test_revocation_closes_only_after_all_effective_roles_are_removed(self):
         """Removing one grant must keep a socket when category access remains."""

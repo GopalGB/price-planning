@@ -45,6 +45,45 @@ class CopyAPIContractTests(unittest.TestCase):
                        {"x-csrf-token": self.owner_csrf})
         self.assertEqual(self.member.get("/api/copies").json()["copies"], [])
 
+    def test_unfiltered_listing_keeps_named_private_share_across_categories_and_revokes_it(self):
+        """A private named share must list without leaking unrelated private copies."""
+        outsider, outsider_csrf, _ = self.fixture.signup("copy-outsider@example.test", "Copy Outsider")
+        other_category = outsider.post("/api/categories", {"name": "Category B"},
+                                      {"x-csrf-token": outsider_csrf}).json()["category"]
+        own = outsider.post("/api/copies", {
+            "category_id": other_category["id"], "name": "Outsider Plan",
+            "visibility": "private", "default_role": "viewer",
+        }, {"x-csrf-token": outsider_csrf}).json()["copy"]
+        shared = self.owner.post("/api/copies", {
+            "category_id": self.category_id, "name": "Named Private Share",
+            "visibility": "private", "default_role": "viewer",
+        }, {"x-csrf-token": self.owner_csrf}).json()["copy"]
+        hidden = self.owner.post("/api/copies", {
+            "category_id": self.category_id, "name": "Hidden Private Control",
+            "visibility": "private", "default_role": "viewer",
+        }, {"x-csrf-token": self.owner_csrf}).json()["copy"]
+        granted = self.owner.put(f"/api/copies/{shared['id']}/shares", {
+            "email": "copy-outsider@example.test", "role": "editor",
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(granted.status_code, 200)
+
+        unfiltered = outsider.get("/api/copies").json()["copies"]
+        self.assertEqual(
+            {(item["id"], item["category_id"], item["my_role"]) for item in unfiltered},
+            {(own["id"], other_category["id"], "owner"), (shared["id"], self.category_id, "editor")},
+        )
+        self.assertNotIn(hidden["id"], {item["id"] for item in unfiltered})
+        self.assertEqual([item["id"] for item in outsider.get(
+            f"/api/copies?category={self.category_id}").json()["copies"]], [shared["id"]])
+        self.assertEqual([item["id"] for item in outsider.get(
+            f"/api/copies?category={other_category['id']}").json()["copies"]], [own["id"]])
+
+        revoked = self.owner.put(f"/api/copies/{shared['id']}/shares", {
+            "email": "copy-outsider@example.test", "role": None,
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(revoked.status_code, 200)
+        self.assertEqual([item["id"] for item in outsider.get("/api/copies").json()["copies"]], [own["id"]])
+
     def test_malformed_control_fields_return_json_422(self):
         """Unhashable role and visibility values must never escape as TypeError 500."""
         created = self.owner.post("/api/copies", {
