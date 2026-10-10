@@ -30,7 +30,7 @@ export class EditController {
    const op=buildOp(this.store,changes,action);this.busy=true;
    if(!await this.send(op))return false;
    this.undoStack.push(op);if(this.undoStack.length>100)this.undoStack.shift();this.redoStack=[];return true;
-  } catch(error){this.toast(error.message);return false;} finally{this.busy=false;}
+  } catch(error){this.toast(error.message);return false;} finally{this.busy=false;this.paint();}
  }
  async undo(redo=false) {
   if(this.role==='viewer'||this.busy)return false;
@@ -39,7 +39,7 @@ export class EditController {
   try {
    const inverse=invertOp(this.store,entry);this.busy=true;
    if(!await this.send(inverse))return false;source.pop();target.push(inverse);return true;
-  } catch(error){this.toast(error.message);return false;}finally{this.busy=false;}
+  } catch(error){this.toast(error.message);return false;}finally{this.busy=false;this.paint();}
  }
  remote(message) {
   if(message.type==='op')this.store.applyOp(message);

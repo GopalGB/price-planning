@@ -6,7 +6,7 @@ export function renderCell(cell) {
 export function styleData(style) {
  const align={left:1,center:2,right:3},vertical={top:1,middle:2,bottom:3};
  const border={};for(const [key,value] of Object.entries(style.border??{}))if(value)border[key]=typeof value==='object'?value:{s:1,cl:{rgb:String(value)}};
- return {bg:{rgb:style.fill??'#fff'},cl:{rgb:style.color??'#222'},bl:style.bold?1:0,it:style.italic?1:0,fs:style.font_size??11,ff:'Segoe UI',ht:align[style.align],vt:vertical[style.valign],tb:style.wrap?2:1,n:{pattern:style.nf??'General'},bd:border};
+ return {bg:{rgb:style.fill??'#fff'},cl:{rgb:style.color??'#222'},bl:style.bold?1:0,it:style.italic?1:0,fs:style.font_size??11,ff:'Segoe UI, system-ui, Arial, sans-serif',ht:align[style.align],vt:vertical[style.valign],tb:style.wrap?2:1,n:{pattern:style.nf??'General'},bd:border};
 }
 export function makeSnapshot(meta,sheetIndex,rows={}) {
  const sheet=meta.sheets.find(s=>s.index===sheetIndex),id=`s${sheet.index}`,cellData={},rowData={},columnData={};

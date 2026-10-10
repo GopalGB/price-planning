@@ -45,3 +45,7 @@ test('cache retains at most three 256-row blocks and identifies evictions', () =
  assert.equal(cache.blocks.size,3); assert.equal(cache.has(0,0),false);
  assert.deepEqual(cache.lastEvicted,[{sheet:0,start:0}]);
 });
+test('HTTP acknowledgement cannot erase WS actor metadata at the same version',()=>{
+ const store=seed();store.applyOp({input_revision:1,by:{id:'user',name:'Synthetic Editor'},cells:[{sheet:0,r:0,c:1,v:25,ver:5}]});
+ store.applyOp({input_revision:1,cells:[{sheet:0,r:0,c:1,v:25,ver:5}]});assert.equal(store.get(0,0,1).by.name,'Synthetic Editor');
+});

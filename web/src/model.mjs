@@ -57,7 +57,7 @@ export class CellStore {
   this.inputRevision=Math.max(this.inputRevision,message.input_revision);
   for(const cell of message.cells) {
    const current=this.get(cell.sheet,cell.r,cell.c);
-   if(current && cell.ver>=(current.ver??0)) this.cells.set(keyOf(cell),{...current,v:cell.v,ver:cell.ver,by:message.by,at:message.at??new Date().toISOString(),pending:undefined});
+   if(current && cell.ver>=(current.ver??0)) this.cells.set(keyOf(cell),{...current,v:cell.v,ver:cell.ver,by:message.by??current.by,at:message.at??current.at??new Date().toISOString(),pending:undefined});
   }
  }
  applyCalc(message) {

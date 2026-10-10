@@ -26,3 +26,8 @@ test('viewer refuses writes at controller boundary',async()=>{
  let sent=0; const controller=new EditController({store:new CellStore(),copyId:'one',role:'viewer',api:{request:()=>sent++},paint:()=>{},toast:()=>{}});
  await controller.edit([{sheet:0,r:0,c:1,v:1}]);assert.equal(sent,0);
 });
+test('saving indicator clears after accepted operation even when calc precedes HTTP acknowledgement',async()=>{
+ const store=new CellStore({0:{1:{v:10,k:'i',ver:0}}});const paints=[];let controller;
+ controller=new EditController({store,copyId:'one',role:'editor',api:{request:async()=>({input_revision:1})},paint:()=>paints.push(controller.busy),toast:()=>{}});
+ await controller.edit([{sheet:0,r:0,c:1,v:20}]);assert.equal(paints.at(-1),false);
+});
