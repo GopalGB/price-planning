@@ -1,5 +1,17 @@
 # v2 integration handoff
 
+## Round 5
+
+Date: 2026-10-11. GO-TOKEN authorizes all eight repairs on `feat/v2-integration`, synthetic fixtures only. Work remains local. No private directory, real workbook, port 8000, unowned process, push or deployment is part of this round. Final review and acceptance are pending while the fixes are in progress.
+
+Defect 1 is committed as `567e902`. Authoritative calculation records carry style/kind and restore input metadata on spill contraction; null formula values retain formula classification. Per-cell revision checks protect pending/newer inputs. Separate API/node tests retain every original spill/grid test. Controller contracts: backend 37/37, web 62/62; staged secret scan, ruff, pinned formatting and build pass. Red evidence: `1-planner-red.log`; green: `1-controller-python.log`, `1-controller-web.log`, all under ignored `results-private/round-5/`.
+
+### Backup layout decision
+
+Choose a lossless versioned companion bundle. A new backup consists of the online SQLite `.db`, its `.json` manifest (format version 2), and a sibling `.templates` directory. Every registered immutable template is retained under its source SHA-256 id, with the complete snapshot and `source.xlsm`. The source id and all snapshot file hashes are verified before publishing or restoring. Copy all three items together when moving a backup. Restore stages the files, verifies database integrity and asset hashes, then relocates all template paths to `<restore>/templates/<hash>` before publishing the database. The original live database and backup remain unchanged.
+
+The native H1-to-H2 regression makes the original root unavailable, restores into a fresh root with H2 configured, and checks pending H1 calculation, workbook rows and H1 export. The controller's red run reaches the real failure: restored H1 routes return HTTP 500 with FileNotFoundError (`2-controller-red.log`). The earlier executor red stopped on a new manifest assertion; it is retained but is not the loss-case proof. Legacy database-only sidecars remain readable for compatibility; immutable templates absent from an old backup cannot be recovered from that backup alone.
+
 Date: 2026-10-11. Branch: `feat/v2-integration`. Scope: the approved local integration checklist, synthetic fixtures only. No push, PR, deployment, company workbook or production database access.
 
 ## Changes
