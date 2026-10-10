@@ -63,8 +63,9 @@ class CopyService:
             )
             connection.execute(
                 "INSERT INTO pp_overrides(copy_id,sheet,row,col,value_json,version,updated_by,updated_at,origin_copy_id,origin_revision) "
-                "SELECT ?,sheet,row,col,value_json,version,?, ?, ?, ? FROM pp_overrides WHERE copy_id=?",
-                (fork_id, user_id, now, copy_id, parent["input_revision"], copy_id),
+                "SELECT ?,sheet,row,col,value_json,version,updated_by,updated_at,?,? "
+                "FROM pp_overrides WHERE copy_id=?",
+                (fork_id, copy_id, parent["input_revision"], copy_id),
             )
             connection.execute(
                 "INSERT INTO pp_copy_baselines(copy_id,sheet,row,col,value_json) "

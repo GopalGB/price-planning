@@ -218,21 +218,9 @@ class WorkbookService:
         if type(query.limit) is not int or not 1 <= query.limit <= 500:
             raise AppError(422, "invalid", "History limit is invalid")
         with self.database.connect() as connection:
-            self._copy(connection, query.copy_id, query.user_id)
-            clauses, values = ["h.copy_id=?"], [query.copy_id]
-            for name, value in (("sheet", query.sheet), ("row", query.row), ("col", query.col)):
-                if value is not None:
-                    clauses.append(f"h.{name}=?")
-                    values.append(value)
-            values.append(query.limit)
-            rows = connection.execute(
-                "SELECT h.*,u.id AS user_id,u.name FROM pp_history h JOIN pp_users u ON u.id=h.actor_id WHERE "
-                + " AND ".join(clauses) + " ORDER BY h.id DESC LIMIT ?", values,
-            ).fetchall()
-        return {"entries": [{"op_id": item["op_id"], "revision": item["revision"], "at": item["at"],
-                 "by": {"id": item["user_id"], "name": item["name"]}, "sheet": item["sheet"],
-                 "r": item["row"], "c": item["col"], "before": json.loads(item["before_json"]),
-                 "after": json.loads(item["after_json"]), "action": item["action"]} for item in rows]}
+            copy = self._copy(connection, query.copy_id, query.user_id)
+            rows = _history_rows(connection, copy, query)
+        return {"entries": [_history_entry(item) for item in rows]}
 
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:
@@ -283,6 +271,48 @@ def _results(connection, query):
         (query.copy_id, query.sheet, query.start, query.start + query.count),
     ).fetchall()
     return {(item["row"], item["col"]): json.loads(item["value_json"]) for item in rows}
+
+
+def _history_rows(connection, copy, query, cutoff=None):
+    rows = _local_history(connection, copy["id"], query, cutoff)
+    if copy["parent_copy_id"]:
+        parent = connection.execute(
+            "SELECT * FROM pp_copies WHERE id=?", (copy["parent_copy_id"],),
+        ).fetchone()
+        inherited = _history_rows(connection, parent, query, copy["fork_revision"])
+        marker = {"copy_id": parent["id"], "name": parent["name"], "revision": copy["fork_revision"]}
+        for item in inherited:
+            if item["origin"] is None:
+                item["origin"] = marker
+        rows.extend(inherited)
+    return sorted(rows, key=lambda item: item["id"], reverse=True)[:query.limit]
+
+
+def _local_history(connection, copy_id, query, cutoff):
+    clauses, values = ["h.copy_id=?"], [copy_id]
+    if cutoff is not None:
+        clauses.append("h.revision<=?")
+        values.append(cutoff)
+    for name, value in (("sheet", query.sheet), ("row", query.row), ("col", query.col)):
+        if value is not None:
+            clauses.append(f"h.{name}=?")
+            values.append(value)
+    values.append(query.limit)
+    rows = connection.execute(
+        "SELECT h.*,u.id AS user_id,u.name FROM pp_history h JOIN pp_users u ON u.id=h.actor_id WHERE "
+        + " AND ".join(clauses) + " ORDER BY h.id DESC LIMIT ?", values,
+    ).fetchall()
+    return [{**dict(item), "origin": None} for item in rows]
+
+
+def _history_entry(item):
+    entry = {"op_id": item["op_id"], "revision": item["revision"], "at": item["at"],
+             "by": {"id": item["user_id"], "name": item["name"]}, "sheet": item["sheet"],
+             "r": item["row"], "c": item["col"], "before": json.loads(item["before_json"]),
+             "after": json.loads(item["after_json"]), "action": item["action"]}
+    if item["origin"] is not None:
+        entry["origin"] = item["origin"]
+    return entry
 
 
 def _result_extents(connection, copy_id):

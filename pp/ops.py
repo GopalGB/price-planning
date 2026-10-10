@@ -117,7 +117,9 @@ class OperationService:
                       cell["version"], commit.actor_id, now)
             connection.execute(
                 "INSERT INTO pp_overrides(copy_id,sheet,row,col,value_json,version,updated_by,updated_at) VALUES(?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(copy_id,sheet,row,col) DO UPDATE SET value_json=excluded.value_json,version=excluded.version,updated_by=excluded.updated_by,updated_at=excluded.updated_at",
+                "ON CONFLICT(copy_id,sheet,row,col) DO UPDATE SET value_json=excluded.value_json,"
+                "version=excluded.version,updated_by=excluded.updated_by,updated_at=excluded.updated_at,"
+                "origin_copy_id=NULL,origin_revision=NULL",
                 values,
             )
             connection.execute(

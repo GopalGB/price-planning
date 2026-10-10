@@ -141,6 +141,80 @@ class CopyAPIContractTests(unittest.TestCase):
                          ("12", created["id"], 1))
         self.assertEqual(fork_copy["parent"], {"id": created["id"], "name": "Parent", "revision": 1})
 
+    def test_fork_preserves_attribution_history_and_clears_origin_after_local_ops(self):
+        """Restamping inherited edits or retaining inherited markers after local work must fail."""
+        alice, alice_csrf, alice_user = self.fixture.signup("alice@example.test", "Alice")
+        bob, bob_csrf, _ = self.fixture.signup("bob@example.test", "Bob")
+        category = alice.post("/api/categories", {"name": "Alice Plans"}, {
+            "x-csrf-token": alice_csrf,
+        }).json()["category"]
+        alice.put(f"/api/categories/{category['id']}/members", {
+            "email": "bob@example.test", "role": "member",
+        }, {"x-csrf-token": alice_csrf})
+        parent = alice.post("/api/copies", {
+            "category_id": category["id"], "name": "Alice Parent",
+            "visibility": "category", "default_role": "editor",
+        }, {"x-csrf-token": alice_csrf}).json()["copy"]
+        edited = alice.post(f"/api/copies/{parent['id']}/ops", {
+            "op_id": "alice-before-fork", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        }, {"x-csrf-token": alice_csrf})
+        self.assertEqual(edited.status_code, 200)
+
+        def override(copy_id):
+            with self.fixture.database.connect() as connection:
+                return dict(connection.execute(
+                    "SELECT * FROM pp_overrides WHERE copy_id=? AND sheet=0 AND row=1 AND col=1",
+                    (copy_id,),
+                ).fetchone())
+
+        original = override(parent["id"])
+        fork = bob.post(f"/api/copies/{parent['id']}/fork", {"name": "Bob Fork"}, {
+            "x-csrf-token": bob_csrf,
+        }).json()["copy"]
+        inherited = override(fork["id"])
+        row = bob.get(f"/api/copies/{fork['id']}/sheets/0/rows?start=1&count=1").json()["rows"]["1"]["1"]
+        self.assertEqual((inherited["updated_by"], inherited["updated_at"]),
+                         (original["updated_by"], original["updated_at"]))
+        self.assertEqual((row["by"], row["at"]),
+                         ({"id": alice_user["id"], "name": "Alice"}, original["updated_at"]))
+
+        history_url = f"/api/copies/{fork['id']}/history?sheet=0&r=1&c=1"
+        inherited_history = bob.get(history_url).json()["entries"]
+        self.assertEqual([(entry["op_id"], entry["by"]["name"], entry.get("origin"))
+                          for entry in inherited_history], [
+            ("alice-before-fork", "Alice", {
+                "copy_id": parent["id"], "name": "Alice Parent", "revision": 1,
+            }),
+        ])
+        alice.post(f"/api/copies/{parent['id']}/ops", {
+            "op_id": "alice-after-fork", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 15, "expected_version": 1}],
+        }, {"x-csrf-token": alice_csrf})
+        self.assertEqual(bob.get(history_url).json()["entries"], inherited_history)
+
+        local = bob.post(f"/api/copies/{fork['id']}/ops", {
+            "op_id": "bob-local", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 14, "expected_version": 1}],
+        }, {"x-csrf-token": bob_csrf})
+        self.assertEqual(local.status_code, 200)
+        self.assertEqual((override(fork["id"])["origin_copy_id"],
+                          override(fork["id"])["origin_revision"]), (None, None))
+        undone = bob.post(f"/api/copies/{fork['id']}/ops", {
+            "op_id": "bob-undo", "action": "undo",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 2}],
+        }, {"x-csrf-token": bob_csrf})
+        self.assertEqual(undone.status_code, 200)
+        self.assertEqual((override(fork["id"])["origin_copy_id"],
+                          override(fork["id"])["origin_revision"]), (None, None))
+        history = bob.get(history_url).json()["entries"]
+        self.assertEqual([(entry["op_id"], entry["by"]["name"], entry.get("origin")) for entry in history], [
+            ("bob-undo", "Bob", None), ("bob-local", "Bob", None),
+            ("alice-before-fork", "Alice", {
+                "copy_id": parent["id"], "name": "Alice Parent", "revision": 1,
+            }),
+        ])
+
     def test_copy_service_creates_durable_pending_revision_zero_without_pool(self):
         """A copy without a calculator must not claim its blank formula cache is current."""
         from pp.copies import CopyService
