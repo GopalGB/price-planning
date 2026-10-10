@@ -42,3 +42,17 @@ Out of scope: push, dependency changes, real workbook/data, office Windows/Excel
 Evidence: results-private/round-3/. Controller owns PLAN/STATE/report/browser/commits; executor owns scoped code/tests/docs/dist.
 
 Code commits: `067e965`, `80791ca`, `318515a`. Final exact Opus 5.5 and planner reviews SHIP. Controller Python 268/268 twice, web 53/53 twice, content guard exit 0, 170 dist files byte-identical including BUILD.json. Acceptance remains unchecked: required fresh-server browser flow is blocked by unrelated CitiPoints occupying port 8000, pending permission to stop and restore it or owner freeing the port. One Ego TaskSpace 39 is reserved; no app browser acceptance is claimed.
+
+## Round 4, approved 2026-10-11
+
+GO-TOKEN authorizes all phases on feat/v2-integration at fbd67a1. Synthetic fixtures only; no push, dependency upgrades, real workbook or port-8000 intervention.
+
+- [x] Reproduce display failures first with literal Excel expectations in a synthetic format-sweep sheet and grid display tests. Cover General signs, integers, width trimming, >=1e11 and <1e-9, all requested formats.
+- [x] Patch existing formatting and grid render paths with the smallest shared display solution. Preserve raw numeric values, editing and server-owned formulas. Success: focused red then green evidence, full web green.
+- [x] Review exact claude-opus-5-5 identity and independent gpt-5.6-sol xhigh; security-auditor and formatting checks. Resolve blocking findings.
+- [x] Final verification: Python twice, web twice, content guard 0, two byte-identical deterministic builds. Fresh temp runtime first-start settings then configured free port; one Ego TaskSpace, printed LAN URL, Inputs!B3=24 and visible Calc!B3=0.583333; finish keep: [].
+- [x] Append Round 4 evidence and preserve STATE headings with truthful test/browser/review status and next action.
+
+Files: web/src/model.mjs, web/src/grid-data.mjs, web/src/grid.mjs as needed, web/test synthetic fixtures/tests, static/dist, .planning/PLAN.md, .planning/STATE.md, .planning/excel-grid/tracks/integration.md. Controller owns planning, runtime/browser/review/evidence; one exec worker owns web code/tests/dist. Logs: results-private/round-4/.
+
+Acceptance evidence: Python 269/269 twice, web 58/58 twice, content guard 0, 170 dist files byte-identical including BUILD.json, exact Opus 5.5 and independent planner SHIP. TaskSpace 40 opened printed LAN URL on free port 61184; Inputs!B3=24 produced visible Calc!B3=0.583333. Finished keep: []; temporary server stopped; port 8000 untouched. See tracks/integration.md, Round 4.
