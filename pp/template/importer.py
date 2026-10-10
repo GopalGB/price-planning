@@ -17,6 +17,7 @@ import xml.etree.ElementTree as ET
 from openpyxl.formula.translate import Translator
 from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
+from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .store import publish, replace_snapshot, staging_directory
 
@@ -27,7 +28,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 3
+IMPORT_VERSION = 4
 
 
 class TemplateImportError(Exception):
@@ -270,7 +271,22 @@ def _visible_text(element):
         elif child.tag == f"{NS}r":
             text = child.find(f"{NS}t")
             parts.append(text.text or "" if text is not None else "")
-    return "".join(parts)
+    return _decode_text("".join(unescape_ooxml(part) for part in parts))
+
+
+def _decode_text(value):
+    output, index = [], 0
+    while index < len(value):
+        high = ord(value[index])
+        if 0xD800 <= high <= 0xDBFF and index + 1 < len(value):
+            low = ord(value[index + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                output.append(chr(0x10000 + ((high - 0xD800) << 10) + low - 0xDC00))
+                index += 2
+                continue
+        output.append(value[index])
+        index += 1
+    return "".join(output)
 
 
 def _value(cell: ET.Element, database: sqlite3.Connection):
