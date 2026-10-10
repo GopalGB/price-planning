@@ -1,20 +1,14 @@
 # STATE
 
 ## Current phase
-v2 integration on branch `feat/v2-integration` (base `feat/p0-rails`). Tracks merged:
-- Track A backend P1+P2 (`feat/v2-backend`): template importer, Formualizer copy workers, revisioned ops,
-  auth/categories/copies, workbook and live APIs, run_v2.py. Report: `.planning/excel-grid/tracks/backend.md`.
-- Track B frontend P3 (`feat/v2-frontend`): Univer grid app in `web/`, committed bundle in `static/dist/`.
-  Report: `.planning/excel-grid/tracks/frontend.md`.
-- Track C P4 (`feat/v2-export`): template-preserving xlsm export, verified backup/restore, run_v2 launchers.
-  Report: `.planning/excel-grid/tracks/export.md`.
-Security tooling (Strix sandbox-exec backend) lives in the Max HQ repo on `feat/security/strix-local-backend`.
+v2 integration completed locally on branch `feat/v2-integration`, with retained concerns and office P5 acceptance pending. Tracks A backend, B frontend and C export are integrated. Template engine remains `formualizer==0.11.1`; formulas are locked and edits/export are input-mask constrained. Only synthetic fixtures were used.
 
 ## Last handoff
-2026-10-11, Mac / Claude Opus 5.5 (planner + reviewer), Codex gpt-6.1-sol high (executor), gpt-6-astra (reviewer).
-Integration in progress; see the integration checklist in the merge commit messages and the track reports.
+2026-10-11. Integration report: `.planning/excel-grid/tracks/integration.md`. Code commits: `1aa6f34`, `c72eaf7`, `4b5e2ce`, `46c59d0`, `aeaf4d7`; report/state follow in the handoff commit. Exact Opus 5.5 (`claude-opus-5-5`) final review has no open HIGH/CRITICAL; independent Astra (`gpt-6-astra`) review SHIP for the scoped diff. Both retain legacy calculation validation and export cancellation cleanup concerns.
+
+Acceptance: Python 242 tests twice green; web 33 tests twice green; content guard exit 0; two builds identical across 170 files including BUILD.json; real-server synthetic browser flow and openpyxl download validation pass with zero CSP violations. Full ordered sequence is rerun after the handoff commit, with no later commit. Local evidence: ignored `results-private/integration/final-*` and `browser-final.json`. See the report for measured pre-handoff evidence, precise commands, reviews and unverified items.
 
 ## Next task
-1. Finish integration fixes, run all suites twice, real-server end-to-end in Ego Lite.
-2. Sir: push from Terminal.app, open the PR, watch CI.
-3. Sir (office): `git pull`, put the .xlsm in `template/`, run `run_v2.bat`, open from a second PC.
+1. G: review local commits, push `feat/v2-integration`, open the PR and require green CI. No push or PR was performed here.
+2. Owner-approved legacy-data audit and review of retained migration/spill-blocker/export cleanup concerns before production use.
+3. Separately approve Strix and office Windows/Excel/LAN, real-workbook parity and load acceptance. These gates remain unverified; do not claim P5 release complete.
