@@ -169,13 +169,16 @@ class AuthService:
                 self._pending.pop(key, None)
 
     def authenticate(self, token: str | None) -> tuple[dict, str]:
+        with self.database.connect() as connection:
+            return self.authenticate_in_transaction(connection, token)
+
+    def authenticate_in_transaction(self, connection, token: str | None) -> tuple[dict, str]:
         if not token:
             raise AppError(401, "unauthorized", "Sign in is required")
-        with self.database.connect() as connection:
-            row = connection.execute(
-                "SELECT u.id,u.email,u.name,s.csrf,s.expires_at FROM pp_sessions s JOIN pp_users u ON u.id=s.user_id WHERE s.token_hash=?",
-                (token_hash(token),),
-            ).fetchone()
+        row = connection.execute(
+            "SELECT u.id,u.email,u.name,s.csrf,s.expires_at FROM pp_sessions s JOIN pp_users u ON u.id=s.user_id WHERE s.token_hash=?",
+            (token_hash(token),),
+        ).fetchone()
         if row is None or row["expires_at"] <= _now():
             raise AppError(401, "unauthorized", "Session expired")
         return {"id": row["id"], "email": row["email"], "name": row["name"]}, row["csrf"]

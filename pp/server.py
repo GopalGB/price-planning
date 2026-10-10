@@ -138,7 +138,8 @@ async def _categories(request: Request):
         user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
         return JSONResponse({"categories": services.categories.list(user["id"])})
     services, user, _ = _write_auth(request)
-    category = services.categories.create(user["id"], (await _body(request)).get("name"))
+    body = await _body(request)
+    category = services.categories.create(user["id"], body.get("name"), _session_check(request, services))
     return JSONResponse({"category": category}, status_code=201)
 
 
@@ -147,7 +148,7 @@ async def _category_members(request: Request):
     body = await _body(request)
     change = MembershipChange(user["id"], request.path_params["category_id"],
                               body.get("email"), body.get("role"))
-    category = services.categories.update_member(change)
+    category = services.categories.update_member(change, _session_check(request, services))
     await services.hub.recheck_user(_user_id(services.database, body.get("email")))
     return JSONResponse({"category": category})
 
@@ -158,21 +159,25 @@ async def _copies(request: Request):
         user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
         return JSONResponse({"copies": services.copies.list(user["id"], request.query_params.get("category"))})
     services, user, _ = _write_auth(request)
-    copy = services.copies.create(user["id"], await _body(request))
+    body = await _body(request)
+    copy = services.copies.create(user["id"], body, _session_check(request, services))
     copy = await _calculate_baseline(services, copy, user["id"])
     return JSONResponse({"copy": copy}, status_code=201)
 
 
 async def _fork(request: Request):
     services, user, _ = _write_auth(request)
-    copy = services.copies.fork(user["id"], request.path_params["copy_id"], (await _body(request)).get("name"))
+    body = await _body(request)
+    copy = services.copies.fork(user["id"], request.path_params["copy_id"], body.get("name"),
+                                _session_check(request, services))
     copy = await _calculate_baseline(services, copy, user["id"])
     return JSONResponse({"copy": copy}, status_code=201)
 
 
 async def _copy_patch(request: Request):
     services, user, _ = _write_auth(request)
-    copy = services.copies.patch(user["id"], request.path_params["copy_id"], await _body(request))
+    body = await _body(request)
+    copy = services.copies.patch(user["id"], request.path_params["copy_id"], body, _session_check(request, services))
     await services.hub.recheck_copy(copy["id"])
     return JSONResponse({"copy": copy})
 
@@ -182,7 +187,7 @@ async def _copy_shares(request: Request):
     body = await _body(request)
     change = ShareChange(user["id"], request.path_params["copy_id"],
                          body.get("email"), body.get("role"))
-    copy = services.copies.share(change)
+    copy = services.copies.share(change, _session_check(request, services))
     await services.hub.recheck_user(_user_id(services.database, body.get("email")))
     return JSONResponse({"copy": copy})
 
@@ -227,7 +232,8 @@ async def _ops(request: Request):
     services, user, _ = _write_auth(request)
     copy_id, payload = request.path_params["copy_id"], await _body(request)
     async with services.hub.pipeline(copy_id):
-        ack, created = services.operations.apply_with_status(copy_id, user["id"], payload)
+        ack, created = services.operations.apply_with_status(copy_id, user["id"], payload,
+                                                              _session_check(request, services))
         if created:
             await _calculate_and_publish(services, copy_id, ack["input_revision"])
     return JSONResponse(ack)
@@ -303,6 +309,11 @@ def _read_auth(request):
     services = _services(request)
     user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
     return services, user
+
+
+def _session_check(request, services):
+    token = request.cookies.get("pp_session")
+    return lambda connection: services.auth.authenticate_in_transaction(connection, token)
 
 
 def _write_auth(request):

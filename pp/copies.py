@@ -30,9 +30,10 @@ class CopyService:
             return [_copy(connection, row, role) for row in rows
                     if (role := effective_role(connection, row["id"], user_id)) is not None]
 
-    def create(self, user_id: str, payload: dict) -> dict:
+    def create(self, user_id: str, payload: dict, session_check=None) -> dict:
         name, category_id, visibility, default_role = _copy_fields(payload)
         with self.database.transaction() as connection:
+            _require_session(connection, user_id, session_check)
             member = connection.execute(
                 "SELECT 1 FROM pp_category_members WHERE category_id=? AND user_id=?", (category_id, user_id)
             ).fetchone()
@@ -46,10 +47,11 @@ class CopyService:
             _queue_baseline(connection, copy_id, now)
             return _copy(connection, connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone(), "owner")
 
-    def fork(self, user_id: str, copy_id: str, name: object) -> dict:
+    def fork(self, user_id: str, copy_id: str, name: object, session_check=None) -> dict:
         if not isinstance(name, str) or not name.strip():
             raise AppError(422, "invalid", "Fork name is required")
         with self.database.transaction() as connection:
+            _require_session(connection, user_id, session_check)
             parent = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
             if parent is None or effective_role(connection, copy_id, user_id) is None:
                 raise AppError(404, "not_found", "Copy not found")
@@ -81,12 +83,13 @@ class CopyService:
                 raise AppError(404, "not_found", "Copy not found")
             return _copy(connection, row, role)
 
-    def patch(self, user_id: str, copy_id: str, payload: dict) -> dict:
+    def patch(self, user_id: str, copy_id: str, payload: dict, session_check=None) -> dict:
         allowed = {key: value for key, value in payload.items() if key in {"name", "visibility", "default_role"}}
         if not allowed:
             raise AppError(422, "invalid", "No copy fields were supplied")
         _validate_patch(allowed)
         with self.database.transaction() as connection:
+            _require_session(connection, user_id, session_check)
             row = _owner_copy(connection, copy_id, user_id)
             values = {"name": row["name"], "visibility": row["visibility"], "default_role": row["default_role"], **allowed}
             connection.execute("UPDATE pp_copies SET name=?,visibility=?,default_role=?,updated_at=? WHERE id=?",
@@ -94,12 +97,13 @@ class CopyService:
             row = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
             return _copy(connection, row, "owner")
 
-    def share(self, change: ShareChange) -> dict:
+    def share(self, change: ShareChange, session_check=None) -> dict:
         if not isinstance(change.email, str) or not isinstance(change.role, (str, type(None))):
             raise AppError(422, "invalid", "Email and share role are invalid")
         if change.role not in {"editor", "viewer", None}:
             raise AppError(422, "invalid", "Email and share role are invalid")
         with self.database.transaction() as connection:
+            _require_session(connection, change.actor_id, session_check)
             row = _owner_copy(connection, change.copy_id, change.actor_id)
             target = connection.execute(
                 "SELECT id FROM pp_users WHERE email=?", (change.email.strip().lower(),)
@@ -147,6 +151,14 @@ def _owner_copy(connection, copy_id, user_id):
     if row is None or row["owner_id"] != user_id:
         raise AppError(403, "forbidden", "Copy owner access is required")
     return row
+
+
+def _require_session(connection, user_id, session_check):
+    if session_check is None:
+        return
+    user, _ = session_check(connection)
+    if user["id"] != user_id:
+        raise AppError(401, "unauthorized", "Session user changed")
 
 
 def _queue_baseline(connection, copy_id, now):

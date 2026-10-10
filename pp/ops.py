@@ -42,14 +42,15 @@ class OperationService:
         self.database = database
         self.templates = snapshot if isinstance(snapshot, TemplateCatalog) else TemplateCatalog(database, snapshot)
 
-    def apply(self, copy_id: str, actor_id: str, payload: dict) -> dict:
-        ack, _ = self.apply_with_status(copy_id, actor_id, payload)
+    def apply(self, copy_id: str, actor_id: str, payload: dict, session_check=None) -> dict:
+        ack, _ = self.apply_with_status(copy_id, actor_id, payload, session_check)
         return ack
 
-    def apply_with_status(self, copy_id: str, actor_id: str, payload: dict) -> tuple[dict, bool]:
+    def apply_with_status(self, copy_id: str, actor_id: str, payload: dict, session_check=None) -> tuple[dict, bool]:
         payload_hash = _payload_hash(payload)
         cells, op_id, action = _shape(payload)
         with self.database.transaction() as connection:
+            _require_session(connection, actor_id, session_check)
             copy = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
             if copy is None or effective_role(connection, copy_id, actor_id) not in EDIT_ROLES:
                 raise AppError(403, "forbidden", "Editor access is required")
@@ -165,6 +166,14 @@ class OperationService:
         values.update({(row["sheet"], row["row"], row["col"]): json.loads(row["after_json"]) for row in rows})
         values.update({(row["sheet"], row["row"], row["col"]): json.loads(row["value_json"]) for row in current})
         return [(*coordinate, value) for coordinate, value in sorted(values.items())]
+
+
+def _require_session(connection, actor_id, session_check):
+    if session_check is None:
+        return
+    user, _ = session_check(connection)
+    if user["id"] != actor_id:
+        raise AppError(401, "unauthorized", "Session user changed")
 
 
 def _shape(payload):
