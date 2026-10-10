@@ -6,7 +6,11 @@
 3. Copy the template `.xlsm` by hand into `<repo>\template\` (for example
    `template\Price Planning Template Spring 2027.xlsm`). The folder is gitignored; the file is never in git.
    To keep it elsewhere, set `PP_TEMPLATE_PATH` to its full path instead (or `template_path` in `settings.json`).
-4. Double-click `run_v2.bat`. It creates `.venv` from `vendor\wheels` offline and starts the app.
+4. Double-click `run_v2.bat`. It creates `.venv` from `vendor\wheels` offline, writes first-start LAN/demo
+   defaults when `settings.json` is absent, and starts the app. Do not create or edit JSON for the standard
+   office start.
+5. Copy each printed `Share with your team` URL to colleagues. A detected `10.x` address is listed first,
+   followed by other usable local addresses.
 
 ## Backup (online, safe while the app is running)
 `run_v2.bat --backup` writes a verified copy of the resolved live database into `backups\` using the SQLite online
@@ -30,8 +34,9 @@ Without the launcher: `.venv\Scripts\python -m pp.backup` (same options).
 Restore drill: do step 3 into a scratch folder once per month and confirm it succeeds.
 
 ## Network
-Colleagues open the printed `http://<server-ip>:<port>`. If they cannot connect, IT must allow that port;
-the app cannot change firewall rules. Production should sit behind the company HTTPS proxy (`ops/nginx.conf`).
+Colleagues open a printed `Share with your team: http://<server-ip>:<port>` URL. No JSON edit is needed for the
+standard office copy, start, and share flow. If they cannot connect, IT must allow that port; the app cannot
+change firewall rules. Production should sit behind the company HTTPS proxy (`ops/nginx.conf`).
 
 ## Legacy v1
 `run.bat` / `run.sh` still start the v1 prototype (`run.bat --backup` is its own backup). Do not mix data folders.
@@ -52,8 +57,14 @@ then the first alphabetically sorted `.xlsm` in `template/`. Keep the template a
 template without serving HTTP. The template, snapshots, exports, and SQLite files
 stay outside Git.
 
-Configure `bind`, `port`, `data_dir`, `template_path`, `allowed_origins`, and
-`max_workers` in `settings.json`. Use the exact browser origin including its port.
+On first v2 server start, a missing `settings.json` uses LAN defaults: bind
+`0.0.0.0`, port `8000`, and demo mode enabled. It derives exact loopback,
+hostname, and detected local IPv4 origins and prints shareable URLs, preferring
+a detected `10.x` address. No manual JSON editing is required. Configure
+`bind`, `port`, `data_dir`, `template_path`, `allowed_origins`, and
+`max_workers` in `settings.json` only when you need to override those defaults.
+An explicit nonempty `allowed_origins` list replaces the derived list and must
+use the exact browser origin including its port.
 Keep `max_workers` at one until memory measurements justify more warm copies.
 Signup requires `demo_mode: true`; use HTTPS and `cookie_secure: true` outside an
 explicit HTTP demo. V2 serves `static/dist/` when present, otherwise a placeholder.
