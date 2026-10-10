@@ -3,5 +3,5 @@
 PY=$(command -v python3 || command -v python)
 "$PY" ops/content_guard.py --staged || exit 1
 MAXHQ_HOOK="$(git rev-parse --show-toplevel)/../security/tools/pre-commit-hook.sh"
-[ -f "$MAXHQ_HOOK" ] && exec sh "$MAXHQ_HOOK"
+[ -f "$MAXHQ_HOOK" ] && exec bash "$MAXHQ_HOOK"
 exit 0

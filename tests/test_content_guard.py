@@ -1,4 +1,6 @@
 import hashlib
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +37,28 @@ class CheckTests(unittest.TestCase):
 
 
 class HookTests(unittest.TestCase):
+    def test_hook_runs_bash_maxhq_hook_when_present(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / 'r'
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            (repo / 'ops').mkdir()
+            (repo / '.githooks').mkdir()
+            for rel in ('ops/content_guard.py', 'ops/large_file_allowlist.json', '.githooks/pre-commit'):
+                (repo / rel).write_bytes((ROOT / rel).read_bytes())
+            hook_dir = Path(d) / 'security' / 'tools'
+            hook_dir.mkdir(parents=True)
+            (hook_dir / 'pre-commit-hook.sh').write_text(
+                '#!/bin/bash\nset -euo pipefail\nitems=(ok)\n[[ ${items[0]} == ok ]]\n')
+            # macOS sh accepts Bash syntax; model a strictly POSIX-only sh.
+            shim = Path(d) / 'bin'
+            shim.mkdir()
+            (shim / 'sh').write_text('#!/bin/sh\nexit 77\n')
+            (shim / 'sh').chmod(0o755)
+            env = dict(os.environ, PATH=str(shim) + os.pathsep + os.environ['PATH'])
+            result = subprocess.run([shutil.which('sh'), '.githooks/pre-commit'], cwd=repo,
+                                    env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_hook_runs_without_maxhq(self):
         with tempfile.TemporaryDirectory() as d:
             repo = Path(d) / 'r'
