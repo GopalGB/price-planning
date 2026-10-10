@@ -51,5 +51,17 @@ class LaunchersV2(unittest.TestCase):
         self.assertIn('\r\n', (ROOT / 'run_v2.bat').read_bytes().decode())
 
 
+class DeployDocV2(unittest.TestCase):
+    def test_deploy_doc_covers_v2(self):
+        text = (ROOT / 'docs' / 'DEPLOY.md').read_text(encoding='utf-8')
+        for must in ('template\\', 'PP_TEMPLATE_PATH', 'run_v2.bat', 'run_v2.bat --backup',
+                     'run_v2.bat --restore', 'python -m pp.backup'):
+            self.assertIn(must, text)
+
+    def test_template_folder_ignored(self):
+        res = subprocess.run(['git', 'check-ignore', '-q', 'template/notes.txt'], cwd=ROOT)
+        self.assertEqual(res.returncode, 0)
+
+
 if __name__ == '__main__':
     unittest.main()

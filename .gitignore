@@ -1,4 +1,5 @@
 # Company data never enters git (SPEC D1). Copy the template onto the server by hand.
+/template/
 *.xlsm
 *.xlsx
 *.xls
