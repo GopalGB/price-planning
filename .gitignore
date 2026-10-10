@@ -31,6 +31,11 @@ results-private/
 *.db-wal
 *.db-shm
 *.log
+.planning/excel-grid/tracks/*.log
+.planning/excel-grid/backend-*.log
+.planning/excel-grid/frontend-shots/
+.planning/excel-grid/**/frontend-shots/
+frontend-shots/
 logs/
 .content-denylist
 
