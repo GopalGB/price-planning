@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { validateValue, keyOf } from '../src/model.mjs';
 import { validPresence } from '../src/grid-data.mjs';
+import { syntheticExport } from './export.mjs';
 
 const publicUser=({id,email,name})=>({id,email,name});
 const fail=(status,error,message,extra={})=>{throw Object.assign(new Error(message),{status,error,...extra});};
@@ -112,7 +113,10 @@ export async function createMockServer({port=3101}={}) {
   if(parts[2]==='history') {
    const entries=copy.history.filter(e=>!query.has('r')||(e.sheet===Number(query.get('sheet'))&&e.r===Number(query.get('r'))&&e.c===Number(query.get('c'))));return json(res,200,{entries:entries.slice(0,Math.min(200,Number(query.get('limit')??50)))});
   }
-  if(parts[2]==='export.xlsm')fail(501,'synthetic_export','The mock has no original .xlsm template. Export is available on the office server.');
+  if(parts[2]==='export.xlsm') {
+   const data=syntheticExport(SHAPES,(sheet,r,c)=>syntheticCell(copy,sheet,r,c));
+   res.writeHead(200,{'Content-Type':'application/vnd.ms-excel.sheet.macroEnabled.12','Content-Disposition':'attachment; filename="synthetic-planning.xlsm"','Cache-Control':'no-store'});return res.end(data);
+  }
   const sheet=Number(parts[3]),shape=SHAPES[sheet];if(!shape)fail(404,'sheet','Unknown sheet');
   if(parts[4]==='cell') {const r=Number(query.get('r')),c=Number(query.get('c'));if(!Number.isInteger(r)||!Number.isInteger(c)||r<0||r>=shape.rows||c<0||c>=shape.cols)fail(422,'invalid','Outside sheet');return json(res,200,syntheticCell(copy,sheet,r,c));}
   const start=Number(query.get('start')),count=Number(query.get('count'));

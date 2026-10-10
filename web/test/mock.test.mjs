@@ -45,4 +45,7 @@ test('mock API enforces atomic edits, versions, deduplication, roles, fork and W
  cookie=viewerCookie;csrf=viewerCsrf;
  assert.equal((await req(`/copies/${copy.id}/ops`,'POST',{...op,op_id:'viewer'})).status,403);
  assert.equal((await req('/copies')).copies.find(c=>c.id===copy.id).my_role,'viewer');
+ const exported=await fetch(server.url+`/api/copies/${copy.id}/export.xlsm`,{headers:{Cookie:cookie}});
+ assert.equal(exported.status,200);assert.match(exported.headers.get('content-disposition'),/synthetic-planning.xlsm/);
+ assert.equal(Buffer.from(await exported.arrayBuffer()).readUInt32LE(0),0x04034b50);
 });
