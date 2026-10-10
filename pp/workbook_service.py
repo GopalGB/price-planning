@@ -197,7 +197,7 @@ class WorkbookService:
         return output
 
     def cell(self, query: CellQuery) -> dict:
-        with self.database.connect() as connection:
+        with self.database.read_transaction() as connection:
             copy = self._copy(connection, query.copy_id, query.user_id)
             snapshot = self.templates.get(connection, copy["template_id"])
             if min(query.sheet, query.row, query.col) < 0 or query.sheet >= len(snapshot.sheets):
@@ -210,12 +210,12 @@ class WorkbookService:
                 "SELECT value_json FROM pp_results WHERE copy_id=? AND sheet=? AND row=? AND col=?",
                 (query.copy_id, query.sheet, query.row, query.col),
             ).fetchone()
-            input_record = _input_record(connection, override) if override and result else None
+            input_record = _input_record(connection, override) if override else None
         record = dict(snapshot.cell(query.sheet, query.row, query.col))
         if result:
             record["k"] = "f"
         fallback = None if record["k"] == "f" else record["v"]
-        value = json.loads(result["value_json"]) if result else json.loads(override["value_json"]) if override else fallback
+        value = json.loads(result["value_json"]) if result else input_record["v"] if input_record else fallback
         response = {"v": value, "s": record["s"], "k": record["k"],
                     "formula": record.get("formula"),
                     "validation": snapshot.validation(query.sheet, query.row, query.col)}
@@ -223,6 +223,10 @@ class WorkbookService:
             response.update(_spill_input_metadata(
                 snapshot, (query.sheet, query.row, query.col), input_record
             ))
+        elif input_record:
+            response.update({key: input_record[key] for key in ("ver", "by", "at")})
+        elif record["k"] == "i":
+            response["ver"] = 0
         return response
 
     def history(self, query: HistoryQuery) -> dict:
