@@ -9,7 +9,7 @@ test('API sends CSRF and cookies, throws structured errors, never sends undo met
 });
 test('accepted edits undo and redo through server, remote edits never create local undo entries',async()=>{
  const store=new CellStore({0:{1:{v:10,k:'i',ver:0}}});const calls=[];
- const controller=new EditController({store,copyId:'one',role:'editor',api:{request:async(path,options)=>{calls.push(options.body);return {input_revision:calls.length};}},paint:()=>{},toast:()=>{}});
+ const controller=new EditController({store,copyId:'one',role:'editor',api:{request:async(path,options)=>{calls.push(options.body);controller.remote({type:'op',op_id:options.body.op_id,input_revision:calls.length,cells:options.body.cells.map(c=>({...c,ver:c.expected_version+1}))});return {input_revision:calls.length};}},paint:()=>{},toast:()=>{}});
  await controller.edit([{sheet:0,r:0,c:1,v:20}],'edit');assert.equal(store.get(0,0,1).v,20);
  await controller.undo();assert.equal(store.get(0,0,1).v,10);assert.equal(calls[1].action,'undo');
  await controller.undo(true);assert.equal(store.get(0,0,1).v,20);assert.equal(calls[2].action,'undo');
@@ -28,6 +28,21 @@ test('viewer refuses writes at controller boundary',async()=>{
 });
 test('saving indicator clears after accepted operation even when calc precedes HTTP acknowledgement',async()=>{
  const store=new CellStore({0:{1:{v:10,k:'i',ver:0}}});const paints=[];let controller;
- controller=new EditController({store,copyId:'one',role:'editor',api:{request:async()=>({input_revision:1})},paint:()=>paints.push(controller.busy),toast:()=>{}});
+ controller=new EditController({store,copyId:'one',role:'editor',api:{request:async(path,{body})=>{controller.remote({type:'op',op_id:body.op_id,input_revision:1,cells:body.cells.map(c=>({...c,ver:7}))});return {input_revision:1};}},paint:()=>paints.push(controller.busy),toast:()=>{}});
  await controller.edit([{sheet:0,r:0,c:1,v:20}]);assert.equal(paints.at(-1),false);
+});
+test('two edits on one cell undo twice and redo twice without masking remote conflicts',async()=>{
+ const store=new CellStore({0:{1:{v:0,k:'i',ver:0}}});let revision=0,controller;
+ const api={request:async(path,{body})=>{controller.remote({type:'op',op_id:body.op_id,input_revision:++revision,cells:body.cells.map(c=>({...c,ver:c.expected_version+1}))});return {input_revision:revision};}};
+ controller=new EditController({store,copyId:'one',role:'editor',api,paint:()=>{},toast:()=>{}});
+ await controller.edit([{sheet:0,r:0,c:1,v:1}]);await controller.edit([{sheet:0,r:0,c:1,v:2}]);
+ assert.equal(await controller.undo(),true);assert.equal(await controller.undo(),true);assert.equal(store.get(0,0,1).v,0);
+ assert.equal(await controller.undo(true),true);assert.equal(await controller.undo(true),true);assert.equal(store.get(0,0,1).v,2);
+ controller.remote({type:'op',op_id:'other',input_revision:100,cells:[{sheet:0,r:0,c:1,v:99,ver:100}]});assert.equal(await controller.undo(),false);
+});
+test('actual WS versions may increase by more than one',async()=>{
+ const store=new CellStore({0:{1:{v:0,k:'i',ver:0}}});let controller,version=10;
+ const api={request:async(path,{body})=>{controller.remote({type:'op',op_id:body.op_id,input_revision:version,cells:body.cells.map(c=>({...c,ver:version}))});version+=10;return {input_revision:version-10};}};
+ controller=new EditController({store,copyId:'one',role:'editor',api,paint:()=>{},toast:()=>{}});
+ await controller.edit([{sheet:0,r:0,c:1,v:1}]);assert.equal(store.get(0,0,1).ver,10);assert.equal(await controller.undo(),true);assert.equal(store.get(0,0,1).ver,20);
 });

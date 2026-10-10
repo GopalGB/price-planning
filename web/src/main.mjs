@@ -2,9 +2,10 @@ import './style.css';
 import { ApiClient } from './client.mjs';
 import { authView, homeView, workspaceView, escapeHTML as e, roleOptions } from './views.mjs';
 const $=id=>document.getElementById(id),api=new ApiClient();
-let user=null,categories=[],copies=[],categoryId='',activeCopy=null,grid=null,signup=false,toastTimer;
+let user=null,categories=[],copies=[],categoryId='',activeCopy=null,grid=null,signup=false,toastTimer,navigation=0;
 export function toast(text) { $('toast').textContent=text;$('toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').hidden=true,6500); }
 function showAuth() {
+ navigation++;
  grid?.dispose();grid=null;activeCopy=null;$('workspace-actions').hidden=true;$('logout-button').hidden=true;$('save-chip').textContent='Sign in';$('breadcrumb').textContent='Spring 2027';$('view').innerHTML=authView(signup);
  $('auth-switch').onclick=()=>{signup=!signup;showAuth();};
  $('auth-form').onsubmit=async event=>{
@@ -14,6 +15,7 @@ function showAuth() {
  };
 }
 async function showHome() {
+ navigation++;
  grid?.dispose();grid=null;activeCopy=null;$('workspace-actions').hidden=true;$('presence').replaceChildren();$('logout-button').hidden=false;$('save-chip').textContent=user.name;$('save-chip').classList.remove('busy');
  categories=(await api.request('/categories')).categories;if(!categories.some(c=>c.id===categoryId))categoryId=categories[0]?.id??'';
  copies=(await api.request(`/copies${categoryId?`?category=${encodeURIComponent(categoryId)}`:''}`)).copies;
@@ -27,11 +29,13 @@ async function showHome() {
  $('copy-create').onclick=createCopyModal;$('category-create').onclick=categoryModal;if($('category-members'))$('category-members').onclick=membersModal;
 }
 async function openCopy(copy) {
+ const visit=++navigation;
  grid?.dispose();$('view').onclick=null;activeCopy=copy;$('view').innerHTML=workspaceView(copy);$('workspace-actions').hidden=false;$('share-button').hidden=copy.my_role!=='owner';$('breadcrumb').textContent=`${categories.find(c=>c.id===copy.category_id)?.name??''} / ${copy.name}`;
- const meta=await api.request(`/copies/${copy.id}/workbook`);const { PlanningGrid }=await import('./grid.mjs');
- grid=new PlanningGrid({api,copy,meta,user,toast});await grid.start();
+ const meta=await api.request(`/copies/${copy.id}/workbook`);if(visit!==navigation)return;
+ const { PlanningGrid }=await import('./grid.mjs');if(visit!==navigation)return;
+ grid=new PlanningGrid({api,copy,meta,user,toast});await grid.start();if(visit!==navigation)return;
  $('share-button').onclick=()=>shareModal(activeCopy);$('fork-button').onclick=()=>forkModal(activeCopy);
- $('undo-button').onclick=()=>grid.controller.undo();$('redo-button').onclick=()=>grid.controller.undo(true);
+ $('undo-button').onclick=()=>safe(grid.undo());$('redo-button').onclick=()=>safe(grid.undo(true));
  $('history-button').onclick=()=>grid.toggleHistory();$('history-close').onclick=()=>grid.toggleHistory(false);
  $('copy-button').onclick=()=>safe(grid.copySelection());$('paste-button').onclick=()=>safe(grid.pasteClipboard());
  $('fill-down').onclick=()=>grid.copyDirection(false);$('fill-right').onclick=()=>grid.copyDirection(true);

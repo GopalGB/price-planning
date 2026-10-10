@@ -4,6 +4,7 @@ import { randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { validateValue, keyOf } from '../src/model.mjs';
+import { validPresence } from '../src/grid-data.mjs';
 
 const publicUser=({id,email,name})=>({id,email,name});
 const fail=(status,error,message,extra={})=>{throw Object.assign(new Error(message),{status,error,...extra});};
@@ -27,7 +28,7 @@ async function readBody(req) {
 export async function createMockServer({port=3101}={}) {
  const users=new Map(),sessions=new Map(),copies=new Map(),categories=new Map(),attempts=new Map();
  const category={id:'category-a',name:'Category A',members:[]}; categories.set(category.id,category);
- const wss=new WebSocketServer({noServer:true}); let url='';
+ const wss=new WebSocketServer({noServer:true,maxPayload:65536}); let url='';
  function session(req) {const token=(req.headers.cookie??'').match(/(?:^|;\s*)pp_session=([^;]+)/)?.[1];return sessions.get(token);}
  function categoryRole(cat,user) {return cat.members.find(m=>m.id===user.id)?.role;}
  function role(copy,user) {
@@ -42,7 +43,7 @@ export async function createMockServer({port=3101}={}) {
    if(!role(copy,ws.user))ws.close(4403,'Access revoked');else ws.send(JSON.stringify(message));
   }
  }
- function revoke() {for(const ws of wss.clients)if(!role(copies.get(ws.copyId),ws.user))ws.close(4403,'Access revoked');}
+ function revoke() {for(const ws of wss.clients)if(role(copies.get(ws.copyId),ws.user)!==ws.role)ws.close(4403,'Access changed');}
  function newCopy(user,body,parent=null) {
   const cat=categories.get(body.category_id??parent?.category_id); if(!cat||!categoryRole(cat,user))fail(403,'category','Join the category first');
   if(!String(body.name??'').trim())fail(422,'invalid','Name is required');
@@ -51,7 +52,7 @@ export async function createMockServer({port=3101}={}) {
   copies.set(copy.id,copy);return copy;
  }
  function checkCell(copy,cell) {
-  const shape=SHAPES[cell.sheet];
+  if(!Number.isInteger(cell.sheet))fail(422,'invalid','Invalid sheet index',{cells:[cell]});const shape=SHAPES[cell.sheet];
   if(!shape || !Number.isInteger(cell.r)||!Number.isInteger(cell.c)||cell.r<0||cell.r>=shape.rows||cell.c<0||cell.c>=shape.cols)fail(422,'invalid','Cell is outside the sheet',{cells:[cell]});
   if(syntheticCell(copy,cell.sheet,cell.r,cell.c).k!=='i')fail(422,'locked','Cell is locked',{cells:[cell]});
   try{validateValue(cell.v);}catch(e){fail(422,'invalid',e.message,{cells:[cell]});}
@@ -158,7 +159,7 @@ export async function createMockServer({port=3101}={}) {
   // Vite's same-origin proxy is the only permitted development origin besides this server.
   if(!current||!copy||!role(copy,current.user)||![url,'http://127.0.0.1:5173','http://localhost:5173'].includes(req.headers.origin)){socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');return socket.destroy();}
   wss.handleUpgrade(req,socket,head,ws=>{
-   ws.copyId=copy.id;ws.user=current.user;ws.selection=null;
+   ws.copyId=copy.id;ws.user=current.user;ws.role=role(copy,current.user);ws.selection=null;
    ws.on('message',data=>{
     try {
      const message=JSON.parse(data);
@@ -169,8 +170,8 @@ export async function createMockServer({port=3101}={}) {
       else for(const patch of copy.replay)if((patch.input_revision??patch.calculated_revision)>message.last_revision)ws.send(JSON.stringify(patch));
       ws.send(JSON.stringify({type:'calc_state',input_revision:copy.input_revision,calculated_revision:copy.calculated_revision}));
      }
-     if(message.type==='presence'&&Array.isArray(message.sel)&&message.sel.length===4&&message.sel.every(Number.isInteger)) {
-      ws.selection=message;broadcast(copy,{type:'presence',users:[...wss.clients].filter(peer=>peer.copyId===copy.id&&peer.selection).map(peer=>({id:peer.user.id,name:peer.user.name,color:'#8963ba',sheet:peer.selection.sheet,sel:peer.selection.sel}))});
+     if(message.type==='presence'&&validPresence(SHAPES,message)) {
+      ws.selection={sheet:message.sheet,sel:message.sel};broadcast(copy,{type:'presence',users:[...wss.clients].filter(peer=>peer.copyId===copy.id&&peer.selection).map(peer=>({id:peer.user.id,name:peer.user.name,color:'#8963ba',sheet:peer.selection.sheet,sel:peer.selection.sel}))});
      }
     } catch {ws.close(1008,'Invalid message');}
    });

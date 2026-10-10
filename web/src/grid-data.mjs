@@ -24,12 +24,32 @@ export function cellsFromMatrix(matrix,sheet) {
  return changes;
 }
 export function pasteChanges(text,origin) {
- const lines=String(text).replace(/\r\n?/g,'\n').replace(/\n$/,'').split('\n'),changes=[];
- for(const [r,line] of lines.entries())for(const [c,value] of line.split('\t').entries()) {
+ const lines=tsvRows(text),changes=[];
+ for(const [r,line] of lines.entries())for(const [c,value] of line.entries()) {
   changes.push({sheet:origin.sheet,r:origin.r+r,c:origin.c+c,v:parseInput(value)});
   if(changes.length>MAX_OP_CELLS)throw new Error('Paste exceeds 10,000 cells');
  }
  return changes;
+}
+export function tsvRows(text) {
+ const source=String(text).replace(/\r\n?/g,'\n'),rows=[],row=[];let value='',quoted=false;
+ for(let i=0;i<source.length;i++) {
+  const char=source[i];
+  if(char==='"'&&(quoted||value==='')){if(quoted&&source[i+1]==='"'){value+='"';i++;}else quoted=!quoted;}
+  else if(!quoted&&(char==='\t'||char==='\n')){row.push(value);value='';if(char==='\n'){rows.push([...row]);row.length=0;}}
+  else value+=char;
+ }
+ if(quoted)throw new Error('Unclosed quoted clipboard cell');
+ if(value!==''||row.length||!rows.length){row.push(value);rows.push(row);}return rows;
+}
+export function clipboardValue(v) {
+ const raw=v===null||v===undefined?'':typeof v==='object'?v.error:typeof v==='boolean'?(v?'TRUE':'FALSE'):String(v);
+ return /[\t\n\r"]/.test(raw)?`"${raw.replaceAll('"','""')}"`:raw;
+}
+export function validPresence(sheets,message) {
+ const shape=sheets.find(s=>s.index===message.sheet),range=message.sel;
+ if(!Number.isInteger(message.sheet)||!shape||!Array.isArray(range)||range.length!==4||!range.every(Number.isInteger))return false;
+ const [r1,c1,r2,c2]=range;return r1>=0&&c1>=0&&r2>=r1&&c2>=c1&&r2<shape.rows&&c2<shape.cols;
 }
 export function rangeCells(range,sheet) {
  const area=(range.endRow-range.startRow+1)*(range.endColumn-range.startColumn+1);

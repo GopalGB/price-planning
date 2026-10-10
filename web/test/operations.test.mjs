@@ -49,3 +49,7 @@ test('HTTP acknowledgement cannot erase WS actor metadata at the same version',(
  const store=seed();store.applyOp({input_revision:1,by:{id:'user',name:'Synthetic Editor'},cells:[{sheet:0,r:0,c:1,v:25,ver:5}]});
  store.applyOp({input_revision:1,cells:[{sheet:0,r:0,c:1,v:25,ver:5}]});assert.equal(store.get(0,0,1).by.name,'Synthetic Editor');
 });
+test('slow row snapshot cannot regress a newer formula revision',()=>{
+ const store=seed();store.applyCalc({calculated_revision:5,changes:[{sheet:0,r:0,c:2,v:99}]});
+ store.merge({0:{2:{v:20,k:'f',ver:0}}},0,4);assert.equal(store.get(0,0,2).v,99);
+});

@@ -10,3 +10,8 @@ test('Copies home escapes user copy names and exposes open and fork actions',()=
 test('viewer workspace shows read-only role, export and external formula bar',()=>{
  const html=workspaceView({id:'c',name:'Test',my_role:'viewer'});assert.match(html,/Viewer/);assert.match(html,/export.xlsm/);assert.match(html,/id="formula-input"/);assert.match(html,/id="grid"/);
 });
+test('live painting preserves focused formula draft and updates unfocused display',async()=>{
+ const {syncFormula}=await import('../src/views.mjs');const field={value:'my draft',readOnly:false};
+ syncFormula(field,{value:'server value',readOnly:false},true);assert.equal(field.value,'my draft');
+ syncFormula(field,{value:'server value',readOnly:false},false);assert.equal(field.value,'server value');
+});

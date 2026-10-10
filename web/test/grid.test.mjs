@@ -17,3 +17,11 @@ test('paste and fill build one complete input batch, reject unsafe text and supp
  assert.deepEqual(cellsFromMatrix({2:{1:{v:42}}},0),[{sheet:0,r:2,c:1,v:42}]);
  assert.throws(()=>cellsFromMatrix({2:{1:{f:'=1',v:42}}},0),/Formula/);
 });
+test('clipboard preserves numeric types and quoted multiline text, malformed presence is ignored',async()=>{
+ const {clipboardValue,validPresence}=await import('../src/grid-data.mjs');
+ assert.equal(pasteChanges(clipboardValue(1234.5),{sheet:0,r:1,c:1})[0].v,1234.5);
+ assert.equal(pasteChanges(clipboardValue('line1\nline2'),{sheet:0,r:1,c:1})[0].v,'line1\nline2');
+ assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:0,sel:[2,1,1,2]}),false);
+ assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:0,sel:[1,1,2,2]}),true);
+ assert.equal(validPresence([{index:0,rows:20,cols:4}],{sheet:'length',sel:[1,1,2,2]}),false);
+});

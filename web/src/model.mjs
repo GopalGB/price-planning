@@ -32,7 +32,8 @@ export function buildOp(store,changes,action='edit',id=crypto.randomUUID()) {
 export function invertOp(store,op,id=crypto.randomUUID()) {
  const changes=op.cells.map(cell=>{
   const current=store.get(cell.sheet,cell.r,cell.c);
-  if(!current || current.pending || current.ver!==cell.expected_version+1) throw new Error(`Undo is stale at ${cellName(cell)}; another edit followed yours`);
+  const expected=op.afterVersions?.[keyOf(cell)]??(current?.lastOpId===op.op_id?current.ver:null);
+  if(!current || current.pending || current.ver!==expected) throw new Error(`Undo is stale at ${cellName(cell)}; another edit followed yours`);
   return {...cell,v:op.before[keyOf(cell)].v};
  });
  return buildOp(store,changes,'undo',id);
@@ -46,9 +47,10 @@ export function rollback(store,op) {
 export class CellStore {
  constructor(rows={},sheet=0) { this.cells=new Map(); this.inputRevision=0; this.calculatedRevision=0; this.merge(rows,sheet); }
  get(sheet,r,c) { return this.cells.get(keyOf({sheet,r,c})); }
- merge(rows,sheet) {
+ merge(rows,sheet,revision=this.calculatedRevision) {
   for(const [r,columns] of Object.entries(rows)) for(const [c,cell] of Object.entries(columns)) {
    const key=keyOf({sheet,r,c}), current=this.cells.get(key);
+   if(cell.k==='f'&&revision<this.calculatedRevision)continue;
    if(!current?.pending && (!current || (current.ver??0)<=(cell.ver??0))) this.cells.set(key,{...cell});
   }
  }
@@ -57,7 +59,7 @@ export class CellStore {
   this.inputRevision=Math.max(this.inputRevision,message.input_revision);
   for(const cell of message.cells) {
    const current=this.get(cell.sheet,cell.r,cell.c);
-   if(current && cell.ver>=(current.ver??0)) this.cells.set(keyOf(cell),{...current,v:cell.v,ver:cell.ver,by:message.by??current.by,at:message.at??current.at??new Date().toISOString(),pending:undefined});
+   if(current && cell.ver>=(current.ver??0)) this.cells.set(keyOf(cell),{...current,v:cell.v,ver:cell.ver,by:message.by??current.by,at:message.at??current.at??new Date().toISOString(),lastOpId:message.op_id,pending:undefined});
   }
  }
  applyCalc(message) {
