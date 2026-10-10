@@ -37,6 +37,7 @@ import {
 } from "./views.mjs";
 const $ = (id) => document.getElementById(id);
 const DETAIL_REFRESH_LIMIT = 8;
+const COPY_SNAPSHOT_ATTEMPTS = 3;
 export class PlanningGrid {
   constructor({ api, copy, meta, user, toast, inputHighlight = true }) {
     Object.assign(this, { api, copy, meta, user, toast, inputHighlight });
@@ -888,8 +889,17 @@ export class PlanningGrid {
         (range.endRow - range.startRow + 1) *
         (range.endColumn - range.startColumn + 1);
     if (area > 10000) throw new Error("Copy at most 10,000 cells");
-    const current = () => this.copyToken === token && this.viewMatches(context),
-      lines = [];
+    const current = () => this.copyToken === token && this.viewMatches(context);
+    for (let attempt = 0; attempt < COPY_SNAPSHOT_ATTEMPTS; attempt++) {
+      const text = await this.copySnapshot(range, context, current);
+      if (text === false) return false;
+      if (text !== null) return this.writeClipboard(text, current);
+    }
+    throw new Error("Selection changed while copying. Try again");
+  }
+  async copySnapshot(range, context, current) {
+    const lines = [];
+    let revision = null;
     for (
       let start = range.startRow;
       start <= range.endRow;
@@ -901,6 +911,15 @@ export class PlanningGrid {
           `/copies/${this.copy.id}/sheets/${context.sheet}/rows?start=${start}&count=${count}`,
         );
       if (!current()) return false;
+      const nextRevision = [data.input_revision, data.calculated_revision];
+      if (nextRevision.some((value) => !Number.isInteger(value)))
+        throw new Error("Rows response is missing revision metadata");
+      if (
+        revision &&
+        (revision[0] !== nextRevision[0] || revision[1] !== nextRevision[1])
+      )
+        return null;
+      revision = nextRevision;
       for (let r = start; r < start + count; r++) {
         const values = [];
         for (let c = range.startColumn; c <= range.endColumn; c++)
@@ -908,7 +927,10 @@ export class PlanningGrid {
         lines.push(values.join("\t"));
       }
     }
-    const text = lines.join("\n");
+    return lines.join("\n");
+  }
+  async writeClipboard(text, current) {
+    if (!current()) return false;
     try {
       await navigator.clipboard.writeText(text);
     } catch {
