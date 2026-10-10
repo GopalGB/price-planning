@@ -9,9 +9,11 @@
 4. Double-click `run_v2.bat`. It creates `.venv` from `vendor\wheels` offline and starts the app.
 
 ## Backup (online, safe while the app is running)
-`run_v2.bat --backup` writes a verified copy of `data\planning.db` into `backups\` using the SQLite online
-backup API (never a file copy of the live database). Next to each `planning-<time>.db` it writes a `.json`
-record: time, source, schema version and SHA-256. Other folders: `run_v2.bat --backup --db <db> --dest <folder>`.
+`run_v2.bat --backup` writes a verified copy of the resolved live database into `backups\` using the SQLite online
+backup API (never a file copy of the live database). Database precedence is: `--db`, then `PP_DATABASE_PATH`, then
+`DATA_DIR\planning.db`, then `settings.json` `database_path`, then `settings.json` `data_dir\planning.db`, then
+`<repo>\data\planning.db`. Next to each `planning-<time>.db` it writes a `.json` record: time, source, schema
+version and SHA-256. Other folders: `run_v2.bat --backup --db <db> --dest <folder>`.
 Without the launcher: `.venv\Scripts\python -m pp.backup` (same options).
 
 ## Update

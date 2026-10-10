@@ -121,6 +121,15 @@ class Backup(unittest.TestCase):
             with mock.patch.dict(os.environ, {'DATA_DIR': str(self.d / 'envdir')}):
                 self.assertEqual(bk.default_db(settings), (self.d / 'envdir').resolve() / 'planning.db')
 
+    def test_default_db_uses_pp_database_path_and_skips_unrelated_server_validation(self):
+        settings = self.d / 'settings.json'
+        settings.write_text(json.dumps({'port': 0, 'database_path': 'configured/planning.db'}))
+        env = {k: v for k, v in os.environ.items() if k not in {'DATA_DIR', 'PP_DATABASE_PATH'}}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(bk.default_db(settings), (bk.ROOT / 'configured' / 'planning.db').resolve())
+        with mock.patch.dict(os.environ, {'PP_DATABASE_PATH': str(self.d / 'environment.db')}, clear=True):
+            self.assertEqual(bk.default_db(settings), (self.d / 'environment.db').resolve())
+
     def test_cli_backs_up_configured_db_not_default(self):
         configured = self.d / 'configured'; configured.mkdir()
         with closing(sqlite3.connect(configured / 'planning.db')) as con:

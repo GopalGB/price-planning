@@ -23,8 +23,8 @@ class Config:
     engine_ram_budget_mb: int
 
 
-def _read_settings(root: Path) -> dict:
-    path = root / "settings.json"
+def _read_settings(root: Path, settings_path: str | Path | None = None) -> dict:
+    path = Path(settings_path) if settings_path is not None else root / "settings.json"
     if not path.exists():
         return {}
     try:
@@ -60,17 +60,34 @@ def _path(root: Path, value: object, name: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def load_config(root: str | Path) -> Config:
+def _data_dir(root: Path, settings: dict) -> Path:
+    return _path(root, os.environ.get("DATA_DIR", settings.get("data_dir", "data")), "data_dir")
+
+
+def resolve_database_path(root: str | Path, settings_path: str | Path | None = None) -> Path:
+    """Resolve the shared database location without validating unrelated server settings."""
     root = Path(root)
-    settings = _read_settings(root)
+    settings = _read_settings(root, settings_path)
+    if database := os.environ.get("PP_DATABASE_PATH"):
+        return _path(root, database, "PP_DATABASE_PATH")
+    if "DATA_DIR" in os.environ:
+        return _path(root, os.environ["DATA_DIR"], "DATA_DIR") / "planning.db"
+    if database := settings.get("database_path"):
+        return _path(root, database, "database_path")
+    return _data_dir(root, settings) / "planning.db"
+
+
+def load_config(root: str | Path, settings_path: str | Path | None = None) -> Config:
+    root = Path(root)
+    settings = _read_settings(root, settings_path)
     if sys.version_info < (3, 10):
         raise ValueError("Python 3.10 or newer is required")
     bind = settings.get("bind", "127.0.0.1")
     if not isinstance(bind, str) or not bind:
         raise ValueError("bind must be a non-empty string")
     port = _positive(settings.get("port", 8000), "port", 65535)
-    data_dir = _path(root, settings.get("data_dir", "data"), "data_dir")
-    database_path = _path(root, settings.get("database_path", str(data_dir / "planning.db")), "database_path")
+    data_dir = _data_dir(root, settings)
+    database_path = resolve_database_path(root, settings_path)
     max_workers = _positive(settings.get("max_workers", 1), "max_workers", 128)
     replay_window = _positive(settings.get("replay_window", 1000), "replay_window", 1_000_000)
     engine_ram = _positive(settings.get("engine_ram_budget_mb", 1024), "engine_ram_budget_mb", 1_000_000)

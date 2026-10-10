@@ -67,6 +67,40 @@ class ConfigContractTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 load_config(root)
 
+    def test_database_path_prefers_environment_then_settings_then_default(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            root = Path(temp)
+            settings = root / "alternate.json"
+            settings.write_text(json.dumps({
+                "data_dir": "settings-data", "database_path": "settings-db/custom.db",
+            }))
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(load_config(root, settings).database_path,
+                                 root / "settings-db" / "custom.db")
+            with mock.patch.dict(os.environ, {"DATA_DIR": "environment-data"}, clear=True):
+                self.assertEqual(load_config(root, settings).database_path,
+                                 root / "environment-data" / "planning.db")
+            with mock.patch.dict(os.environ, {"PP_DATABASE_PATH": "environment-db/live.db"}, clear=True):
+                self.assertEqual(load_config(root, settings).database_path,
+                                 root / "environment-db" / "live.db")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(load_config(root, root / "missing.json").database_path,
+                                 root / "data" / "planning.db")
+
+    def test_explicit_settings_keeps_relative_paths_rooted_at_repo(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            root = Path(temp)
+            alternate = root / "config" / "settings.json"
+            alternate.parent.mkdir()
+            alternate.write_text(json.dumps({"data_dir": "relative-data"}))
+
+            with mock.patch.dict(os.environ, {}, clear=True):
+                config = load_config(root, alternate)
+
+            self.assertEqual(config.data_dir, root / "relative-data")
+            self.assertEqual(config.database_path, root / "relative-data" / "planning.db")
+
 
 if __name__ == "__main__":
     unittest.main()

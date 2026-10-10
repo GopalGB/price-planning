@@ -11,7 +11,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.runtime import DEFAULTS, read_settings, resolve_data_dir, validate_settings
+from .config import resolve_database_path
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -94,16 +94,14 @@ def restore(backup_path, new_dir):
 
 
 def default_db(settings_path=ROOT / 'settings.json'):
-    """Same data folder the server uses: DATA_DIR, then settings.json data_dir, then <repo>/data."""
-    settings_path = Path(settings_path)
-    cfg = read_settings(settings_path) if settings_path.exists() else validate_settings(DEFAULTS)
-    return resolve_data_dir(cfg) / 'planning.db'
+    """Same database as the server, after an explicit --db override is considered."""
+    return resolve_database_path(ROOT, settings_path).resolve()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='python -m pp.backup', description='Verified SQLite backup and restore.')
-    parser.add_argument('--db', type=Path, help='live database (default: the server data folder from DATA_DIR, '
-                        'settings.json data_dir, or <repo>/data)')
+    parser.add_argument('--db', type=Path, help='live database (highest precedence; otherwise PP_DATABASE_PATH, '
+                        'DATA_DIR/planning.db, settings database_path, settings data_dir/planning.db, repo/data/planning.db)')
     parser.add_argument('--settings', type=Path, default=ROOT / 'settings.json', help='settings file (default: %(default)s)')
     parser.add_argument('--dest', type=Path, help='backup folder (default: <repo>/backups); with --restore, a new empty folder')
     parser.add_argument('--restore', type=Path, metavar='BACKUP', help='restore this backup file into --dest')

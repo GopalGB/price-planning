@@ -9,25 +9,33 @@ class LaunchersV2(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='pp launcher ')
         self.repo = Path(self.tmp.name)
         shutil.copy(ROOT / 'run_v2.sh', self.repo)
+        shutil.copy(ROOT / 'run_v2.py', self.repo)
         for pkg in ('pp', 'app'):
             shutil.copytree(ROOT / pkg, self.repo / pkg, ignore=shutil.ignore_patterns('__pycache__'))
-        (self.repo / 'ops').mkdir()
+        shutil.copytree(ROOT / 'ops', self.repo / 'ops', ignore=shutil.ignore_patterns('__pycache__'))
         # stub installer: the launcher only needs the venv interpreter path on stdout
         (self.repo / 'ops' / 'install_env.py').write_text('import sys\nprint(sys.executable)\n')
-        (self.repo / 'run_v2.py').write_text('import sys\nprint("APP", sys.argv[1:])\n')
+        from ops.fixtures import make_semantic
+        (self.repo / 'template').mkdir()
+        make_semantic(self.repo / 'template' / 'synthetic.xlsm')
+        (self.repo / 'settings.json').write_text('{"demo_mode": true, "template_path": "template/synthetic.xlsm"}')
 
     def tearDown(self):
         self.tmp.cleanup()
 
     def sh(self, *args):
+        environment = {**os.environ, 'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']}
+        for name in ('DATA_DIR', 'PP_DATABASE_PATH', 'PP_TEMPLATE_PATH'):
+            environment.pop(name, None)
         return subprocess.run(['sh', str(self.repo / 'run_v2.sh'), *args], capture_output=True, text=True,
-                              env={**os.environ, 'PATH': str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']})
+                              env=environment)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX launcher')
     def test_sh_starts_app_with_args(self):
-        res = self.sh('--port', '8100')
+        res = self.sh('--import-template')
         self.assertEqual(res.returncode, 0, res.stderr)
-        self.assertIn("APP ['--port', '8100']", res.stdout)
+        snapshots = list((self.repo / 'data' / 'templates').glob('*/meta.json'))
+        self.assertEqual(len(snapshots), 1, res.stdout)
 
     @unittest.skipIf(os.name == 'nt', 'POSIX launcher')
     def test_sh_backup_and_restore_route_to_cli(self):
