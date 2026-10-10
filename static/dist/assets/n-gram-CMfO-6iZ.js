@@ -1,0 +1,1 @@
+o(2);const f=o(3);function o(r){if(typeof r!="number"||Number.isNaN(r)||r<1||r===Number.POSITIVE_INFINITY)throw new Error("`"+r+"` is not a valid argument for `n-gram`");return s;function s(t){const e=[];if(t==null)return e;const i=typeof t.slice=="function"?t:String(t);let n=i.length-r+1;if(n<1)return e;for(;n--;)e[n]=i.slice(n,n+r);return e}}export{f as t};
