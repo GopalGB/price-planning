@@ -23,15 +23,24 @@ if not errorlevel 1 goto path_python
 goto missing_python
 
 :local_python
-"python\python.exe" -u "run.py" --demo %*
+set "VENV_PY="
+for /f "delims=" %%P in ('"python\python.exe" ops\install_env.py') do set "VENV_PY=%%P"
+if not defined VENV_PY ( echo Dependency install failed. & set "planning_exit=1" & goto leave )
+"%VENV_PY%" -u "run.py" --demo %*
 goto finished
 
 :python_launcher
-py -3 -u "run.py" --demo %*
+set "VENV_PY="
+for /f "delims=" %%P in ('py -3 ops\install_env.py') do set "VENV_PY=%%P"
+if not defined VENV_PY ( echo Dependency install failed. & set "planning_exit=1" & goto leave )
+"%VENV_PY%" -u "run.py" --demo %*
 goto finished
 
 :path_python
-python -u "run.py" --demo %*
+set "VENV_PY="
+for /f "delims=" %%P in ('python ops\install_env.py') do set "VENV_PY=%%P"
+if not defined VENV_PY ( echo Dependency install failed. & set "planning_exit=1" & goto leave )
+"%VENV_PY%" -u "run.py" --demo %*
 goto finished
 
 :missing_python
