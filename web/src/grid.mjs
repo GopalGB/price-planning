@@ -37,8 +37,11 @@ import {
 const $ = (id) => document.getElementById(id);
 const DETAIL_REFRESH_LIMIT = 8;
 export class PlanningGrid {
-  constructor({ api, copy, meta, user, toast }) {
-    Object.assign(this, { api, copy, meta, user, toast });
+  constructor({ api, copy, meta, user, toast, inputHighlight = true }) {
+    Object.assign(this, { api, copy, meta, user, toast, inputHighlight });
+    this.styleMap = new Map(
+      (meta.styles ?? []).map((style) => [String(style.id), style]),
+    );
     this.sheet = meta.sheets.find((s) => !s.hidden).index;
     this.store = new CellStore();
     this.cache = new RowCache(3);
@@ -361,7 +364,9 @@ export class PlanningGrid {
     if (this.u.getActiveWorkbook()) this.u.disposeUnit("planning");
     this.internal++;
     try {
-      this.u.createWorkbook(makeSnapshot(this.meta, index));
+      this.u.createWorkbook(
+        makeSnapshot(this.meta, index, { inputHighlight: this.inputHighlight }),
+      );
     } finally {
       this.internal--;
     }
@@ -495,7 +500,14 @@ export class PlanningGrid {
       if (!cell) continue;
       const [sheet, r, c] = key.split(":").map(Number);
       if (sheet !== this.sheet) continue;
-      const next = renderCell(cell),
+      this.styleMap ??= new Map(
+        (this.meta.styles ?? []).map((style) => [String(style.id), style]),
+      );
+      const next = renderCell(
+          cell,
+          this.styleMap.get(String(cell.s)),
+          this.inputHighlight,
+        ),
         signature = JSON.stringify(next);
       if (this.rendered.get(`${r}:${c}`) === signature) continue;
       (changed[r] ??= {})[c] = next;
@@ -511,6 +523,11 @@ export class PlanningGrid {
     $("save-chip").classList.toggle("busy", busy);
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
     this.selectionInfo();
+  }
+  refreshInputHighlight(enabled) {
+    this.inputHighlight = enabled;
+    this.rendered.clear();
+    this.paint();
   }
   async selectionInfo(force = false) {
     if (this.closed || !this.worksheet) return;

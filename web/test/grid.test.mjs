@@ -1,17 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { makeSnapshot, cellsFromMatrix, pasteChanges, fillChanges } from '../src/grid-data.mjs';
+import { makeSnapshot, cellsFromMatrix, pasteChanges, fillChanges, inputFill } from '../src/grid-data.mjs';
 import { CellStore, RowCache } from '../src/model.mjs';
 import { EditController } from '../src/client.mjs';
 import { PlanningGrid } from '../src/grid.mjs';
 
-function gridHarness(responses) {
+function gridHarness(responses, styles = []) {
  const chips={"save-chip":{textContent:'',classList:{toggle:()=>{}}},"edit-status":{textContent:''}};
  globalThis.document={getElementById:id=>chips[id]};
- const grid=Object.create(PlanningGrid.prototype);const store=new CellStore();
- Object.assign(grid,{api:{request:async path=>{const start=Number(new URL(path,'http://test').searchParams.get('start'));return responses.get(start).shift();}},copy:{id:'one'},meta:{sheets:[{index:0,name:'Plan',rows:512,cols:3}]},sheet:0,store,cache:new RowCache(3),closed:false,worksheet:{},rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:0,endColumn:0}],mutate:()=>{},selectionInfo:async()=>{}});
+ const grid=Object.create(PlanningGrid.prototype);const store=new CellStore(),mutations=[];
+ Object.assign(grid,{api:{request:async path=>{const start=Number(new URL(path,'http://test').searchParams.get('start'));return responses.get(start).shift();}},copy:{id:'one'},meta:{styles,sheets:[{index:0,name:'Plan',rows:512,cols:3}]},sheet:0,store,cache:new RowCache(3),closed:false,worksheet:{},rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:0,endColumn:0}],inputHighlight:true,mutate:change=>mutations.push(change),selectionInfo:async()=>{}});
  grid.controller=new EditController({store,api:grid.api,copyId:'one',role:'editor',paint:()=>grid.paint(),toast:()=>{}});
- return {grid,chips};
+ return {grid,chips,mutations};
 }
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 function navigationHarness(request) {
@@ -24,9 +24,35 @@ function navigationHarness(request) {
 }
 test('metadata preserves dimensions, hidden rows, merges, formats and freeze without any formulas',()=>{
  const meta={template:{name:'Synthetic'},styles:[{id:0,nf:'0.00',bold:true,fill:'#EAF2FB'}],sheets:[{index:0,name:'Sheet',rows:4088,cols:312,freeze:{rows:1,cols:2},merges:[[0,1,0,2]],col_widths:{1:120},row_heights:{0:32},hidden_rows:[5],hidden_cols:[8]}]};
- const data=makeSnapshot(meta,0,{1:{1:{v:10,s:0,k:'i',formula:'=bad'}}});
+ const data=makeSnapshot(meta,0,{rows:{1:{1:{v:10,s:0,k:'i',formula:'=bad'}}}});
  assert.equal(data.sheets['s0'].rowCount,4088);assert.equal(data.sheets['s0'].rowData[5].hd,1);assert.equal(data.sheets['s0'].columnData[8].hd,1);
  assert.equal(data.sheets['s0'].freeze.xSplit,2);assert.equal(data.styles[0].n.pattern,'0.00');assert.equal(data.sheets['s0'].cellData[1][1].f,undefined);
+});
+test('snapshot highlights only inputs without an explicit template fill',()=>{
+ const meta={template:{name:'Synthetic'},styles:[{id:0,fill:null},{id:1,fill:'#FFD966'}],sheets:[{index:0,name:'Sheet',rows:10,cols:3}]},rows={1:{0:{v:1,s:0,k:'i'},1:{v:2,s:1,k:'i'},2:{v:3,s:0,k:'f'}}};
+ const highlighted=makeSnapshot(meta,0,{rows,inputHighlight:true}).sheets.s0.cellData[1];
+ assert.equal(inputFill(rows[1][0],meta.styles[0],true),'#EAF2FB');
+ assert.equal(typeof highlighted[0].s,'object');
+ assert.equal(highlighted[0].s.bg.rgb,'#EAF2FB');
+ assert.equal(highlighted[1].s,'1');
+ assert.equal(highlighted[2].s,'0');
+ const disabled=makeSnapshot(meta,0,{rows,inputHighlight:false}).sheets.s0.cellData[1];
+ assert.equal(disabled[0].s,'0');
+});
+test('snapshot options carry rows and highlight state within three parameters',()=>{
+ const meta={template:{name:'Synthetic'},styles:[{id:0,fill:null}],sheets:[{index:0,name:'Sheet',rows:10,cols:1}]},rows={1:{0:{v:1,s:0,k:'i'}}};
+ const cell=makeSnapshot(meta,0,{rows,inputHighlight:false}).sheets.s0.cellData[1]?.[0];
+ assert.equal(cell?.v,1);
+ assert.equal(cell?.s,'0');
+});
+test('toggle repaints loaded input cells and restores their template style',()=>{
+ const {grid,mutations}=gridHarness(new Map(),[{id:0,fill:null}]);
+ grid.store.merge({0:{1:{v:4,s:0,k:'i'}}},0);
+ grid.paint();
+ assert.equal(typeof mutations.at(-1)[0][1].s,'object');
+ assert.equal(mutations.at(-1)[0][1].s.bg.rgb,'#EAF2FB');
+ grid.refreshInputHighlight(false);
+ assert.equal(mutations.at(-1)[0][1].s,'0');
 });
 test('paste and fill build one complete input batch, reject unsafe text and support series',()=>{
  const store=new CellStore({1:{1:{v:1,k:'i',ver:0}},2:{1:{v:3,k:'i',ver:0}},3:{1:{v:0,k:'i',ver:0}},4:{1:{v:0,k:'i',ver:0}}});

@@ -1,4 +1,9 @@
 import { parseInput, MAX_OP_CELLS } from "./model.mjs";
+export function inputFill(cell, style, enabled = true) {
+  return enabled && cell?.k === "i" && !style?.fill
+    ? "#EAF2FB"
+    : (style?.fill ?? undefined);
+}
 export function serverUndoShortcut(event, typing, inGrid) {
   if (event.editing || !(event.ctrlKey || event.metaKey) || (typing && !inGrid))
     return null;
@@ -39,13 +44,19 @@ export function commandUndo(id, editing) {
         ? "redo"
         : null;
 }
-export function renderCell(cell) {
+export function renderCell(cell, style, inputHighlight = true) {
   // The server's formula text is deliberately absent from Univer's model.
-  return {
+  const rendered = {
     v: typeof cell.v === "object" && cell.v !== null ? cell.v.error : cell.v,
     s: String(cell.s),
     t: typeof cell.v === "number" ? 2 : typeof cell.v === "boolean" ? 3 : 1,
   };
+  if (inputHighlight && cell?.k === "i" && !style?.fill)
+    rendered.s = {
+      ...styleData(style ?? {}),
+      bg: { rgb: inputFill(cell, style, inputHighlight) },
+    };
+  return rendered;
 }
 export function styleData(style) {
   const align = { left: 1, center: 2, right: 3 },
@@ -71,16 +82,24 @@ export function styleData(style) {
     bd: border,
   };
 }
-export function makeSnapshot(meta, sheetIndex, rows = {}) {
+export function makeSnapshot(meta, sheetIndex, options = {}) {
+  const { rows = {}, inputHighlight = true } = options;
   const sheet = meta.sheets.find((s) => s.index === sheetIndex),
     id = `s${sheet.index}`,
+    styles = new Map(
+      (meta.styles ?? []).map((style) => [String(style.id), style]),
+    ),
     cellData = {},
     rowData = {},
     columnData = {};
   for (const [r, columns] of Object.entries(rows)) {
     cellData[r] = {};
     for (const [c, cell] of Object.entries(columns))
-      cellData[r][c] = renderCell(cell);
+      cellData[r][c] = renderCell(
+        cell,
+        styles.get(String(cell.s)),
+        inputHighlight,
+      );
   }
   for (const [r, h] of Object.entries(sheet.row_heights ?? {}))
     rowData[r] = { h };

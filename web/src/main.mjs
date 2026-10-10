@@ -8,6 +8,9 @@ import {
   escapeHTML as e,
   roleOptions,
   loadHome,
+  dispatchHomeAction,
+  readInputHighlightPreference,
+  writeInputHighlightPreference,
 } from "./views.mjs";
 const $ = (id) => document.getElementById(id),
   api = new ApiClient();
@@ -77,6 +80,7 @@ async function showHome() {
   $("view").onclick = (event) => {
     const button = event.target.closest("button");
     if (!button) return;
+    if (dispatchHomeAction(button, { createCategory: categoryModal })) return;
     if (button.dataset.shared !== undefined) {
       categoryId = null;
       safe(showHome());
@@ -101,7 +105,8 @@ async function openCopy(copy) {
   grid?.dispose();
   $("view").onclick = null;
   activeCopy = copy;
-  $("view").innerHTML = workspaceView(copy);
+  const inputHighlight = readInputHighlightPreference();
+  $("view").innerHTML = workspaceView(copy, inputHighlight);
   $("workspace-actions").hidden = false;
   $("share-button").hidden = copy.my_role !== "owner";
   $("breadcrumb").textContent =
@@ -110,9 +115,16 @@ async function openCopy(copy) {
   if (visit !== navigation) return;
   const { PlanningGrid } = await import("./grid.mjs");
   if (visit !== navigation) return;
-  grid = new PlanningGrid({ api, copy, meta, user, toast });
+  grid = new PlanningGrid({ api, copy, meta, user, toast, inputHighlight });
   await grid.start();
   if (visit !== navigation) return;
+  const highlight = $("input-highlight");
+  highlight.onclick = () => {
+    const enabled = highlight.getAttribute("aria-pressed") !== "true";
+    highlight.setAttribute("aria-pressed", String(enabled));
+    writeInputHighlightPreference(enabled);
+    grid.refreshInputHighlight(enabled);
+  };
   $("share-button").onclick = () => shareModal(activeCopy);
   $("fork-button").onclick = () => forkModal(activeCopy);
   $("undo-button").onclick = () => safe(grid.undo());
