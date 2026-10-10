@@ -39,3 +39,26 @@ Streaming evidence: a 20+ MB synthetic sheet part exported with tracemalloc peak
   must keep them out. Export assumes UTF-8 sheet XML (Excel and openpyxl always write it).
 - Backup sidecar does not yet record template hash (SPEC 9 asks for template and schema hashes); needs the
   template store from Track A.
+
+## Addendum 2026-10-10: review fixes (Astra + coordinator)
+Each fix test-first; red seen before the change.
+1. HIGH backup default DB: `pp.backup.default_db()` reuses `app.runtime.read_settings` / `validate_settings`
+   and a new `app.runtime.resolve_data_dir` (extracted from `apply_environment`, which now calls it). Order is the
+   server's: `--db`, then `DATA_DIR`, then settings.json `data_dir` (relative = under repo), then `<repo>/data`.
+   CLI gained `--settings`. Tests: configured vs default vs relative vs env dirs; CLI backs up the configured DB.
+2. MEDIUM restore: copy into `.restore-*.partial` inside the target folder (inside the cleanup scope), verify
+   sha256 + integrity + foreign keys there, publish with `os.link` (fails if planning.db exists, never
+   overwrites), then remove the staging file. Tests: injected ENOSPC mid-copy leaves the folder empty and a retry
+   succeeds; a second restore refuses; a planning.db appearing after the emptiness check is kept untouched.
+   Limit: needs hard links (NTFS, APFS, ext4 yes; FAT/exFAT no, which fail cleanly with OSError).
+3. MEDIUM export: text gets ST_Xstring escaping before XML escaping (`_xHHHH_` -> `_x005F_xHHHH_`, CR ->
+   `_x000D_`). Note: openpyxl 3.1.5 returns inline cell text still ST_Xstring-encoded, so the round-trip test
+   decodes with openpyxl's own `openpyxl.utils.escape.unescape` (single pass, as Excel does); raw XML is also
+   asserted. 'a\rb\r\nc', 'pre_x0041_post', '_x000D_' come back exactly.
+4. run_v2.py / DEPLOY.md: untouched, per coordinator.
+Also fixed (AGENTS rule 7, seen flaking 1 in 3 full runs): `ops/bench_real.py` reported `ok` when the 0.25 s
+polling watchdog missed a run that exceeded `--max-seconds`; completion now checks the limit and exits 3.
+Deterministic test stubs the watchdog.
+
+Results: `.venv/bin/python -m unittest discover -s tests` three consecutive runs, each `Ran 92 tests` / `OK`
+(32.3 s, 28.5 s, 21.0 s). `python3 ops/content_guard.py --all` exit 0.
