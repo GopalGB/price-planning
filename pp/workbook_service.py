@@ -178,12 +178,17 @@ class WorkbookService:
                 col = int(col_text)
                 record = dict(cells.get(col_text, render.snapshot.cell(query.sheet, row, col)))
                 record.pop("formula", None)
+                override = render.overrides.get((row, col))
+                input_record = _input_record(connection, override) if override else None
                 if (row, col) in render.results:
                     record.update({"v": render.results[(row, col)], "k": "f"})
+                    record.update(_spill_input_metadata(
+                        render.snapshot, (query.sheet, row, col), input_record
+                    ))
                 elif record["k"] == "f":
                     record["v"] = None
-                if (row, col) in render.overrides:
-                    record.update(_input_record(connection, render.overrides[(row, col)]))
+                if override and (row, col) not in render.results:
+                    record.update(input_record)
                 elif record["k"] == "i":
                     record["ver"] = 0
                 rendered[col_text] = record
@@ -205,14 +210,20 @@ class WorkbookService:
                 "SELECT value_json FROM pp_results WHERE copy_id=? AND sheet=? AND row=? AND col=?",
                 (query.copy_id, query.sheet, query.row, query.col),
             ).fetchone()
+            input_record = _input_record(connection, override) if override and result else None
         record = dict(snapshot.cell(query.sheet, query.row, query.col))
         if result:
             record["k"] = "f"
         fallback = None if record["k"] == "f" else record["v"]
-        value = json.loads(override["value_json"]) if override else json.loads(result["value_json"]) if result else fallback
-        return {"v": value, "s": record["s"], "k": record["k"],
-                "formula": record.get("formula"),
-                "validation": snapshot.validation(query.sheet, query.row, query.col)}
+        value = json.loads(result["value_json"]) if result else json.loads(override["value_json"]) if override else fallback
+        response = {"v": value, "s": record["s"], "k": record["k"],
+                    "formula": record.get("formula"),
+                    "validation": snapshot.validation(query.sheet, query.row, query.col)}
+        if result:
+            response.update(_spill_input_metadata(
+                snapshot, (query.sheet, query.row, query.col), input_record
+            ))
+        return response
 
     def history(self, query: HistoryQuery) -> dict:
         if type(query.limit) is not int or not 1 <= query.limit <= 500:
@@ -327,3 +338,14 @@ def _input_record(connection, override):
     user = connection.execute("SELECT id,name FROM pp_users WHERE id=?", (override["updated_by"],)).fetchone()
     return {"v": json.loads(override["value_json"]), "k": "i", "ver": override["version"],
             "by": {"id": user["id"], "name": user["name"]}, "at": override["updated_at"]}
+
+
+def _spill_input_metadata(snapshot, coordinate, input_record):
+    if not snapshot.is_input(*coordinate):
+        return {}
+    value = input_record["v"] if input_record else snapshot.cell(*coordinate)["v"]
+    metadata = {"input": True, "input_value": value,
+                "ver": input_record["ver"] if input_record else 0}
+    if input_record:
+        metadata.update({key: input_record[key] for key in ("by", "at")})
+    return metadata

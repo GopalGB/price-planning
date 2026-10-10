@@ -43,12 +43,16 @@ class CalculationService:
                 return False
             if revision > copy["input_revision"]:
                 return False
+            previous_revision = copy["calculated_revision"]
             delta = _published_delta(connection, publication)
             snapshot = self.templates.get(connection, copy["template_id"]) if self.templates else None
+            if snapshot:
+                delta = _include_touched(connection, delta, (previous_revision, revision))
             _replace_results(connection, publication)
             changes = (_authoritative_changes(connection, snapshot, delta)
                        if snapshot else _legacy_changes(delta))
-            payload = {"type": "calc", "calculated_revision": revision,
+            payload = {"type": "calc", "from_calculated_revision": previous_revision,
+                       "calculated_revision": revision,
                        "changes": changes}
             connection.execute("UPDATE pp_copies SET calculated_revision=?,updated_at=? WHERE id=?",
                                (revision, now, copy_id))
@@ -100,6 +104,25 @@ def _legacy_changes(delta):
     return changes
 
 
+def _include_touched(connection, delta, revisions):
+    previous_revision, revision = revisions
+    rows = connection.execute(
+        "SELECT DISTINCT h.sheet,h.row,h.col FROM pp_history h JOIN pp_ops o "
+        "ON o.copy_id=h.copy_id AND o.op_id=h.op_id AND o.revision=h.revision "
+        "WHERE o.copy_id=? AND o.revision>? AND o.revision<=? "
+        "ORDER BY h.sheet,h.row,h.col",
+        (delta.copy_id, previous_revision, revision),
+    ).fetchall()
+    coordinates = list(delta.coordinates)
+    known = set(coordinates)
+    coordinates.extend(
+        coordinate for row in rows
+        if (coordinate := (row["sheet"], row["row"], row["col"])) in delta.current
+        and coordinate not in known
+    )
+    return CalculationDelta(delta.copy_id, delta.current, coordinates)
+
+
 def _authoritative_changes(connection, snapshot, delta):
     overrides = _override_records(connection, delta.copy_id)
     changes = []
@@ -109,12 +132,24 @@ def _authoritative_changes(connection, snapshot, delta):
         record.pop("formula", None)
         if coordinate in delta.current:
             record.update({"v": delta.current[coordinate], "k": "f"})
+            record.update(_spill_input_metadata(snapshot, coordinate, overrides))
         elif record["k"] == "i":
             record.update(overrides.get(coordinate, {"ver": 0}))
         elif record["k"] == "f":
             record["v"] = None
         changes.append({"sheet": sheet, "r": row, "c": col, **record})
     return changes
+
+
+def _spill_input_metadata(snapshot, coordinate, overrides):
+    if not snapshot.is_input(*coordinate):
+        return {}
+    override = overrides.get(coordinate)
+    value = override["v"] if override else snapshot.cell(*coordinate)["v"]
+    metadata = {"input": True, "input_value": value, "ver": override["ver"] if override else 0}
+    if override:
+        metadata.update({key: override[key] for key in ("by", "at")})
+    return metadata
 
 
 def _override_records(connection, copy_id):

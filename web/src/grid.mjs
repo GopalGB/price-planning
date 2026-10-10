@@ -12,6 +12,7 @@ import {
   cellName,
   selectionStats,
   formatNumber,
+  editableInput,
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
 import {
@@ -122,7 +123,7 @@ export class PlanningGrid {
     });
     this.on("BeforeSheetEditStart", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
-      if (this.copy.my_role === "viewer" || cell?.k !== "i") {
+      if (this.copy.my_role === "viewer" || !editableInput(cell)) {
         event.cancel = true;
         this.toast(
           `${cellName({ r: event.row, c: event.column })}: ${this.copy.my_role === "viewer" ? "Viewer access is read only" : "Locked template cell"}`,
@@ -155,10 +156,9 @@ export class PlanningGrid {
     this.on("Scroll", () => this.scheduleVisible());
     this.on("CellHover", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
-      $("grid").title =
-        cell?.k === "i"
-          ? `${cellName({ r: event.row, c: event.column })}: ${editorDisplay(cell) || "No edits recorded"}`
-          : "";
+      $("grid").title = editableInput(cell)
+        ? `${cellName({ r: event.row, c: event.column })}: ${editorDisplay(cell) || "No edits recorded"}`
+        : "";
     });
     this.disposables.push(
       this.u.getFormula().calculationStart(() => this.clientCalculations++),
@@ -595,16 +595,15 @@ export class PlanningGrid {
       $("formula-input"),
       {
         value: display,
-        readOnly: this.copy.my_role === "viewer" || cell?.k !== "i",
+        readOnly: this.copy.my_role === "viewer" || !editableInput(cell),
       },
       document.activeElement === $("formula-input"),
     );
-    $("formula-note").textContent =
-      cell?.k === "i"
-        ? cell.by
-          ? `Input · ${editorDisplay(cell)}`
-          : "Input cell"
-        : "Locked template cell";
+    $("formula-note").textContent = editableInput(cell)
+      ? cell.by
+        ? `Input · ${editorDisplay(cell)}`
+        : "Input cell"
+      : "Locked template cell";
     this.stats();
     if (!cell) return;
     if (this.detailRequested) return;
@@ -617,7 +616,15 @@ export class PlanningGrid {
       if (this.closed || token !== this.selectionToken) return;
       this.validation = detail.validation;
       this.formulaText = detail.formula;
-      if (detail.k === "f") $("formula-input").value = detail.formula ?? "";
+      const current = this.store.get(selected.sheet, selected.r, selected.c);
+      syncFormula(
+        $("formula-input"),
+        {
+          value: formulaDisplay(current, this.formulaText),
+          readOnly: this.copy.my_role === "viewer" || !editableInput(current),
+        },
+        document.activeElement === $("formula-input"),
+      );
       this.validationControl(detail.validation, selected);
       if (!$("history-panel").hidden) await this.history(selected, token);
     } catch (error) {

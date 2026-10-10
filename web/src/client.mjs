@@ -111,7 +111,7 @@ export class EditController {
           (error.cells ?? [])
             .map((cell) => {
               const prior = op.interruptions?.[keyOf(cell)],
-                before = op.before?.[keyOf(cell)];
+                before = (op.displayBefore ?? op.before)?.[keyOf(cell)];
               return (
                 prior &&
                 before?.ver === cell.current_version &&

@@ -2,8 +2,10 @@
 
 import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from .formualizer import EngineError, FormualizerAdapter
+from ..export.xlsm import export_xlsm
 from ..values import exactly_equal
 
 
@@ -17,10 +19,14 @@ class WarmCopy:
         self.source = None
         self.baseline = {}
         self.overrides = {}
+        self.cleared = frozenset()
 
     def apply(self, revision: int, template_path: str, changes: list[tuple]) -> dict:
         self._load(template_path)
         desired = {(sheet, row, col): value for sheet, row, col, value in changes}
+        cleared = frozenset(coordinate for coordinate, value in desired.items() if value is None)
+        if cleared != self.cleared:
+            self._reload_with_clears(template_path, cleared)
         updates = []
         for coordinate in sorted(self.overrides.keys() | desired.keys()):
             if coordinate not in self.baseline:
@@ -41,6 +47,18 @@ class WarmCopy:
             self.engine = FormualizerAdapter.load(Path(template_path))
         elif template_path != self.source:
             raise EngineError("copy template changed while its worker was active")
+
+    def _reload_with_clears(self, template_path: str, cleared: frozenset) -> None:
+        for coordinate in cleared:
+            if coordinate not in self.baseline:
+                self.baseline[coordinate] = self.engine.get(*coordinate)
+        with TemporaryDirectory(prefix="pp-calc-") as directory:
+            source = Path(template_path)
+            target = Path(directory) / source.name
+            export_xlsm(source, [(*coordinate, None) for coordinate in sorted(cleared)], target)
+            self.engine = FormualizerAdapter.load(target)
+        self.overrides = {coordinate: None for coordinate in cleared}
+        self.cleared = cleared
 
 
 def _different(before, after):

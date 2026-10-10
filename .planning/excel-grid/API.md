@@ -37,10 +37,12 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
    hidden_rows: [r], hidden_cols: [c], merges: [[r1,c1,r2,c2]]}],
    styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, border: {t,r,b,l}}]}`
 - `GET /api/copies/{id}/sheets/{sheet}/rows?start={r}&count={n<=500}` ->
-  `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, ver?, by?, at?}}}}`
+  `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, input?, input_value?, ver?, by?, at?}}}}`
   where `s` = style id, `k` = kind: `"i"` input (editable), `"f"` formula (locked), `"c"` constant (locked);
   input cells carry `ver` (cell version, 0 if never edited), `by` {id,name}, `at` ISO time of last edit.
-- `GET /api/copies/{id}/sheets/{sheet}/cell?r=&c=` -> `{v, s, k, ver?, by?, at?, formula: "=..." | null, validation: {type, list?, min?, max?} | null}`
+  When a result covers an immutable input, `k` remains `"f"` for display while `input: true`, `input_value`
+  and `ver` expose its editable semantic input state; formula-only cells omit these fields.
+- `GET /api/copies/{id}/sheets/{sheet}/cell?r=&c=` -> `{v, s, k, input?, input_value?, ver?, by?, at?, formula: "=..." | null, validation: {type, list?, min?, max?} | null}`
 - `GET /api/copies/{id}/history?sheet=&r=&c=&limit=50` (cell when r,c given, else whole copy) ->
   `{entries: [{op_id, revision, at, by: {id,name}, sheet, r, c, before, after, action: "edit"|"paste"|"fill"|"clear"|"undo", origin?: {copy_id, name, revision}}]}`
   Fork history includes parent entries only through the recorded fork revision, retaining their original editor and time.
@@ -69,8 +71,8 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   - `{type: "op", op_id, input_revision, by: {id,name}, at: "<ISO-8601 server time>", action, cells: [{sheet, r, c, v, ver}]}`
     `at` is the authoritative server-clock ISO-8601 timestamp persisted for the operation's history rows. For a legacy event with no `at`, the client stores `null`
     immediately and refetches cell detail; the detail version must still match before metadata is applied.
-  - `{type: "calc", calculated_revision, changes: [{sheet, r, c, v, s?, k?, ver?, by?, at?}]}` (complete batch per revision, monotonic)
-    New publications include authoritative style and kind so spill expansion creates cells and contraction restores the underlying template cell. A null value with kind `f` is a calculated blank, not a deletion. Input records restored after contraction include their current input metadata. Legacy value-only events retain their prior replay behavior.
+  - `{type: "calc", from_calculated_revision, calculated_revision, changes: [{sheet, r, c, v, s?, k?, input?, input_value?, ver?, by?, at?}]}` (complete batch per published interval, monotonic)
+    `from_calculated_revision` is the prior published revision covered by the aggregate delta. New publications include authoritative style and kind so spill expansion creates cells and contraction restores the underlying template cell. A null value with kind `f` is a calculated blank, not a deletion. A result covering an immutable input carries `input: true`, its semantic `input_value`, and input metadata even when the displayed result did not change. Input records restored after contraction include their current input metadata. Legacy events without the interval field cover only their immediately preceding revision, and legacy value-only events retain their prior replay behavior.
   - `{type: "calc_state", input_revision, calculated_revision}` ("calculating" while they differ)
   - `{type: "presence", users: [{id, name, color, sheet, sel}]}`
   - `{type: "resync"}` when the client is too far behind: client re-fetches visible rows.

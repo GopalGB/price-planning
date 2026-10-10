@@ -62,9 +62,13 @@ class SpillEventContractTests(unittest.TestCase):
         expanded = self.client.get(
             f"/api/copies/{self.copy['id']}/sheets/0/rows?start=1&count=1"
         ).json()["rows"]["1"]["1"]
-        self.assertEqual(expanded, {"v": 2, "s": 1, "k": "f"})
+        self.assertEqual(expanded, {
+            "v": 2, "s": 1, "k": "f", "input": True,
+            "input_value": None, "ver": 0,
+        })
         self.assertIn(
-            {"sheet": 0, "r": 1, "c": 1, "v": 2, "s": 1, "k": "f"},
+            {"sheet": 0, "r": 1, "c": 1, "v": 2, "s": 1, "k": "f",
+             "input": True, "input_value": None, "ver": 0},
             self.event_changes(1),
         )
 

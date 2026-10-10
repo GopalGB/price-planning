@@ -12,6 +12,12 @@ Choose a lossless versioned companion bundle. A new backup consists of the onlin
 
 The native H1-to-H2 regression makes the original root unavailable, restores into a fresh root with H2 configured, and checks pending H1 calculation, workbook rows and H1 export. The controller's red run reaches the real failure: restored H1 routes return HTTP 500 with FileNotFoundError (`2-controller-red.log`). The earlier executor red stopped on a new manifest assertion; it is retained but is not the loss-case proof. Legacy database-only sidecars remain readable for compatibility; immutable templates absent from an old backup cannot be recovered from that backup alone.
 
+### Spill-blocker undo
+
+Original explicit and implicit inputs retain immutable `snapshot.is_input` authority while overlapping a current spill. Calculation records, rows and cell detail display the spill result; rows/events retain input version/editor/time. Undo/redo carries semantic input values separately from the displayed calculation, with display snapshots retained for rollback and conflict attribution. Formula-only spill followers stay locked and concurrent input versions still conflict.
+
+The native fixture revealed that pinned Formualizer's explicit blank value obstructs this spill. When the set of cleared overrides changes, the worker uses the existing lossless exporter to create a transient template with those values absent, reloads the engine, then applies the exact requested revision. This is formula-agnostic, does not upgrade dependencies, and preserves the immutable source. It adds export/reload work on clear-set changes; large-workbook latency was not measured. The native fixed-SEQUENCE regression and an implicit-input regression pass, plus model/controller clear, undo, redo and stale-version cases. Lesson: `SPILL-UNDO-INPUT-LINEAGE`. Red/green evidence: `4-red.log`, `4-followup-red.log`, `4-followup-green.log`; controller backend 41/41 and full web 68/68 pass in `4-controller-*`.
+
 Date: 2026-10-11. Branch: `feat/v2-integration`. Scope: the approved local integration checklist, synthetic fixtures only. No push, PR, deployment, company workbook or production database access.
 
 ## Changes

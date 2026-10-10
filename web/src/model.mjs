@@ -3,6 +3,7 @@ import { getPatternPreview } from "@univerjs/sheets-numfmt";
 export const BLOCK_ROWS = 256;
 export const MAX_OP_CELLS = 10000;
 export const keyOf = ({ sheet, r, c }) => `${sheet}:${r}:${c}`;
+export const editableInput = (cell) => cell?.k === "i" || cell?.input === true;
 const blockStart = (row) => Math.floor(row / BLOCK_ROWS) * BLOCK_ROWS;
 const blockKey = (sheet, row) => `${sheet}:${blockStart(row)}`;
 export function cellName({ r, c }) {
@@ -37,10 +38,12 @@ export function newOpId() {
   const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
 }
-export function buildOp(store, changes, action = "edit", id = newOpId()) {
+function buildAuthorizedOp(store, changes, options = {}) {
+  const { action = "edit", id = newOpId(), authorizedInputs = null } = options;
   if (!changes.length || changes.length > MAX_OP_CELLS)
     throw new Error("Choose 1 to 10,000 loaded input cells");
   const before = {},
+    displayBefore = {},
     seen = new Set();
   const cells = changes.map((change) => {
     const { sheet, r, c, v } = change,
@@ -48,7 +51,7 @@ export function buildOp(store, changes, action = "edit", id = newOpId()) {
       cell = store.get(sheet, r, c);
     if (seen.has(key)) throw new Error(`Duplicate cell ${cellName(change)}`);
     seen.add(key);
-    if (!cell || cell.k !== "i")
+    if (!cell || (!editableInput(cell) && !authorizedInputs?.has(key)))
       throw new Error(`${cellName(change)} is locked or not loaded`);
     validateValue(v);
     if (cell.pending)
@@ -56,10 +59,26 @@ export function buildOp(store, changes, action = "edit", id = newOpId()) {
     const expected = change.expected_version ?? cell.ver ?? 0;
     if (!Number.isInteger(expected) || expected < 0)
       throw new Error(`Invalid version at ${cellName(change)}`);
-    before[key] = { ...cell };
+    displayBefore[key] = { ...cell };
+    before[key] = { ...cell, v: semanticInputValue(cell) };
     return { sheet, r, c, v, expected_version: expected };
   });
-  return { op_id: id, action, cells, before };
+  return {
+    op_id: id,
+    action,
+    cells,
+    before,
+    displayBefore,
+    inputKeys: [...seen],
+  };
+}
+function semanticInputValue(cell) {
+  return cell.input === true && Object.hasOwn(cell, "input_value")
+    ? cell.input_value
+    : cell.v;
+}
+export function buildOp(store, changes, action = "edit", id = newOpId()) {
+  return buildAuthorizedOp(store, changes, { action, id });
 }
 export function invertOp(store, op, id = newOpId()) {
   const changes = op.cells.map((cell) => {
@@ -83,13 +102,31 @@ export function invertOp(store, op, id = newOpId()) {
       expected_version: interrupted ? expected : current.ver,
     };
   });
-  return buildOp(store, changes, "undo", id);
+  const inputKeys = new Set(
+    op.inputKeys ??
+      Object.keys(op.before).filter((key) => editableInput(op.before[key])),
+  );
+  const inverse = buildAuthorizedOp(store, changes, {
+    action: "undo",
+    id,
+    authorizedInputs: inputKeys,
+  });
+  inverse.displayBefore ??= inverse.before;
+  inverse.before = Object.fromEntries(
+    op.cells.map((cell) => {
+      const key = keyOf(cell);
+      return [key, { ...inverse.before[key], v: cell.v }];
+    }),
+  );
+  return inverse;
 }
 export function rollback(store, op) {
   for (const cell of op.cells) {
     const current = store.get(cell.sheet, cell.r, cell.c);
     if (current?.pending === op.op_id)
-      store.cells.set(keyOf(cell), { ...op.before[keyOf(cell)] });
+      store.cells.set(keyOf(cell), {
+        ...(op.displayBefore ?? op.before)[keyOf(cell)],
+      });
   }
 }
 export class CellStore {
@@ -97,7 +134,7 @@ export class CellStore {
     this.cells = new Map();
     this.cellInputRevisions = new Map();
     this.blockRevisions = new Map();
-    this.calcBatches = new Set();
+    this.calcBatches = new Map();
     this.inputRevision = 0;
     this.calculatedRevision = 0;
     this.merge(rows, sheet);
@@ -127,18 +164,22 @@ export class CellStore {
             ...cell,
             ...(cell.k === "f" ? { calcRevision: revision } : {}),
           });
-          if (cell.k === "i") this.cellInputRevisions.set(key, inputRevision);
+          if (editableInput(cell))
+            this.cellInputRevisions.set(key, inputRevision);
           else this.cellInputRevisions.delete(key);
         }
       }
   }
   optimistic(op) {
-    for (const cell of op.cells)
+    for (const cell of op.cells) {
+      const current = this.get(cell.sheet, cell.r, cell.c);
       this.cells.set(keyOf(cell), {
-        ...this.get(cell.sheet, cell.r, cell.c),
+        ...current,
         v: cell.v,
+        ...(current?.input === true ? { input_value: cell.v } : {}),
         pending: op.op_id,
       });
+    }
   }
   applyOp(message) {
     this.inputRevision = Math.max(this.inputRevision, message.input_revision);
@@ -149,6 +190,7 @@ export class CellStore {
         this.cells.set(key, {
           ...current,
           v: cell.v,
+          ...(current.input === true ? { input_value: cell.v } : {}),
           ver: cell.ver,
           by: message.by ?? cell.by ?? current.by,
           at: message.at ?? cell.at ?? null,
@@ -174,7 +216,17 @@ export class CellStore {
       this.calculatedRevision,
       message.calculated_revision,
     );
-    this.calcBatches.add(message.calculated_revision);
+    const base = Number.isInteger(message.from_calculated_revision)
+      ? message.from_calculated_revision
+      : message.calculated_revision - 1;
+    if (base < message.calculated_revision)
+      this.calcBatches.set(
+        base,
+        Math.max(
+          this.calcBatches.get(base) ?? base,
+          message.calculated_revision,
+        ),
+      );
     for (const cell of message.changes)
       if (Object.hasOwn(cell, "s") && Object.hasOwn(cell, "k"))
         this.applyAuthoritativeCalc(message, cell);
@@ -208,8 +260,13 @@ export class CellStore {
     )
       return;
     const { sheet: _sheet, r: _row, c: _column, ...record } = cell;
-    this.cells.set(key, { ...current, ...record, calcRevision: revision });
-    if (record.k === "i") this.cellInputRevisions.set(key, revision);
+    const next = { ...current, ...record, calcRevision: revision };
+    if (record.k !== "f") {
+      delete next.input;
+      delete next.input_value;
+    }
+    this.cells.set(key, next);
+    if (editableInput(next)) this.cellInputRevisions.set(key, revision);
     else this.cellInputRevisions.delete(key);
   }
   registerBlock(sheet, start, revision) {
@@ -219,13 +276,19 @@ export class CellStore {
   advanceBlocks() {
     for (const [key, revision] of this.blockRevisions) {
       let next = revision;
-      while (this.calcBatches.has(next + 1)) next++;
+      while (true) {
+        let advanced = next;
+        for (const [base, end] of this.calcBatches)
+          if (base <= next && next < end) advanced = Math.max(advanced, end);
+        if (advanced === next) break;
+        next = advanced;
+      }
       this.blockRevisions.set(key, next);
     }
     if (this.blockRevisions.size) {
       const floor = Math.min(...this.blockRevisions.values());
-      for (const revision of this.calcBatches)
-        if (revision <= floor) this.calcBatches.delete(revision);
+      for (const [base, revision] of this.calcBatches)
+        if (revision <= floor) this.calcBatches.delete(base);
     }
   }
   blocksCalculated(revision) {

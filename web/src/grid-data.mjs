@@ -1,6 +1,6 @@
-import { parseInput, MAX_OP_CELLS, generalPattern } from "./model.mjs";
+import { parseInput, MAX_OP_CELLS, generalPattern, editableInput } from "./model.mjs";
 export function inputFill(cell, style, enabled = true) {
-  return enabled && cell?.k === "i" && !style?.fill
+  return enabled && editableInput(cell) && !style?.fill
     ? "#EAF2FB"
     : (style?.fill ?? undefined);
 }
@@ -57,7 +57,7 @@ export function renderCell(cell, style, options = {}) {
       ...styleData(style ?? {}),
       n: { pattern: generalPattern(cell.v, width) },
     };
-  if (inputHighlight && cell?.k === "i" && !style?.fill)
+  if (inputHighlight && editableInput(cell) && !style?.fill)
     rendered.s = {
       ...(typeof rendered.s === "object" ? rendered.s : styleData(style ?? {})),
       bg: { rgb: inputFill(cell, style, inputHighlight) },

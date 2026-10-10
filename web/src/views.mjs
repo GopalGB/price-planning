@@ -12,11 +12,12 @@ export function syncFormula(field, display, focused) {
   if (!focused || display.readOnly) field.value = display.value;
 }
 export function formulaDisplay(cell, formula) {
-  return cell?.k === "f" && formula !== undefined
-    ? formula
-    : typeof cell?.v === "object" && cell?.v !== null
-      ? cell.v.error
-      : String(cell?.v ?? "");
+  const value = cell?.input === true ? cell.input_value : cell?.v;
+  return cell?.input !== true && cell?.k === "f" && formula !== undefined
+    ? (formula ?? "")
+    : typeof value === "object" && value !== null
+      ? value.error
+      : String(value ?? "");
 }
 export function editorDisplay(cell) {
   return cell?.by
