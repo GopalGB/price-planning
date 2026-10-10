@@ -106,9 +106,26 @@ export class EditController {
             ver: c.current_version,
           })),
         });
+      const people = [
+        ...new Set(
+          (error.cells ?? [])
+            .map((cell) => {
+              const prior = op.interruptions?.[keyOf(cell)],
+                before = op.before?.[keyOf(cell)];
+              return (
+                prior &&
+                before?.ver === cell.current_version &&
+                Object.is(before.v, cell.current_v)
+                  ? prior.by
+                  : cell.by
+              )?.name;
+            })
+            .filter(Boolean),
+        ),
+      ];
       this.paint(op.cells);
       this.toast(
-        `${error.message}. Cells: ${(error.cells ?? op.cells).map(cellName).join(", ")}`,
+        `${error.message}. Cells: ${(error.cells ?? op.cells).map(cellName).join(", ")}${people.length ? `; changed by ${people.join(", ")}` : ""}`,
       );
       if (error.status === 403) this.onDenied();
       return false;
@@ -154,6 +171,10 @@ export class EditController {
     try {
       const inverse = invertOp(this.store, entry);
       this.busy = true;
+      inverse.interruptions = entry.interruptions;
+      inverse.lineage = Object.fromEntries(
+        entry.cells.map((cell) => [keyOf(cell), cell.expected_version]),
+      );
       if (!(await this.send(inverse))) return false;
       source.pop();
       target.push(inverse);
@@ -172,7 +193,10 @@ export class EditController {
     for (let i = stack.length - 1; i >= 0; i--)
       for (const cell of stack[i].cells) {
         const key = keyOf(cell);
-        if (versions[key] !== undefined) {
+        if (
+          versions[key] !== undefined &&
+          stack[i].afterVersions?.[key] === inverse.lineage?.[key]
+        ) {
           (stack[i].afterVersions ??= {})[key] = versions[key];
           delete versions[key];
         }
@@ -182,6 +206,25 @@ export class EditController {
     if (message.type === "op") {
       if (this.pendingIds.has(message.op_id))
         this.receipts.set(message.op_id, message.cells);
+      else {
+        const advancing = message.cells.filter(
+          (cell) =>
+            cell.ver > (this.store.get(cell.sheet, cell.r, cell.c)?.ver ?? -1),
+        );
+        for (const stack of [this.undoStack, this.redoStack])
+          for (const entry of stack)
+            for (const cell of entry.cells) {
+              const remote = advancing.find(
+                (next) => keyOf(next) === keyOf(cell),
+              );
+              if (remote)
+                (entry.interruptions ??= {})[keyOf(cell)] = {
+                  by: message.by ?? remote.by,
+                  v: remote.v,
+                  ver: remote.ver,
+                };
+            }
+      }
       this.store.applyOp(message);
     }
     if (message.type === "calc") this.store.applyCalc(message);

@@ -1,4 +1,5 @@
 import "./style.css";
+import "@univerjs/preset-sheets-core/lib/index.css";
 import { ApiClient } from "./client.mjs";
 import {
   authView,
@@ -6,6 +7,7 @@ import {
   workspaceView,
   escapeHTML as e,
   roleOptions,
+  loadHome,
 } from "./views.mjs";
 const $ = (id) => document.getElementById(id),
   api = new ApiClient();
@@ -65,21 +67,21 @@ async function showHome() {
   $("logout-button").hidden = false;
   $("save-chip").textContent = user.name;
   $("save-chip").classList.remove("busy");
-  categories = (await api.request("/categories")).categories;
-  if (!categories.some((c) => c.id === categoryId))
-    categoryId = categories[0]?.id ?? "";
-  copies = (
-    await api.request(
-      `/copies${categoryId ? `?category=${encodeURIComponent(categoryId)}` : ""}`,
-    )
-  ).copies;
+  const home = await loadHome(api, categoryId);
+  categories = home.categories;
+  copies = home.copies;
+  categoryId = home.categoryId;
   $("breadcrumb").textContent =
-    `${categories.find((c) => c.id === categoryId)?.name ?? "Your workspace"} / Copies`;
+    `${categoryId === null ? "Shared with me" : (categories.find((c) => c.id === categoryId)?.name ?? "Your workspace")} / Copies`;
   $("view").innerHTML = homeView(categories, copies, categoryId);
   $("view").onclick = (event) => {
     const button = event.target.closest("button");
     if (!button) return;
-    if (button.dataset.category) {
+    if (button.dataset.shared !== undefined) {
+      categoryId = null;
+      safe(showHome());
+    }
+    if (button.dataset.category !== undefined) {
       categoryId = button.dataset.category;
       safe(showHome());
     }

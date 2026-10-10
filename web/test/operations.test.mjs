@@ -59,3 +59,6 @@ test('slow row snapshot cannot regress a newer formula revision',()=>{
  const store=seed();store.applyCalc({calculated_revision:5,changes:[{sheet:0,r:0,c:2,v:99}]});
  store.merge({0:{2:{v:20,k:'f',ver:0}}},0,4);assert.equal(store.get(0,0,2).v,99);
 });
+test('operation timestamp replaces old metadata and missing timestamp clears it',()=>{
+ const store=seed();store.applyOp({input_revision:1,by:{name:'Old'},at:'2026-01-01T00:00:00.000Z',cells:[{sheet:0,r:0,c:1,v:11,ver:5}]});store.applyOp({input_revision:2,by:{name:'New'},at:'2026-01-02T00:00:00.000Z',cells:[{sheet:0,r:0,c:1,v:12,ver:6}]});assert.equal(store.get(0,0,1).at,'2026-01-02T00:00:00.000Z');store.applyOp({input_revision:3,cells:[{sheet:0,r:0,c:1,v:13,ver:7}]});assert.equal(store.get(0,0,1).at,null);
+});

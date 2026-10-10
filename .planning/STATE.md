@@ -1,6 +1,8 @@
 # STATE
 
 ## Current phase
+Review round 2 is active on 2026-10-11: merge frontend fixes through `3e10cc0`, then approved backend fixes A-E. Required headings are retained. New acceptance and reviews are pending.
+
 v2 integration completed locally on branch `feat/v2-integration`, with retained concerns and office P5 acceptance pending. Tracks A backend, B frontend and C export are integrated. Template engine remains `formualizer==0.11.1`; formulas are locked and edits/export are input-mask constrained. Only synthetic fixtures were used.
 
 ## Last handoff

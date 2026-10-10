@@ -1,6 +1,6 @@
 # v2 API contract (shared by backend Track A and frontend Track B)
 
-Date 2026-10-10. Source of truth for both tracks. Changing it needs a note in `.planning/STATE.md`.
+Date 2026-10-11. Source of truth for both tracks. Changing it needs a note in `.planning/STATE.md`.
 All JSON. Auth = httpOnly session cookie `pp_session` (SameSite=Strict) + header `X-CSRF-Token` on every
 non-GET. Errors: `{"error": "<code>", "message": "<human text>", ...extra}` with proper HTTP status.
 Cell coordinates are 0-based `r`, `c` integers; `sheet` is the sheet index (0-based, template order).
@@ -24,6 +24,8 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
 - `GET /api/copies?category={id}` -> `{copies: [{id, name, category_id, owner: {id,name}, visibility: "private"|"category",
    default_role: "editor"|"viewer", my_role: "owner"|"editor"|"viewer", input_revision, calculated_revision,
    parent: {id, name, revision} | null, last_edit: {by: {id,name}, at} | null, members: [{id, name, role}]}]}`
+  The `category` query is optional. Without it, the endpoint returns every copy accessible to the current user,
+  including named shares from categories where that user is not a member.
 - `POST /api/copies {category_id, name, visibility, default_role}` -> 201 `{copy}`
 - `POST /api/copies/{id}/fork {name}` -> 201 `{copy}` (atomic at parent's current input_revision)
 - `PATCH /api/copies/{id} {name?, visibility?, default_role?}` (owner) -> 200 `{copy}`
@@ -38,7 +40,7 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, ver?, by?, at?}}}}`
   where `s` = style id, `k` = kind: `"i"` input (editable), `"f"` formula (locked), `"c"` constant (locked);
   input cells carry `ver` (cell version, 0 if never edited), `by` {id,name}, `at` ISO time of last edit.
-- `GET /api/copies/{id}/sheets/{sheet}/cell?r=&c=` -> `{v, s, k, formula: "=..." | null, validation: {type, list?, min?, max?} | null}`
+- `GET /api/copies/{id}/sheets/{sheet}/cell?r=&c=` -> `{v, s, k, ver?, by?, at?, formula: "=..." | null, validation: {type, list?, min?, max?} | null}`
 - `GET /api/copies/{id}/history?sheet=&r=&c=&limit=50` (cell when r,c given, else whole copy) ->
   `{entries: [{op_id, revision, at, by: {id,name}, sheet, r, c, before, after, action: "edit"|"paste"|"fill"|"clear"|"undo"}]}`
 
@@ -58,7 +60,9 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
 `WS /api/copies/{id}/ws` (cookie auth + Origin check; closed with 4403 on lost access).
 - client -> server: `{type: "hello", last_revision}`; `{type: "presence", sheet, sel: [r1,c1,r2,c2]}`
 - server -> client:
-  - `{type: "op", op_id, input_revision, at, by: {id,name}, action, cells: [{sheet, r, c, v, ver}]}` where `at` is the ISO-8601 timestamp persisted for the operation's history rows.
+  - `{type: "op", op_id, input_revision, by: {id,name}, at: "<ISO-8601 server time>", action, cells: [{sheet, r, c, v, ver}]}`
+    `at` is the authoritative server-clock ISO-8601 timestamp persisted for the operation's history rows. For a legacy event with no `at`, the client stores `null`
+    immediately and refetches cell detail; the detail version must still match before metadata is applied.
   - `{type: "calc", calculated_revision, changes: [{sheet, r, c, v}]}` (complete batch per revision, monotonic)
   - `{type: "calc_state", input_revision, calculated_revision}` ("calculating" while they differ)
   - `{type: "presence", users: [{id, name, color, sheet, sel}]}`

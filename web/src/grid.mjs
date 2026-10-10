@@ -4,7 +4,6 @@ import {
   UniverSheetsCorePreset,
 } from "@univerjs/preset-sheets-core";
 import enUS from "@univerjs/preset-sheets-core/locales/en-US";
-import "@univerjs/preset-sheets-core/lib/index.css";
 import {
   CellStore,
   RowCache,
@@ -29,8 +28,14 @@ import {
   advanceDetail,
   commandUndo,
 } from "./grid-data.mjs";
-import { escapeHTML as e, syncFormula, formulaDisplay } from "./views.mjs";
+import {
+  escapeHTML as e,
+  syncFormula,
+  formulaDisplay,
+  editorDisplay,
+} from "./views.mjs";
 const $ = (id) => document.getElementById(id);
+const DETAIL_REFRESH_LIMIT = 8;
 export class PlanningGrid {
   constructor({ api, copy, meta, user, toast }) {
     Object.assign(this, { api, copy, meta, user, toast });
@@ -51,6 +56,10 @@ export class PlanningGrid {
     this.wsReceived = { op: 0, calc: 0 };
     this.clientCalculations = 0;
     this.selectionToken = 0;
+    this.generation = 0;
+    this.copyToken = 0;
+    this.goToToken = 0;
+    this.loadTokens = new Map();
     this.controller = new EditController({
       store: this.store,
       api,
@@ -143,7 +152,7 @@ export class PlanningGrid {
       const cell = this.store.get(this.sheet, event.row, event.column);
       $("grid").title =
         cell?.k === "i"
-          ? `${cellName({ r: event.row, c: event.column })}: ${cell.by ? `${cell.by.name} · ${new Date(cell.at).toLocaleString()}` : "No edits recorded"}`
+          ? `${cellName({ r: event.row, c: event.column })}: ${editorDisplay(cell) || "No edits recorded"}`
           : "";
     });
     this.disposables.push(
@@ -309,6 +318,14 @@ export class PlanningGrid {
   currentSheet() {
     return this.meta.sheets.find((s) => s.index === this.sheet);
   }
+  viewMatches(context) {
+    return (
+      !this.closed &&
+      this.sheet === context.sheet &&
+      this.worksheet === context.worksheet &&
+      this.generation === context.generation
+    );
+  }
   mutate(cellValue) {
     this.internal++;
     try {
@@ -332,10 +349,13 @@ export class PlanningGrid {
       )
     )
       return;
+    const generation = ++this.generation;
     this.sheet = index;
     this.detailKey = "";
     this.cache = new RowCache(3);
+    this.loadTokens = new Map();
     this.store.cells.clear();
+    this.store.resetBlocks();
     this.rendered.clear();
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     if (this.u.getActiveWorkbook()) this.u.disposeUnit("planning");
@@ -346,12 +366,14 @@ export class PlanningGrid {
       this.internal--;
     }
     this.worksheet = this.u.getActiveWorkbook().getSheetBySheetId(`s${index}`);
+    const context = { sheet: index, worksheet: this.worksheet, generation };
     this.tabs();
     await this.loadBlock(0, true);
-    if (this.closed || this.sheet !== index) return;
+    if (!this.viewMatches(context)) return false;
     this.paint();
-    this.worksheet.getRange(1, 1).activate();
+    context.worksheet.getRange(1, 1).activate();
     this.selectionInfo();
+    return true;
   }
   tabs() {
     $("sheet-tabs").innerHTML = this.meta.sheets
@@ -380,24 +402,40 @@ export class PlanningGrid {
     else this.tabs();
   }
   async loadBlock(row, force = false) {
-    const start = this.cache.start(row),
+    const cache = this.cache,
+      start = cache.start(row),
       sheet = this.sheet,
-      shape = this.currentSheet();
+      shape = this.currentSheet(),
+      context = {
+        sheet,
+        worksheet: this.worksheet,
+        generation: this.generation,
+      };
     if (
       this.closed ||
       start < 0 ||
       start >= shape.rows ||
-      (!force && this.cache.has(sheet, start))
+      (!force && cache.has(sheet, start))
     )
       return;
+    this.loadTokens ??= new Map();
+    const key = `${sheet}:${start}`,
+      token = (this.loadTokens.get(key) ?? 0) + 1;
+    this.loadTokens.set(key, token);
+    const current = () =>
+      this.viewMatches(context) &&
+      cache === this.cache &&
+      this.loadTokens.get(key) === token;
     const path = `/copies/${this.copy.id}/sheets/${sheet}/rows?start=${start}&count=${Math.min(BLOCK_ROWS, shape.rows - start)}`;
     let data = await this.api.request(path);
+    if (!current()) return false;
     if (data.calculated_revision < this.store.calculatedRevision)
       data = await this.api.request(path);
+    if (!current()) return false;
     if (data.calculated_revision < this.store.calculatedRevision) return;
-    if (this.closed || this.sheet !== sheet) return;
-    this.cache.put(sheet, start, data);
-    for (const evicted of this.cache.lastEvicted) {
+    cache.put(sheet, start, data);
+    this.store.registerBlock(sheet, start, data.calculated_revision);
+    for (const evicted of cache.lastEvicted) {
       const cleared = {};
       for (
         let r = evicted.start;
@@ -423,6 +461,7 @@ export class PlanningGrid {
       data.calculated_revision,
     );
     this.paint();
+    return true;
   }
   scheduleVisible() {
     clearTimeout(this.scrollTimer);
@@ -464,7 +503,7 @@ export class PlanningGrid {
     }
     if (Object.keys(changed).length) this.mutate(changed);
     const busy =
-      this.store.calculatedRevision < this.store.inputRevision ||
+      !this.store.blocksCalculated(this.store.inputRevision) ||
       this.controller.busy;
     $("save-chip").textContent = busy
       ? "Calculating..."
@@ -493,7 +532,7 @@ export class PlanningGrid {
     $("formula-note").textContent =
       cell?.k === "i"
         ? cell.by
-          ? `Input · ${cell.by.name} · ${new Date(cell.at).toLocaleString()}`
+          ? `Input · ${editorDisplay(cell)}`
           : "Input cell"
         : "Locked template cell";
     this.stats();
@@ -761,21 +800,30 @@ export class PlanningGrid {
     }
   }
   async copySelection() {
-    const range = this.selection[0],
+    const range = { ...this.selection[0] },
+      context = {
+        sheet: this.sheet,
+        worksheet: this.worksheet,
+        generation: this.generation,
+      },
+      token = ++this.copyToken,
       area =
         (range.endRow - range.startRow + 1) *
         (range.endColumn - range.startColumn + 1);
     if (area > 10000) throw new Error("Copy at most 10,000 cells");
-    const lines = [];
+    const current = () => this.copyToken === token && this.viewMatches(context),
+      lines = [];
     for (
       let start = range.startRow;
       start <= range.endRow;
       start += BLOCK_ROWS
     ) {
+      if (!current()) return false;
       const count = Math.min(BLOCK_ROWS, range.endRow - start + 1),
         data = await this.api.request(
-          `/copies/${this.copy.id}/sheets/${this.sheet}/rows?start=${start}&count=${count}`,
+          `/copies/${this.copy.id}/sheets/${context.sheet}/rows?start=${start}&count=${count}`,
         );
+      if (!current()) return false;
       for (let r = start; r < start + count; r++) {
         const values = [];
         for (let c = range.startColumn; c <= range.endColumn; c++)
@@ -798,7 +846,9 @@ export class PlanningGrid {
       if (!ok)
         throw new Error("Press Ctrl+C to copy using your browser clipboard");
     }
+    if (!current()) return false;
     this.toast("Selection copied");
+    return true;
   }
   async pasteClipboard() {
     try {
@@ -817,14 +867,22 @@ export class PlanningGrid {
           0,
         ) - 1,
       r = Number(match[2]) - 1,
-      shape = this.currentSheet();
+      shape = this.currentSheet(),
+      context = {
+        sheet: this.sheet,
+        worksheet: this.worksheet,
+        generation: this.generation,
+      },
+      token = ++this.goToToken;
     if (r >= shape.rows || c >= shape.cols)
       throw new Error("Cell is outside this sheet");
     await this.loadBlock(r);
-    this.worksheet.getRange(r, c).activate();
-    this.worksheet.scrollToCell(r, c);
+    if (this.goToToken !== token || !this.viewMatches(context)) return false;
+    context.worksheet.getRange(r, c).activate();
+    context.worksheet.scrollToCell(r, c);
     this.selection = [{ startRow: r, endRow: r, startColumn: c, endColumn: c }];
     this.selectionInfo();
+    return true;
   }
   async find(query) {
     if (!query.trim()) return;
@@ -879,9 +937,8 @@ export class PlanningGrid {
     if (this.closed || token !== this.selectionToken) return;
     $("history-title").textContent = `Cell history: ${cellName(selected)}`;
     const current = this.store.get(selected.sheet, selected.r, selected.c);
-    $("last-editor").textContent = current?.by
-      ? `${current.by.name} · ${new Date(current.at).toLocaleString()}`
-      : "No edits recorded";
+    $("last-editor").textContent =
+      editorDisplay(current) || "No edits recorded";
     const entries = (list) =>
       list.length
         ? list
@@ -921,15 +978,12 @@ export class PlanningGrid {
           this.presence(message.users);
           return;
         }
-        if (message.type === "op") {
-          this.lastRevision = Math.max(
-            this.lastRevision ?? 0,
-            message.input_revision,
+        this.handleRemote(message).catch(() => {
+          this.toast(
+            "Live update details could not be applied; refreshing visible rows",
           );
-          this.wsReceived.op++;
-        }
-        if (message.type === "calc") this.wsReceived.calc++;
-        this.controller.remote(message);
+          this.resync();
+        });
       } catch {
         this.toast("Live update could not be applied; refreshing visible rows");
         this.resync();
@@ -946,16 +1000,89 @@ export class PlanningGrid {
       this.reconnectTimer = setTimeout(() => this.connect(), 1000);
     };
   }
+  async handleRemote(message) {
+    if (message.type === "op") {
+      this.lastRevision = Math.max(
+        this.lastRevision ?? 0,
+        message.input_revision,
+      );
+      this.wsReceived.op++;
+    }
+    if (message.type === "calc") this.wsReceived.calc++;
+    this.controller.remote(message);
+    if (message.type === "op" && message.at == null)
+      await this.refreshOpDetails(message);
+  }
+  async refreshOpDetails(message) {
+    const context = {
+        sheet: this.sheet,
+        worksheet: this.worksheet,
+        generation: this.generation,
+        cache: this.cache,
+      },
+      cells = message.cells.filter(
+        (cell) =>
+          cell.at == null &&
+          this.store.get(cell.sheet, cell.r, cell.c)?.ver === cell.ver,
+      );
+    if (cells.length > DETAIL_REFRESH_LIMIT) {
+      await this.refreshOpBlocks(cells, context);
+      return;
+    }
+    await Promise.all(
+      cells.map(async (cell) => {
+        const detail = await this.api.request(
+          `/copies/${this.copy.id}/sheets/${cell.sheet}/cell?r=${cell.r}&c=${cell.c}`,
+        );
+        if (!this.viewMatches(context)) return;
+        if (
+          this.store.applyDetail({
+            ...detail,
+            sheet: cell.sheet,
+            r: cell.r,
+            c: cell.c,
+          })
+        )
+          this.paint([cell]);
+      }),
+    );
+  }
+  async refreshOpBlocks(cells, context) {
+    const starts = [
+      ...new Set(
+        cells
+          .filter(
+            (cell) =>
+              cell.sheet === context.sheet &&
+              context.cache.has(cell.sheet, cell.r),
+          )
+          .map((cell) => context.cache.start(cell.r)),
+      ),
+    ].sort((a, b) => a - b);
+    for (const start of starts) {
+      if (!this.viewMatches(context) || this.cache !== context.cache) return;
+      await this.loadBlock(start, true);
+    }
+  }
   async resync() {
+    const context = {
+      sheet: this.sheet,
+      worksheet: this.worksheet,
+      generation: this.generation,
+    };
     try {
       for (const key of [...this.cache.blocks.keys()]) {
+        if (!this.viewMatches(context)) return false;
         const [sheet, start] = key.split(":").map(Number);
-        if (sheet === this.sheet) await this.loadBlock(start, true);
+        if (sheet === context.sheet) await this.loadBlock(start, true);
       }
+      if (!this.viewMatches(context)) return false;
       this.lastRevision = this.store.inputRevision;
       this.selectionInfo();
+      return true;
     } catch (error) {
       this.toast(error.message);
+      return false;
     }
   }
   async refreshRole() {

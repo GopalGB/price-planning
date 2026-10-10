@@ -76,7 +76,7 @@ export async function createMockServer({port=3101}={}) {
    copy.history.unshift({op_id:body.op_id,revision,at,by,sheet:cell.sheet,r:cell.r,c:cell.c,before:previous.v,after:cell.v,action:body.action});
    return {sheet:cell.sheet,r:cell.r,c:cell.c,v:cell.v,ver};
   });
-  copy.last_edit={by,at}; const op={type:'op',op_id:body.op_id,input_revision:revision,by,action:body.action,cells};
+  copy.last_edit={by,at}; const op={type:'op',op_id:body.op_id,input_revision:revision,by,at,action:body.action,cells};
   const changes=cells.flatMap(cell=>[2,3].map(c=>({sheet:cell.sheet,r:cell.r,c,v:syntheticCell(copy,cell.sheet,cell.r,c).v})));
   const calc={type:'calc',calculated_revision:revision,changes};copy.replay.push(op,calc);if(copy.replay.length>256)copy.replay.splice(0,2);
   broadcast(copy,op);broadcast(copy,{type:'calc_state',input_revision:revision,calculated_revision:copy.calculated_revision});

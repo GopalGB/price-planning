@@ -55,18 +55,24 @@ export function buildOp(
 }
 export function invertOp(store, op, id = crypto.randomUUID()) {
   const changes = op.cells.map((cell) => {
-    const current = store.get(cell.sheet, cell.r, cell.c);
+    const key = keyOf(cell),
+      current = store.get(cell.sheet, cell.r, cell.c);
     const expected =
-      op.afterVersions?.[keyOf(cell)] ??
-      (current?.lastOpId === op.op_id ? current.ver : null);
-    if (!current || current.pending || current.ver !== expected)
+        op.afterVersions?.[key] ??
+        (current?.lastOpId === op.op_id ? current.ver : null),
+      interrupted = op.interruptions?.[key];
+    if (
+      !current ||
+      current.pending ||
+      (current.ver !== expected && !interrupted)
+    )
       throw new Error(
         `Undo is stale at ${cellName(cell)}; another edit followed yours`,
       );
     return {
       ...cell,
-      v: op.before[keyOf(cell)].v,
-      expected_version: current.ver,
+      v: op.before[key].v,
+      expected_version: interrupted ? expected : current.ver,
     };
   });
   return buildOp(store, changes, "undo", id);
@@ -81,6 +87,8 @@ export function rollback(store, op) {
 export class CellStore {
   constructor(rows = {}, sheet = 0) {
     this.cells = new Map();
+    this.blockRevisions = new Map();
+    this.calcBatches = new Set();
     this.inputRevision = 0;
     this.calculatedRevision = 0;
     this.merge(rows, sheet);
@@ -93,12 +101,16 @@ export class CellStore {
       for (const [c, cell] of Object.entries(columns)) {
         const key = keyOf({ sheet, r, c }),
           current = this.cells.get(key);
-        if (cell.k === "f" && revision < this.calculatedRevision) continue;
+        if (cell.k === "f" && revision < (current?.calcRevision ?? -1))
+          continue;
         if (
           !current?.pending &&
           (!current || (current.ver ?? 0) <= (cell.ver ?? 0))
         )
-          this.cells.set(key, { ...cell });
+          this.cells.set(key, {
+            ...cell,
+            ...(cell.k === "f" ? { calcRevision: revision } : {}),
+          });
       }
   }
   optimistic(op) {
@@ -113,27 +125,75 @@ export class CellStore {
     this.inputRevision = Math.max(this.inputRevision, message.input_revision);
     for (const cell of message.cells) {
       const current = this.get(cell.sheet, cell.r, cell.c);
-      if (current && cell.ver >= (current.ver ?? 0))
+      if (current && cell.ver > (current.ver ?? 0))
         this.cells.set(keyOf(cell), {
           ...current,
           v: cell.v,
           ver: cell.ver,
-          by: message.by ?? current.by,
-          at: message.at ?? current.at ?? new Date().toISOString(),
+          by: message.by ?? cell.by ?? current.by,
+          at: message.at ?? cell.at ?? null,
           lastOpId: message.op_id,
           pending: undefined,
         });
     }
   }
+  applyDetail(cell) {
+    const current = this.get(cell.sheet, cell.r, cell.c);
+    if (!current || current.pending || current.ver !== cell.ver) return false;
+    this.cells.set(keyOf(cell), {
+      ...current,
+      by: cell.by ?? current.by,
+      at: cell.at ?? null,
+    });
+    return true;
+  }
   applyCalc(message) {
-    if (message.calculated_revision < this.calculatedRevision) return false;
-    this.calculatedRevision = message.calculated_revision;
+    this.calculatedRevision = Math.max(
+      this.calculatedRevision,
+      message.calculated_revision,
+    );
+    this.calcBatches.add(message.calculated_revision);
     for (const cell of message.changes) {
       const current = this.get(cell.sheet, cell.r, cell.c);
-      if (current && current.k !== "i")
-        this.cells.set(keyOf(cell), { ...current, v: cell.v });
+      if (
+        current &&
+        current.k !== "i" &&
+        message.calculated_revision >= (current.calcRevision ?? -1)
+      )
+        this.cells.set(keyOf(cell), {
+          ...current,
+          v: cell.v,
+          calcRevision: message.calculated_revision,
+        });
     }
+    this.advanceBlocks();
     return true;
+  }
+  registerBlock(sheet, start, revision) {
+    this.blockRevisions.set(`${sheet}:${start}`, revision);
+    this.advanceBlocks();
+  }
+  advanceBlocks() {
+    for (const [key, revision] of this.blockRevisions) {
+      let next = revision;
+      while (this.calcBatches.has(next + 1)) next++;
+      this.blockRevisions.set(key, next);
+    }
+    if (this.blockRevisions.size) {
+      const floor = Math.min(...this.blockRevisions.values());
+      for (const revision of this.calcBatches)
+        if (revision <= floor) this.calcBatches.delete(revision);
+    }
+  }
+  blocksCalculated(revision) {
+    return (
+      this.blockRevisions.size > 0 &&
+      [...this.blockRevisions.values()].every((value) => value >= revision)
+    );
+  }
+  resetBlocks() {
+    this.blockRevisions.clear();
+    this.calcBatches.clear();
   }
   evict(sheet, start) {
     for (const key of this.cells.keys()) {
@@ -141,6 +201,7 @@ export class CellStore {
       if (s === sheet && r >= start && r < start + BLOCK_ROWS)
         this.cells.delete(key);
     }
+    this.blockRevisions.delete(`${sheet}:${start}`);
   }
 }
 export class RowCache {
