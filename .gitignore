@@ -42,3 +42,4 @@ node_modules/
 strix_runs/
 .superpowers/
 codedb.snapshot
+proto/univer-gate/dist/
