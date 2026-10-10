@@ -18,6 +18,12 @@ class DependencyContractTests(unittest.TestCase):
             end = text.find("\n    # via", start)
             self.assertIn("--hash=sha256:", text[start:end])
 
+    def test_python310_conditional_dependency_is_locked_and_vendored(self):
+        for filename in ("requirements.lock", "requirements-dev.lock"):
+            self.assertIn("exceptiongroup==", (ROOT / filename).read_text())
+        self.assertTrue(list((ROOT / "vendor/wheels").glob("exceptiongroup-*.whl")),
+                        "Python 3.10 offline installs need AnyIO's conditional dependency")
+
 
 if __name__ == "__main__":
     unittest.main()
