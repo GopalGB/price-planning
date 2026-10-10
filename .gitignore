@@ -30,6 +30,7 @@ results-private/
 *.db-shm
 *.log
 logs/
+.content-denylist
 
 # Tooling
 /.venv/
@@ -39,3 +40,5 @@ __pycache__/
 node_modules/
 .DS_Store
 strix_runs/
+.superpowers/
+codedb.snapshot
