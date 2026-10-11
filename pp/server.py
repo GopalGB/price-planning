@@ -77,6 +77,8 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}", _copy_patch, methods=["PATCH"]),
         Route("/api/copies/{copy_id}/shares", _copy_shares, methods=["PUT"]),
         Route("/api/copies/{copy_id}/workbook", _workbook, methods=["GET"]),
+        Route("/api/copies/{copy_id}/assets/{asset_id}", _drawing_asset, methods=["GET"]),
+        Route("/api/copies/{copy_id}/actions/{name:path}", _drawing_action, methods=["POST"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/rows", _rows, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/cell", _cell, methods=["GET"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
@@ -195,6 +197,22 @@ async def _copy_shares(request: Request):
 async def _workbook(request: Request):
     services, user = _read_auth(request)
     return JSONResponse(services.workbooks.workbook(request.path_params["copy_id"], user["id"]))
+
+
+async def _drawing_asset(request: Request):
+    services, user = _read_auth(request)
+    asset = services.workbooks.drawing_asset(
+        request.path_params["copy_id"], user["id"], request.path_params["asset_id"],
+    )
+    return FileResponse(asset.path, media_type=asset.media_type)
+
+
+async def _drawing_action(request: Request):
+    services, user, _ = _write_auth(request)
+    services.workbooks.drawing_action(
+        request.path_params["copy_id"], user["id"], request.path_params["name"],
+    )
+    raise AssertionError("drawing actions do not execute")
 
 
 async def _rows(request: Request):

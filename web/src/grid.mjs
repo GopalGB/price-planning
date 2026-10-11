@@ -16,6 +16,7 @@ import {
   editableInput,
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
+import { DrawingLayer } from "./drawings.mjs";
 import {
   makeSnapshot,
   displayWidth,
@@ -68,6 +69,8 @@ export class PlanningGrid {
     this.goToToken = 0;
     this.loadTokens = new Map();
     this.measureText = createTextMeasurer();
+    this.drawingScroll = { x: 0, y: 0 };
+    this.drawingZoom = 1;
     this.controller = new EditController({
       store: this.store,
       api,
@@ -98,6 +101,12 @@ export class PlanningGrid {
     });
     this.univer = univer;
     this.u = univerAPI;
+    this.drawingLayer = new DrawingLayer({
+      container: $("grid"),
+      copyId: this.copy.id,
+      api: this.api,
+      toast: this.toast,
+    });
     this.bindEvents();
     await this.switchSheet(this.sheet);
     if (this.closed) return;
@@ -155,7 +164,24 @@ export class PlanningGrid {
         this.sendPresence();
       }
     });
-    this.on("Scroll", () => this.scheduleVisible());
+    this.on("Scroll", (event) => {
+      if (event.worksheet && event.worksheet !== this.worksheet) return;
+      this.drawingScroll = {
+        x: event.viewportScrollX ?? event.scrollX,
+        y: event.viewportScrollY ?? event.scrollY,
+      };
+      this.scheduleVisible();
+      this.renderDrawings();
+    });
+    this.on("SheetZoomChanged", (event) => {
+      if (event.worksheet && event.worksheet !== this.worksheet) return;
+      this.drawingZoom = event.zoom;
+      this.renderDrawings();
+    });
+    this.on("SheetSkeletonChanged", (event) => {
+      if (!event.worksheet || event.worksheet === this.worksheet)
+        this.renderDrawings();
+    });
     this.on("CellHover", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
       $("grid").title = editableInput(cell)
@@ -402,12 +428,15 @@ export class PlanningGrid {
       return;
     const generation = ++this.generation;
     this.sheet = index;
+    this.drawingLayer?.clear();
     this.detailKey = "";
     this.cache = new RowCache(3);
     this.loadTokens = new Map();
     this.store.cells.clear();
     this.store.resetBlocks();
     this.rendered.clear();
+    this.drawingScroll = { x: 0, y: 0 };
+    this.drawingZoom = 1;
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     if (this.u.getActiveWorkbook()) this.u.disposeUnit("planning");
     this.internal++;
@@ -427,6 +456,10 @@ export class PlanningGrid {
     await this.loadBlock(0, true);
     if (!this.viewMatches(context)) return false;
     this.paint();
+    this.drawingLayer?.show(
+      this.currentSheet().drawings ?? [],
+      this.drawingView(),
+    );
     context.worksheet.getRange(1, 1).activate();
     this.selectionInfo();
     return true;
@@ -551,6 +584,18 @@ export class PlanningGrid {
         })
         .catch((error) => this.toast(error.message));
     }, 40);
+  }
+  drawingView() {
+    return {
+      worksheet: this.worksheet,
+      scrollX: this.drawingScroll.x,
+      scrollY: this.drawingScroll.y,
+      zoom: this.drawingZoom,
+    };
+  }
+  renderDrawings() {
+    if (this.worksheet?.getSkeleton() && this.drawingLayer)
+      this.drawingLayer.refresh(this.drawingView());
   }
   paint(coordinates) {
     if (!this.worksheet || this.closed) return;
@@ -1353,6 +1398,7 @@ export class PlanningGrid {
     this.socket?.close();
     document.removeEventListener("keydown", this.keyHandler, true);
     for (const d of [...this.disposables, ...this.highlights]) d.dispose();
+    this.drawingLayer?.dispose();
     this.univer?.dispose();
     if (import.meta.env.DEV) delete window.planning;
   }

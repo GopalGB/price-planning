@@ -2,11 +2,78 @@
 """Deterministic synthetic workbooks. No company data. Used by CI and by the Univer gate."""
 import xml.etree.ElementTree as ET
 import zipfile
+import base64
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Protection
 from openpyxl.workbook.defined_name import DefinedName
 
 CF_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+
+DRAWING_XML = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+ xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+ <xdr:oneCellAnchor><xdr:from><xdr:col>1</xdr:col><xdr:colOff>95250</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>190500</xdr:rowOff></xdr:from><xdr:ext cx="914400" cy="457200"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="2" name="Internal picture"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+ <xdr:twoCellAnchor><xdr:from><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>4</xdr:col><xdr:colOff>47625</xdr:colOff><xdr:row>4</xdr:row><xdr:rowOff>95250</xdr:rowOff></xdr:to><xdr:sp><xdr:nvSpPr><xdr:cNvPr id="3" name="Plan note"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr/><xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Review price</a:t></a:r><a:r><a:t> plan</a:t></a:r></a:p><a:p><a:r><a:t>Second line</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:twoCellAnchor>
+ <xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>5</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="1371600" cy="381000"/><xdr:sp macro="Module1.Run Report"><xdr:nvSpPr><xdr:cNvPr id="4" name="Run report"/><xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr/><xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Run report</a:t></a:r></a:p></xdr:txBody></xdr:sp><xdr:clientData/></xdr:oneCellAnchor>
+ <xdr:twoCellAnchor><xdr:from><xdr:col>5</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:to><xdr:col>7</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to><xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="5" name="Region slicer"/><xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic><a:graphicData uri="http://schemas.microsoft.com/office/drawing/2010/slicer"><a:slicer name="Region"/></a:graphicData></a:graphic></xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>
+ <xdr:oneCellAnchor><xdr:from><xdr:col>8</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="914400" cy="457200"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="6" name="External blocked"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId2"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+ <xdr:oneCellAnchor><xdr:from><xdr:col>9</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="914400" cy="457200"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="7" name="Traversal blocked"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId3"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+ <xdr:oneCellAnchor><xdr:from><xdr:col>10</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>1</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from><xdr:ext cx="914400" cy="457200"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="8" name="Wrong relation blocked"/><xdr:cNvPicPr/></xdr:nvPicPr><xdr:blipFill><a:blip r:embed="rId4"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>
+</xdr:wsDr>'''
+
+DRAWING_RELS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image1.png"/>
+ <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="https://example.test/tracker.png" TargetMode="External"/>
+ <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../../../outside.png"/>
+ <Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="../media/image1.png"/>
+</Relationships>'''
+
+TINY_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+
+
+def make_drawings(path, image_bytes=TINY_PNG):
+    """Create a small workbook with pictures, shapes, a macro, and a slicer frame."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Drawings"
+    sheet.freeze_panes = "B2"
+    sheet.column_dimensions["A"].width = 12
+    sheet.column_dimensions["B"].width = 20
+    sheet.row_dimensions[2].height = 30
+    sheet["A1"] = "Synthetic"
+    book.save(path)
+    with zipfile.ZipFile(path, "r") as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    members["xl/worksheets/sheet1.xml"] = _drawing_sheet(
+        members["xl/worksheets/sheet1.xml"]
+    )
+    members["xl/worksheets/_rels/sheet1.xml.rels"] = _sheet_drawing_rels()
+    members["xl/drawings/drawing1.xml"] = DRAWING_XML.encode()
+    members["xl/drawings/_rels/drawing1.xml.rels"] = DRAWING_RELS.encode()
+    members["xl/media/image1.png"] = image_bytes
+    members["outside.png"] = TINY_PNG
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
+def _drawing_sheet(data):
+    root = ET.fromstring(data)
+    root.append(ET.Element(f"{{{CF_NS}}}drawing", {
+        "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id": "rIdDrawing",
+    }))
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _sheet_drawing_rels():
+    return b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Id="rIdDrawing" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>'''
 
 def make_semantic(path):
     wb = Workbook()

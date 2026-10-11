@@ -114,6 +114,12 @@ class HistoryQuery:
     limit: int
 
 
+@dataclass(frozen=True)
+class DrawingAsset:
+    path: Path
+    media_type: str
+
+
 class TemplateCatalog:
     def __init__(self, database, current):
         self.database = database
@@ -151,11 +157,38 @@ class WorkbookService:
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                    "merges": item["merges"],
-                   "has_conditional_formats": item.get("has_conditional_formats", False)}
+                   "has_conditional_formats": item.get("has_conditional_formats", False),
+                   **({"drawings": item["drawings"]} if item.get("drawings") else {})}
                   for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": copy["calculated_revision"],
                 "sheets": sheets, "styles": snapshot.styles}
+
+    def drawing_asset(self, copy_id: str, user_id: str, asset_id: str) -> DrawingAsset:
+        with self.database.connect() as connection:
+            copy = self._copy(connection, copy_id, user_id)
+            snapshot = self.templates.get(connection, copy["template_id"])
+        assets = {item["asset_id"]: item["media_type"] for sheet in snapshot.sheets
+                  for item in sheet.get("drawings", []) if item.get("type") == "picture"}
+        if asset_id not in assets or Path(asset_id).name != asset_id:
+            raise AppError(404, "not_found", "Drawing asset not found")
+        path = snapshot.path / "assets" / asset_id
+        if not path.is_file():
+            raise AppError(404, "not_found", "Drawing asset not found")
+        return DrawingAsset(path, assets[asset_id])
+
+    def drawing_action(self, copy_id: str, user_id: str, name: str) -> None:
+        with self.database.connect() as connection:
+            copy = self._copy(connection, copy_id, user_id)
+            role = effective_role(connection, copy_id, user_id)
+            snapshot = self.templates.get(connection, copy["template_id"])
+        actions = {item.get("macro") for sheet in snapshot.sheets
+                   for item in sheet.get("drawings", []) if item.get("type") == "macro"}
+        if name not in actions:
+            raise AppError(404, "not_found", "Workbook action not found")
+        if role == "viewer":
+            raise AppError(403, "forbidden", "Viewer access is read only")
+        raise AppError(501, "action_unavailable", "Macro actions are not available yet.")
 
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:

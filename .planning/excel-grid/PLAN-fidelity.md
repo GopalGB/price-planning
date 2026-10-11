@@ -5,7 +5,7 @@ Approval: user GO-TOKEN approves the five ordered features and local acceptance.
 Goal: import and render Excel template presentation using synthetic fixtures only.
 
 - [x] 1. Conditional formatting: tests first, six rule types and differential styles; copy-current values through public engine boundary; row-block overrides, client rendering and edit refresh; isolated future calculation hook. Files: pp/template, pp/fidelity, pp/workbook_service.py, web/src, tests/v2, web/test, ops/fixtures. Success: literal expected styles and relative/cross-sheet formulas, no full-sheet fetch. Implementation/tests complete; final Opus acceptance blocked by weekly quota.
-- [ ] 2. Drawings: synthetic anchored pictures and text shapes; macro button POST stub with access checks and clear 501. Files: importer/fidelity, server action route only, web, tests, fixtures. Success: anchored render and endpoint tests.
+- [x] 2. Drawings: synthetic anchored pictures and text shapes; macro button POST stub with access checks and clear 501. Files: importer/fidelity, server action route only, web, tests, fixtures. Success: anchored render and endpoint tests.
 - [ ] 3. Notes: row-block notes, red markers and hover text. Files: importer/fidelity, workbook service, web, tests, fixtures. Success: literal text and hover/marker tests.
 - [ ] 4. Tables and AutoFilter: header styling, banding, filter controls and per-user local visibility; no sort. Files: importer/fidelity, workbook service, web, tests, fixtures. Success: filter isolation and bounded streaming tests.
 - [ ] 5. Sheet views: tab colors, gridlines, zoom, hidden-sheet control, frozen panes; retain sizes, merges and protection. Files: importer/fidelity, workbook service, web, tests, fixtures. Success: metadata and renderer tests.

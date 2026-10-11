@@ -6,6 +6,8 @@
 Synthetic fixtures only. No private workbook access. pp/engine and calculation pipeline remain read-only.
 
 ## Progress
+CF locally committed f764aaa; drawing feature implementation passes relevant Python 32/32 and web 26/26. Final acceptance remains unaccepted pending exact Opus review and whole-track gates. Notes are next. Earlier checkpoints below are historical.
+
 CF F1-F7 correction implementation is tested (full Python 302/302, web 105/105) but unaccepted. Fresh exact Opus 5.5 re-review is blocked by weekly quota, HTTP 429, with provider-reported reset 7:30pm (Asia/Calcutta). Controller continues approved local work; no substitute or paid lane. Final acceptance remains blocked.
 
 Resume: remaining CF importer/evaluator findings have regression coverage. Relevant executor checks passed (Python 25/25, web 23/23); controller full Python 300/300 and full web 103/103 passed. Content guard 0, project Ruff and pinned Prettier green. Fresh Opus 5.5 returned FIX-FIRST (verified identity); F1-F7 are in a second regression-fix pass before any commit. This is the current checkpoint; low-disk details below are historical.
@@ -29,3 +31,7 @@ Implement conditional formatting first, then drawings, notes, tables/filters and
 `conditional_style_overrides(snapshot, values, query)` returns `ConditionalFormatResult(styles, warnings)`. `/rows` streams `style_override` per cell and generic `conditional_format_warnings` per block; a failing rule rolls back its own styles without hiding ordinary values or healthy styles. Workbook sheet metadata includes `has_conditional_formats`. Calc refresh touches loaded CF blocks only and coalesces concurrent events.
 
 Bounds: 10000 formula targets/request, 256 formulas and 10000 referenced cells/public-engine load, 100000 duplicate-scan cells/rule, 100000 override records/request, 31 warnings plus a truncation marker. Two cached value/template blocks. Skipped formatting is visibly warned; extended x14 CF and external/structured formula references remain unsupported. No real template fidelity is claimed.
+
+## Drawings contract
+
+Internal PNG/JPEG/GIF assets only, with authenticated copy access. Macro identifiers remain verbatim; authorized POST action returns 501 and a clear message, viewer writes fail 403 and inaccessible copies fail 404. Anchors use installed Univer public skeleton, scroll and zoom APIs with DOM presentation, because the pinned preset has no sheets-drawing plugin. Limits: 500 anchored drawings, 100 asset references, 5 MiB per asset, 25 MiB cumulative. Slicer presentation is view only.

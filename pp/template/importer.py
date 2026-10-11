@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import posixpath
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -30,8 +31,16 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+XDR_NS = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
+REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 8
+IMPORT_VERSION = 9
+DRAWING_ASSET_BYTES = 5 * 1024 * 1024
+DRAWING_TOTAL_BYTES = 25 * 1024 * 1024
+DRAWING_ASSET_COUNT = 100
+DRAWING_COUNT = 500
+MAX_SHEET_ROWS = 1_048_576
+MAX_SHEET_COLS = 16_384
 CF_RULE_TYPES = frozenset({"expression", "cellIs", "containsText", "duplicateValues", "beginsWith", "containsErrors"})
 CF_BORDER_STYLES = {
     "thin": 1, "hair": 2, "dotted": 3, "dashed": 4,
@@ -59,6 +68,12 @@ class CellContext:
     unlocked: set[int]
 
 
+@dataclass
+class DrawingBudget:
+    bytes: int = 0
+    count: int = 0
+
+
 @dataclass(frozen=True)
 class SheetContext:
     archive: zipfile.ZipFile
@@ -66,6 +81,7 @@ class SheetContext:
     unlocked: set[int]
     dxf_styles: list[dict]
     destination: Path
+    drawing_budget: DrawingBudget
 
 
 @dataclass(frozen=True)
@@ -470,6 +486,184 @@ def _flush_block(directory: Path, block: int | None, rows: dict) -> None:
         _write_json(directory / f"{block}.json", rows)
 
 
+def _relationships(archive: zipfile.ZipFile, part: str) -> dict[str, dict]:
+    directory, name = posixpath.split(part)
+    rels_part = posixpath.join(directory, "_rels", f"{name}.rels")
+    if rels_part not in archive.namelist():
+        return {}
+    root = ET.fromstring(archive.read(rels_part))
+    return {node.get("Id"): dict(node.attrib) for node in root.findall(f"{REL_NS}Relationship")
+            if node.get("Id")}
+
+
+def _internal_target(part: str, relationship: dict | None) -> str | None:
+    if not relationship or relationship.get("TargetMode", "").lower() == "external":
+        return None
+    target = relationship.get("Target", "")
+    if not target or "\\" in target or ":" in target or target.startswith("/"):
+        return None
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(part), target))
+    return resolved if resolved.startswith("xl/") and "../" not in resolved else None
+
+
+def _anchor_marker(node: ET.Element | None) -> dict:
+    if node is None:
+        raise TemplateImportError("drawing anchor is invalid")
+
+    def value(name):
+        return int(node.findtext(f"{XDR_NS}{name}", "0"))
+
+    marker = {"col": value("col"), "col_offset": value("colOff"),
+              "row": value("row"), "row_offset": value("rowOff")}
+    if (not 0 <= marker["row"] < MAX_SHEET_ROWS
+            or not 0 <= marker["col"] < MAX_SHEET_COLS
+            or marker["row_offset"] < 0 or marker["col_offset"] < 0):
+        raise TemplateImportError("drawing anchor is invalid")
+    return marker
+
+
+def _drawing_anchor(node: ET.Element) -> dict:
+    result = {"from": _anchor_marker(node.find(f"{XDR_NS}from"))}
+    target = node.find(f"{XDR_NS}to")
+    extent = node.find(f"{XDR_NS}ext")
+    if target is not None:
+        result["to"] = _anchor_marker(target)
+    elif extent is not None:
+        result["extent"] = {"width": int(extent.get("cx", "0")),
+                            "height": int(extent.get("cy", "0"))}
+        if min(result["extent"].values()) < 0:
+            raise TemplateImportError("drawing extent is invalid")
+    else:
+        raise TemplateImportError("drawing extent is missing")
+    return result
+
+
+def _image_type(data: bytes) -> tuple[str, str] | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif", ".gif"
+    return None
+
+
+def _drawing_asset(context: SheetContext, part: str, relationship: dict | None) -> dict | None:
+    target = _internal_target(part, relationship)
+    if target is None or target not in context.archive.namelist():
+        return None
+    budget = context.drawing_budget
+    if budget.count >= DRAWING_ASSET_COUNT:
+        raise TemplateImportError("drawing assets exceed the import limit")
+    with context.archive.open(target) as stream:
+        data = stream.read(DRAWING_ASSET_BYTES + 1)
+    if len(data) > DRAWING_ASSET_BYTES:
+        raise TemplateImportError("drawing asset exceeds the size limit")
+    kind = _image_type(data)
+    if kind is None:
+        return None
+    if budget.bytes + len(data) > DRAWING_TOTAL_BYTES:
+        raise TemplateImportError("drawing assets exceed the import limit")
+    media_type, suffix = kind
+    asset_id = f"{hashlib.sha256(data).hexdigest()}{suffix}"
+    asset_path = context.destination / "assets" / asset_id
+    if not asset_path.exists():
+        asset_path.parent.mkdir(parents=True, exist_ok=True)
+        asset_path.write_bytes(data)
+    budget.bytes += len(data)
+    budget.count += 1
+    return {"asset_id": asset_id, "media_type": media_type}
+
+
+def _drawing_name(node: ET.Element) -> str:
+    properties = node.find(f".//{XDR_NS}cNvPr")
+    return properties.get("name", "Drawing") if properties is not None else "Drawing"
+
+
+def _picture(context: SheetContext, part: str, node: ET.Element, relations: dict) -> dict | None:
+    blip = node.find(f".//{DRAWING_NS}blip")
+    relationship = None if blip is None else relations.get(blip.get(f"{RNS}embed"))
+    asset = (_drawing_asset(context, part, relationship)
+             if relationship and relationship.get("Type", "").endswith("/image") else None)
+    return None if asset is None else {"type": "picture", "name": _drawing_name(node), **asset}
+
+
+def _shape_text(node: ET.Element) -> str:
+    paragraphs = []
+    for paragraph in node.findall(f".//{DRAWING_NS}p"):
+        parts = []
+        for item in paragraph.iter():
+            if item.tag == f"{DRAWING_NS}t":
+                parts.append(item.text or "")
+            elif item.tag == f"{DRAWING_NS}br":
+                parts.append("\n")
+        paragraphs.append("".join(parts))
+    return "\n".join(paragraphs)
+
+
+def _shape(node: ET.Element) -> dict:
+    text = _shape_text(node)
+    macro = node.get("macro")
+    result = {"type": "macro" if macro else "textbox", "name": _drawing_name(node), "text": text}
+    if macro:
+        result["macro"] = macro
+    return result
+
+
+def _graphic(node: ET.Element) -> dict | None:
+    data = node.find(f".//{DRAWING_NS}graphicData")
+    if data is None or "slicer" not in data.get("uri", "").lower():
+        return None
+    return {"type": "slicer", "name": _drawing_name(node)}
+
+
+def _drawing_items(context: SheetContext, sheet_part: str, relation_id: str, sheet: int) -> list[dict]:
+    relationship = _relationships(context.archive, sheet_part).get(relation_id)
+    if not relationship or not relationship.get("Type", "").endswith("/drawing"):
+        return []
+    part = _internal_target(sheet_part, relationship)
+    if part is None or part not in context.archive.namelist():
+        return []
+    return _stream_drawings(context, part, sheet)
+
+
+def _stream_drawings(context: SheetContext, part: str, sheet: int) -> list[dict]:
+    relations, output, stack, count = _relationships(context.archive, part), [], [], 0
+    anchor_tags = {f"{XDR_NS}oneCellAnchor", f"{XDR_NS}twoCellAnchor"}
+    with context.archive.open(part) as stream:
+        for event, element in ET.iterparse(stream, events=("start", "end")):
+            if event == "start":
+                stack.append(element)
+                continue
+            if element.tag in anchor_tags:
+                if count >= DRAWING_COUNT:
+                    raise TemplateImportError("drawing count exceeds the import limit")
+                child = element.find(f"{XDR_NS}pic")
+                item = (_picture(context, part, child, relations)
+                        if child is not None else None)
+                if item is None and (child := element.find(f"{XDR_NS}sp")) is not None:
+                    item = _shape(child)
+                if item is None and (child := element.find(f"{XDR_NS}graphicFrame")) is not None:
+                    item = _graphic(child)
+                if item is not None:
+                    output.append({"id": f"drawing-{sheet}-{count}", **item,
+                                   "anchor": _drawing_anchor(element)})
+                count += 1
+                if len(stack) > 1:
+                    stack[-2].remove(element)
+            stack.pop()
+    return output
+
+
+def _extend_for_drawings(metadata: dict) -> None:
+    for drawing in metadata["drawings"]:
+        markers = [drawing["anchor"]["from"]]
+        if "to" in drawing["anchor"]:
+            markers.append(drawing["anchor"]["to"])
+        metadata["rows"] = max(metadata["rows"], *(item["row"] + 1 for item in markers))
+        metadata["cols"] = max(metadata["cols"], *(item["col"] + 1 for item in markers))
+
+
 def _record_cell(element: ET.Element, context: CellContext) -> tuple[int, int, dict]:
     reference = element.get("r")
     if reference is None:
@@ -518,6 +712,10 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     _flush_block(sheet_dir, block_index, block_rows)
     sheet_dir.mkdir(parents=True, exist_ok=True)
     metadata["protected"] = protected
+    relation_id = metadata.pop("drawing_relationship", None)
+    metadata["drawings"] = (_drawing_items(context, sheet_info["part"], relation_id, index)
+                            if relation_id else [])
+    _extend_for_drawings(metadata)
     return metadata, protected
 
 
@@ -557,6 +755,8 @@ def _sheet_metadata(element, metadata, protected, dxf_styles):
     elif element.tag == f"{NS}conditionalFormatting":
         metadata["conditional_formats"].extend(_conditional_formats(element, dxf_styles))
         metadata["has_conditional_formats"] = bool(metadata["conditional_formats"])
+    elif element.tag == f"{NS}drawing" and element.get(f"{RNS}id"):
+        metadata["drawing_relationship"] = element.get(f"{RNS}id")
     return protected
 
 
@@ -695,7 +895,7 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
             dxf_styles = _dxf_data(archive)
             sheet_specs, names = _workbook_data(archive)
             metadata, protected = [], set()
-            context = SheetContext(archive, database, unlocked, dxf_styles, staging)
+            context = SheetContext(archive, database, unlocked, dxf_styles, staging, DrawingBudget())
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)
                 metadata.append(info)
