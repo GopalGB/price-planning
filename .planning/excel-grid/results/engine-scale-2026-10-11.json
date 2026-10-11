@@ -1,0 +1,324 @@
+{
+  "attempted_scales": [
+    0.05
+  ],
+  "completed_scales": [
+    0.05
+  ],
+  "engine_version": "0.11.1",
+  "physical_ram_bytes": 8589934592,
+  "report_date": "2026-10-11",
+  "results": [
+    {
+      "actual_totals": {
+        "cells": 260000,
+        "formula_encodings": {
+          "array": 33200,
+          "normal": 7800,
+          "shared": 34000
+        },
+        "formulas": 75000,
+        "function_uses": {
+          "COLUMN": 14364,
+          "CONCAT": 7198,
+          "IFERROR": 10654,
+          "INDEX": 10713,
+          "LEN": 7198,
+          "LET": 7240,
+          "MATCH": 10713,
+          "NUMBERVALUE": 3513,
+          "SUMIF": 7103,
+          "SWITCH": 7204,
+          "VLOOKUP": 7105,
+          "XLOOKUP": 7104
+        },
+        "sheets": [
+          {
+            "cells": 85000,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 5000,
+              "shared": 0
+            },
+            "formulas": 5000,
+            "hidden": false,
+            "name": "S01"
+          },
+          {
+            "cells": 38000,
+            "formula_encodings": {
+              "array": 18150,
+              "normal": 0,
+              "shared": 14350
+            },
+            "formulas": 32500,
+            "hidden": false,
+            "name": "S02"
+          },
+          {
+            "cells": 23350,
+            "formula_encodings": {
+              "array": 15050,
+              "normal": 2800,
+              "shared": 350
+            },
+            "formulas": 18200,
+            "hidden": false,
+            "name": "S03"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S04"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S05"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S06"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S07"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S08"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S09"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S10"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S11"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S12"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S13"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S14"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S15"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S16"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S17"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S18"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S19"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S20"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S21"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S22"
+          }
+        ]
+      },
+      "broad_edit_seconds": 5.7169665829860605,
+      "cached_baseline": {
+        "performed": false,
+        "reason": "not_requested"
+      },
+      "child_peak_rss_bytes": 605929472,
+      "child_rss_max_bytes": 566771712,
+      "correctness": {
+        "broad": {
+          "actual_changed": 75000,
+          "all_values_match": true,
+          "expected_changed": 75000
+        },
+        "ordinary": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1
+        }
+      },
+      "disk_min_free_mib": 4298.3359375,
+      "engine_version": "0.11.1",
+      "generation_seconds": 1.0123289580224082,
+      "load_seconds": 455.1497262499761,
+      "ordinary_edit_seconds": 0.5580187920131721,
+      "physical_ram_bytes": 8589934592,
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "report_date": "2026-10-11",
+      "rss_at_stage_start_bytes": 131448832,
+      "scale": 0.05,
+      "stage": "finished",
+      "status": "completed",
+      "swap_baseline_mib": 8875.31,
+      "swap_max_mib": 9196.56
+    }
+  ],
+  "seed": 20261011,
+  "skipped_scales": [],
+  "stop_reason": null,
+  "swap_baseline_mib": 8875.31,
+  "topology_limitations": [
+    "Synthetic formulas use a bounded three-row lookup palette, not the real inventory.",
+    "Synthetic formulas use one broad dependency hub.",
+    "Shared and single-cell array encodings model OOXML topology, not a real dependency graph."
+  ]
+}
