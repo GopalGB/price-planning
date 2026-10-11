@@ -135,6 +135,16 @@ def _rss_bytes():
     return value if sys.platform == "darwin" else value * 1024
 
 
+def _resident_bytes():
+    """Current resident size, so a loaded engine is not hidden by the peak."""
+    import os as _os
+
+    result = subprocess.run(["ps", "-o", "rss=", "-p", str(_os.getpid())],
+                            capture_output=True, text=True, check=False)
+    value = result.stdout.strip()
+    return int(value) * 1024 if value else None
+
+
 def _number_matches(actual, expected):
     return isinstance(actual, (int, float)) and abs(actual - expected) < 1e-9
 
@@ -208,6 +218,71 @@ def _run_edits(engine, context):
     return ordinary_ok and broad_ok
 
 
+VISIBLE_ROWS = 40
+
+
+def _visible_blocks(engine):
+    """One screenful per sheet: the rows a client would have open."""
+    from pp.engine.formualizer import VisibleBlocks
+
+    first = {}
+    for sheet, row, _col in engine.formula_cells:
+        if sheet not in first or row < first[sheet]:
+            first[sheet] = row
+    return VisibleBlocks.of(*((sheet, row, row + VISIBLE_ROWS - 1)
+                              for sheet, row in sorted(first.items())))
+
+
+def _visible_expected(expected, blocks):
+    """Keep only the expected cells that fall inside a visible row block."""
+    spans = {(sheet, row) for sheet, first, last in blocks.rows
+             for row in range(first, last + 1)}
+    return [entry for entry in expected if (entry[0], entry[1]) in spans]
+
+
+def _measure(name, engine, changes, expected, metrics, progress_path):
+    """Time one edit and check that it published exactly the expected cells."""
+    _stage(metrics, progress_path, name)
+    started = time.perf_counter()
+    published = engine.apply(changes)
+    seconds = time.perf_counter() - started
+    wanted = list(expected)
+    correct = _check_delta(published, wanted, len(wanted))
+    metrics["timings"][name] = {
+        "seconds": round(seconds, 4), "expected_changed": len(wanted),
+        "actual_changed": len(published), "all_values_match": correct,
+        "stale_after": len(engine.stale_cells),
+    }
+    _write_progress(progress_path, metrics)
+    return correct
+
+
+def _run_native_edits(engine, manifest, metrics, progress_path):
+    """Time a first edit, a warm edit, and a broad edit visible-only and full."""
+    from pp.engine.formualizer import VisibleBlocks
+
+    metrics["timings"] = {}
+    engine.set_visible_blocks(VisibleBlocks())
+    correct = _measure("first_edit", engine, [(0, 0, 1, 6)],
+                       [next(expected_formula_values(manifest, 8, 6))],
+                       metrics, progress_path)
+    correct &= _measure("warm_edit", engine, [(0, 0, 1, 7)],
+                        [next(expected_formula_values(manifest, 8, 7))],
+                        metrics, progress_path)
+    blocks = _visible_blocks(engine)
+    engine.set_visible_blocks(blocks)
+    visible = _visible_expected(expected_formula_values(manifest, 11, 7), blocks)
+    correct &= _measure("broad_edit_visible", engine, [(0, 0, 0, 11)], visible,
+                        metrics, progress_path)
+    metrics["visible_rows"] = VISIBLE_ROWS
+    metrics["stale_after_visible"] = len(engine.stale_cells)
+    engine.set_visible_blocks(VisibleBlocks())
+    correct &= _measure("broad_edit_full", engine, [(0, 0, 0, 12)],
+                        expected_formula_values(manifest, 12, 7), metrics, progress_path)
+    metrics["stale_after_full"] = len(engine.stale_cells)
+    return bool(correct)
+
+
 def run_child(context):
     """Generate, native-load, and apply two real edits without inventing timings."""
     context.workspace.mkdir(parents=True, exist_ok=True)
@@ -221,10 +296,16 @@ def run_child(context):
         _write_progress(context.progress_path, metrics)
         _stage(metrics, context.progress_path, "load")
         from pp.engine.formualizer import FormualizerAdapter
+        from pp.engine.native_load import prepared_template
 
+        started = time.perf_counter()
+        prepared_template(context.workspace / "fixture.xlsx", context.workspace)
+        metrics["prepare_seconds"] = time.perf_counter() - started
         started = time.perf_counter()
         engine = FormualizerAdapter.load(context.workspace / "fixture.xlsx")
         metrics["load_seconds"] = time.perf_counter() - started
+        metrics["resident_after_load_bytes"] = _resident_bytes()
+        metrics["peak_after_load_bytes"] = _rss_bytes()
         _write_progress(context.progress_path, metrics)
         metrics["cached_baseline"] = _tiny_cache_verification(
             engine, manifest, context.verify_native
@@ -233,6 +314,11 @@ def run_child(context):
         if metrics["cached_baseline"].get("all_values_match") is False:
             raise ValueError("cached baseline differs from native evaluation")
         correct = _run_edits(engine, EditContext(manifest, metrics, context.progress_path))
+        metrics["native_edits_correct"] = _run_native_edits(
+            engine, manifest, metrics, context.progress_path
+        )
+        _write_progress(context.progress_path, metrics)
+        correct = correct and metrics["native_edits_correct"]
         metrics.update(_child_summary(manifest, correct))
         _write_progress(context.progress_path, metrics)
         return 0 if correct else 1
@@ -283,6 +369,7 @@ def collect_child_result(return_code, progress_path):
     correctness = progress.get("correctness", {})
     complete = (return_code == 0 and progress.get("status") == "completed" and
                 progress.get("stage") == "finished" and
+                progress.get("native_edits_correct") is True and
                 correctness.get("ordinary", {}).get("all_values_match") is True and
                 correctness.get("broad", {}).get("all_values_match") is True)
     if complete:

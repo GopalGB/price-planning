@@ -204,7 +204,8 @@ class EngineScaleRunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             progress = Path(tmp) / "progress.json"
             progress.write_text(json.dumps({"stage": "finished", "status": "completed",
-                                             "load_seconds": 0.1, "correctness": {
+                                             "load_seconds": 0.1,
+                                             "native_edits_correct": True, "correctness": {
                                                  "ordinary": {"all_values_match": True},
                                                  "broad": {"all_values_match": True},
                                              }}))
@@ -402,6 +403,7 @@ class EngineScaleRunnerTests(unittest.TestCase):
                 workspaces.append(context.workspace)
                 context.progress_path.write_text(json.dumps({
                     "stage": "finished", "status": "completed",
+                    "native_edits_correct": True,
                     "correctness": {
                         "ordinary": {"all_values_match": True},
                         "broad": {"all_values_match": True},
@@ -481,6 +483,7 @@ class EngineScaleRunnerTests(unittest.TestCase):
                 if len(spawned) == 1:
                     context.progress_path.write_text(json.dumps({
                         "stage": "finished", "status": "completed",
+                        "native_edits_correct": True,
                         "correctness": {
                             "ordinary": {"all_values_match": True},
                             "broad": {"all_values_match": True},
@@ -564,6 +567,7 @@ class EngineScaleRunnerTests(unittest.TestCase):
             def spawn(context):
                 context.progress_path.write_text(json.dumps({
                     "stage": "finished", "status": "completed", "load_seconds": 1.25,
+                    "native_edits_correct": True,
                     "correctness": {
                         "ordinary": {"all_values_match": True},
                         "broad": {"all_values_match": True},

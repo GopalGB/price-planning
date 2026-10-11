@@ -1,0 +1,1303 @@
+{
+  "attempted_scales": [
+    0.05,
+    0.2,
+    0.5
+  ],
+  "completed_scales": [
+    0.05,
+    0.2
+  ],
+  "engine_version": "0.11.1",
+  "physical_ram_bytes": 8589934592,
+  "report_date": "2026-10-11",
+  "results": [
+    {
+      "actual_totals": {
+        "cells": 260000,
+        "formula_encodings": {
+          "array": 33200,
+          "normal": 7800,
+          "shared": 34000
+        },
+        "formulas": 75000,
+        "function_uses": {
+          "COLUMN": 14364,
+          "CONCAT": 7198,
+          "IFERROR": 10654,
+          "INDEX": 10713,
+          "LEN": 7198,
+          "LET": 7240,
+          "MATCH": 10713,
+          "NUMBERVALUE": 3513,
+          "SUMIF": 7103,
+          "SWITCH": 7204,
+          "VLOOKUP": 7105,
+          "XLOOKUP": 7104
+        },
+        "sheets": [
+          {
+            "cells": 85000,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 5000,
+              "shared": 0
+            },
+            "formulas": 5000,
+            "hidden": false,
+            "name": "S01"
+          },
+          {
+            "cells": 38000,
+            "formula_encodings": {
+              "array": 18150,
+              "normal": 0,
+              "shared": 14350
+            },
+            "formulas": 32500,
+            "hidden": false,
+            "name": "S02"
+          },
+          {
+            "cells": 23350,
+            "formula_encodings": {
+              "array": 15050,
+              "normal": 2800,
+              "shared": 350
+            },
+            "formulas": 18200,
+            "hidden": false,
+            "name": "S03"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S04"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S05"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S06"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S07"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S08"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S09"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S10"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S11"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S12"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": false,
+            "name": "S13"
+          },
+          {
+            "cells": 5982,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S14"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S15"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S16"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S17"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1016
+            },
+            "formulas": 1016,
+            "hidden": true,
+            "name": "S18"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S19"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S20"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S21"
+          },
+          {
+            "cells": 5981,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 1015
+            },
+            "formulas": 1015,
+            "hidden": true,
+            "name": "S22"
+          }
+        ]
+      },
+      "attempt_elapsed_seconds": 28.019083541003056,
+      "broad_edit_seconds": 4.560624458012171,
+      "cached_baseline": {
+        "all_values_match": true,
+        "cached_match_count": 75000,
+        "formula_count": 75000,
+        "native_match_count": 75000,
+        "performed": true
+      },
+      "child_peak_rss_bytes": 1409908736,
+      "child_rss_max_bytes": 1299480576,
+      "correctness": {
+        "broad": {
+          "actual_changed": 75000,
+          "all_values_match": true,
+          "expected_changed": 75000
+        },
+        "ordinary": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1
+        }
+      },
+      "disk_min_free_mib": 14166.6796875,
+      "engine_version": "0.11.1",
+      "generation_seconds": 0.5761334159760736,
+      "load_seconds": 10.025906792026944,
+      "native_edits_correct": true,
+      "ordinary_edit_seconds": 0.003143457986880094,
+      "peak_after_load_bytes": 75612160,
+      "physical_ram_bytes": 8589934592,
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "prepare_seconds": 1.9116354169673286,
+      "report_date": "2026-10-11",
+      "resident_after_load_bytes": 75333632,
+      "rss_at_stage_start_bytes": 565297152,
+      "scale": 0.05,
+      "stage": "finished",
+      "stale_after_full": 0,
+      "stale_after_visible": 49700,
+      "status": "completed",
+      "swap_baseline_mib": 5418.31,
+      "swap_max_mib": 5418.31,
+      "timings": {
+        "broad_edit_full": {
+          "actual_changed": 75000,
+          "all_values_match": true,
+          "expected_changed": 75000,
+          "seconds": 3.258,
+          "stale_after": 0
+        },
+        "broad_edit_visible": {
+          "actual_changed": 25300,
+          "all_values_match": true,
+          "expected_changed": 25300,
+          "seconds": 4.1294,
+          "stale_after": 49700
+        },
+        "first_edit": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1,
+          "seconds": 0.0029,
+          "stale_after": 0
+        },
+        "warm_edit": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1,
+          "seconds": 0.0002,
+          "stale_after": 0
+        }
+      },
+      "visible_rows": 40
+    },
+    {
+      "actual_totals": {
+        "cells": 1040000,
+        "formula_encodings": {
+          "array": 132800,
+          "normal": 31200,
+          "shared": 136000
+        },
+        "formulas": 300000,
+        "function_uses": {
+          "COLUMN": 57177,
+          "CONCAT": 28572,
+          "IFERROR": 42864,
+          "INDEX": 42835,
+          "LEN": 28572,
+          "LET": 28642,
+          "MATCH": 42835,
+          "NUMBERVALUE": 14204,
+          "SUMIF": 28601,
+          "SWITCH": 28531,
+          "VLOOKUP": 28606,
+          "XLOOKUP": 28540
+        },
+        "sheets": [
+          {
+            "cells": 340000,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 20000,
+              "shared": 0
+            },
+            "formulas": 20000,
+            "hidden": false,
+            "name": "S01"
+          },
+          {
+            "cells": 152000,
+            "formula_encodings": {
+              "array": 72600,
+              "normal": 0,
+              "shared": 57400
+            },
+            "formulas": 130000,
+            "hidden": false,
+            "name": "S02"
+          },
+          {
+            "cells": 93400,
+            "formula_encodings": {
+              "array": 60200,
+              "normal": 11200,
+              "shared": 1400
+            },
+            "formulas": 72800,
+            "hidden": false,
+            "name": "S03"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4064
+            },
+            "formulas": 4064,
+            "hidden": false,
+            "name": "S04"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4064
+            },
+            "formulas": 4064,
+            "hidden": false,
+            "name": "S05"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4064
+            },
+            "formulas": 4064,
+            "hidden": false,
+            "name": "S06"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S07"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S08"
+          },
+          {
+            "cells": 23927,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S09"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S10"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S11"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S12"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": false,
+            "name": "S13"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S14"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S15"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S16"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S17"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S18"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S19"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S20"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S21"
+          },
+          {
+            "cells": 23926,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 4063
+            },
+            "formulas": 4063,
+            "hidden": true,
+            "name": "S22"
+          }
+        ]
+      },
+      "attempt_elapsed_seconds": 129.1052709170035,
+      "broad_edit_seconds": 25.72381429199595,
+      "cached_baseline": {
+        "all_values_match": true,
+        "cached_match_count": 300000,
+        "formula_count": 300000,
+        "native_match_count": 300000,
+        "performed": true
+      },
+      "child_peak_rss_bytes": 1077198848,
+      "child_rss_max_bytes": 1070514176,
+      "correctness": {
+        "broad": {
+          "actual_changed": 300000,
+          "all_values_match": true,
+          "expected_changed": 300000
+        },
+        "ordinary": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1
+        }
+      },
+      "disk_min_free_mib": 14113.8515625,
+      "engine_version": "0.11.1",
+      "generation_seconds": 3.2915737089933828,
+      "load_seconds": 32.894323125015944,
+      "native_edits_correct": true,
+      "ordinary_edit_seconds": 0.002200125018134713,
+      "peak_after_load_bytes": 180977664,
+      "physical_ram_bytes": 8589934592,
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "prepare_seconds": 10.097402125014924,
+      "report_date": "2026-10-11",
+      "resident_after_load_bytes": 159383552,
+      "rss_at_stage_start_bytes": 1077198848,
+      "scale": 0.2,
+      "stage": "finished",
+      "stale_after_full": 0,
+      "stale_after_visible": 256250,
+      "status": "completed",
+      "swap_baseline_mib": 5418.31,
+      "swap_max_mib": 5418.31,
+      "timings": {
+        "broad_edit_full": {
+          "actual_changed": 300000,
+          "all_values_match": true,
+          "expected_changed": 300000,
+          "seconds": 26.6859,
+          "stale_after": 0
+        },
+        "broad_edit_visible": {
+          "actual_changed": 43750,
+          "all_values_match": true,
+          "expected_changed": 43750,
+          "seconds": 18.4769,
+          "stale_after": 256250
+        },
+        "first_edit": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1,
+          "seconds": 0.0138,
+          "stale_after": 0
+        },
+        "warm_edit": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1,
+          "seconds": 0.0002,
+          "stale_after": 0
+        }
+      },
+      "visible_rows": 40
+    },
+    {
+      "actual_totals": {
+        "cells": 2600000,
+        "formula_encodings": {
+          "array": 332000,
+          "normal": 78000,
+          "shared": 340000
+        },
+        "formulas": 750000,
+        "function_uses": {
+          "COLUMN": 142959,
+          "CONCAT": 71536,
+          "IFERROR": 107133,
+          "INDEX": 107167,
+          "LEN": 71536,
+          "LET": 71376,
+          "MATCH": 107167,
+          "NUMBERVALUE": 35652,
+          "SUMIF": 71539,
+          "SWITCH": 71336,
+          "VLOOKUP": 71346,
+          "XLOOKUP": 71492
+        },
+        "sheets": [
+          {
+            "cells": 850000,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 50000,
+              "shared": 0
+            },
+            "formulas": 50000,
+            "hidden": false,
+            "name": "S01"
+          },
+          {
+            "cells": 380000,
+            "formula_encodings": {
+              "array": 181500,
+              "normal": 0,
+              "shared": 143500
+            },
+            "formulas": 325000,
+            "hidden": false,
+            "name": "S02"
+          },
+          {
+            "cells": 233500,
+            "formula_encodings": {
+              "array": 150500,
+              "normal": 28000,
+              "shared": 3500
+            },
+            "formulas": 182000,
+            "hidden": false,
+            "name": "S03"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S04"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S05"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S06"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S07"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S08"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S09"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S10"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S11"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S12"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": false,
+            "name": "S13"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S14"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S15"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S16"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S17"
+          },
+          {
+            "cells": 59816,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S18"
+          },
+          {
+            "cells": 59815,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S19"
+          },
+          {
+            "cells": 59815,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10158
+            },
+            "formulas": 10158,
+            "hidden": true,
+            "name": "S20"
+          },
+          {
+            "cells": 59815,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10157
+            },
+            "formulas": 10157,
+            "hidden": true,
+            "name": "S21"
+          },
+          {
+            "cells": 59815,
+            "formula_encodings": {
+              "array": 0,
+              "normal": 0,
+              "shared": 10157
+            },
+            "formulas": 10157,
+            "hidden": true,
+            "name": "S22"
+          }
+        ]
+      },
+      "attempt_elapsed_seconds": 191.38706924999133,
+      "cached_baseline": {
+        "all_values_match": true,
+        "cached_match_count": 750000,
+        "formula_count": 750000,
+        "native_match_count": 750000,
+        "performed": true
+      },
+      "child_rss_max_bytes": 928284672,
+      "correctness": {
+        "ordinary": {
+          "actual_changed": 1,
+          "all_values_match": true,
+          "expected_changed": 1
+        }
+      },
+      "disk_min_free_mib": 13033.21875,
+      "failure_stage": "apply_broad",
+      "generation_seconds": 6.080105332948733,
+      "latest_progress": {
+        "actual_totals": {
+          "cells": 2600000,
+          "formula_encodings": {
+            "array": 332000,
+            "normal": 78000,
+            "shared": 340000
+          },
+          "formulas": 750000,
+          "function_uses": {
+            "COLUMN": 142959,
+            "CONCAT": 71536,
+            "IFERROR": 107133,
+            "INDEX": 107167,
+            "LEN": 71536,
+            "LET": 71376,
+            "MATCH": 107167,
+            "NUMBERVALUE": 35652,
+            "SUMIF": 71539,
+            "SWITCH": 71336,
+            "VLOOKUP": 71346,
+            "XLOOKUP": 71492
+          },
+          "sheets": [
+            {
+              "cells": 850000,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 50000,
+                "shared": 0
+              },
+              "formulas": 50000,
+              "hidden": false,
+              "name": "S01"
+            },
+            {
+              "cells": 380000,
+              "formula_encodings": {
+                "array": 181500,
+                "normal": 0,
+                "shared": 143500
+              },
+              "formulas": 325000,
+              "hidden": false,
+              "name": "S02"
+            },
+            {
+              "cells": 233500,
+              "formula_encodings": {
+                "array": 150500,
+                "normal": 28000,
+                "shared": 3500
+              },
+              "formulas": 182000,
+              "hidden": false,
+              "name": "S03"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S04"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S05"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S06"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S07"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S08"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S09"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S10"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S11"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S12"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": false,
+              "name": "S13"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S14"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S15"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S16"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S17"
+            },
+            {
+              "cells": 59816,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S18"
+            },
+            {
+              "cells": 59815,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S19"
+            },
+            {
+              "cells": 59815,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10158
+              },
+              "formulas": 10158,
+              "hidden": true,
+              "name": "S20"
+            },
+            {
+              "cells": 59815,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10157
+              },
+              "formulas": 10157,
+              "hidden": true,
+              "name": "S21"
+            },
+            {
+              "cells": 59815,
+              "formula_encodings": {
+                "array": 0,
+                "normal": 0,
+                "shared": 10157
+              },
+              "formulas": 10157,
+              "hidden": true,
+              "name": "S22"
+            }
+          ]
+        },
+        "cached_baseline": {
+          "all_values_match": true,
+          "cached_match_count": 750000,
+          "formula_count": 750000,
+          "native_match_count": 750000,
+          "performed": true
+        },
+        "correctness": {
+          "ordinary": {
+            "actual_changed": 1,
+            "all_values_match": true,
+            "expected_changed": 1
+          }
+        },
+        "generation_seconds": 6.080105332948733,
+        "load_seconds": 92.11516108398791,
+        "ordinary_edit_seconds": 0.012427916983142495,
+        "peak_after_load_bytes": 373473280,
+        "prepare_seconds": 15.091919999977108,
+        "resident_after_load_bytes": 276545536,
+        "rss_at_stage_start_bytes": 955318272,
+        "stage": "apply_broad",
+        "status": "running"
+      },
+      "load_seconds": 92.11516108398791,
+      "ordinary_edit_seconds": 0.012427916983142495,
+      "peak_after_load_bytes": 373473280,
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "prepare_seconds": 15.091919999977108,
+      "resident_after_load_bytes": 276545536,
+      "return_code": -9,
+      "rss_at_stage_start_bytes": 955318272,
+      "scale": 0.5,
+      "status": "failed",
+      "swap_baseline_mib": 5418.31,
+      "swap_max_mib": 5906.25
+    }
+  ],
+  "seed": 20261011,
+  "skipped_scales": [],
+  "stop_reason": "child_failed",
+  "swap_baseline_mib": 5418.31,
+  "topology_limitations": [
+    "Synthetic formulas use a bounded three-row lookup palette, not the real inventory.",
+    "Synthetic formulas use one broad dependency hub.",
+    "Shared and single-cell array encodings model OOXML topology, not a real dependency graph."
+  ]
+}

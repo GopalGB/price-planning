@@ -31,6 +31,7 @@ TAIL_GUARD_BYTES = 1 << 20
 WORKSHEET_PREFIX = "xl/worksheets/"
 CACHE_DIRECTORY = "pp-engine-cache"
 CELL_ELEMENT = re.compile(rb"<c\b[^>]*?(?:/>|>.*?</c>)", re.DOTALL)
+CELL_START = re.compile(rb"<c\b")
 CELL_REFERENCE = re.compile(rb'\br\s*=\s*"([^"]*)"')
 SHARED_TYPE = re.compile(rb'\bt\s*=\s*"shared"')
 SHARED_INDEX = re.compile(rb'\bsi\s*=\s*"([^"]*)"')
@@ -158,8 +159,18 @@ def _expand_sheet(reader, writer, stats):
             writer.write(buffer[position:match.start()])
             writer.write(_expand_cell(match.group(0), families, stats))
             position = match.end()
-        writer.write(buffer[position:limit])
-        buffer = buffer[limit:]
+        if finished:
+            writer.write(buffer[position:])
+            buffer = b""
+            continue
+# Carry from the first cell that cannot be completed inside the window,
+        # so a cell split across two reads is still examined rather than copied.
+        # The search runs past the window so a cell starting on its last byte is
+        # still seen; the flush itself never passes the window.
+        boundary = CELL_START.search(buffer, position)
+        stop = min(boundary.start(), limit) if boundary is not None else limit
+        writer.write(buffer[position:stop])
+        buffer = buffer[stop:]
 
 
 def _expand_cell(cell, families, stats):

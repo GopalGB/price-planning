@@ -135,6 +135,28 @@ class NativeSharedFormulaTests(unittest.TestCase):
                          'LOG10(B2)+MyRange1+_xlfn.CONCAT("S01!$A$1",B2)')
 
 
+    def test_a_cell_split_across_two_reads_is_still_expanded(self):
+            from pp.engine import native_load
+            from pp.engine.native_load import expand_shared_formulas
+
+            with tempfile.TemporaryDirectory(dir=_tmp()) as temp:
+                source = Path(temp) / "fixture.xlsx"
+                manifest = generate(source, SCALE, SEED)
+                target = Path(temp) / "prepared.xlsx"
+
+                with mock.patch.object(native_load, "CHUNK_BYTES", 64), \
+                        mock.patch.object(native_load, "TAIL_GUARD_BYTES", 64):
+                    stats = expand_shared_formulas(source, target)
+
+                self.assertGreater(stats.followers, 0)
+                with zipfile.ZipFile(target) as archive:
+                    sheets = "".join(archive.read(f"xl/worksheets/sheet{number}.xml").decode()
+                                     for number in (1, 2, 3))
+                self.assertNotIn('t="shared"', sheets)
+                workbook = formualizer.Workbook.from_path(str(target))
+                self.assertEqual(_mismatches(workbook, manifest), [])
+
+
 class NativeTemplateParityTests(unittest.TestCase):
     def test_native_template_load_evaluates_every_shared_family_correctly(self):
         with tempfile.TemporaryDirectory(dir=_tmp()) as temp:

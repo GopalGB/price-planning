@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ops.engine_scale_fixture import generate, expected_formula_values
+from ops.engine_scale_fixture import build_manifest, expected_formula_values, generate
 from tests.v2.support import TMP
 
 SEED = 20261011
@@ -139,6 +139,27 @@ class VisibleEvaluationTests(unittest.TestCase):
 
             self.assertEqual(value, _expected(manifest, 0, row, col, broad=7, ordinary=3))
             self.assertEqual(engine.stale_cells, frozenset())
+
+    def test_a_visible_only_broad_edit_publishes_fewer_cells_than_the_full_one(self):
+        from pp.engine.formualizer import FormualizerAdapter, VisibleBlocks
+
+        with tempfile.TemporaryDirectory(dir=_tmp()) as temp:
+            source = Path(temp) / "fixture.xlsx"
+            generate(source, 0.005, SEED)
+            manifest = build_manifest(0.005, SEED)
+            engine = FormualizerAdapter.load(source)
+            rows = sorted({row for index, row, _col, _value
+                           in expected_formula_values(manifest, 7, 3) if index == 0})
+            engine.set_visible_blocks(VisibleBlocks.of((0, rows[0], rows[0] + 39)))
+
+            visible_changes = engine.apply([(0, 0, 0, 9)])
+            stale = set(engine.stale_cells)
+            engine.set_visible_blocks(VisibleBlocks.of_rows(engine.formula_cells))
+            rest = engine.recalculate_stale()
+
+            self.assertLess(len(visible_changes), len(engine.formula_anchors))
+            self.assertEqual(len(visible_changes) + len(rest), len(engine.formula_anchors))
+            self.assertEqual(stale & set(engine.stale_cells), set())
 
     def test_a_second_edit_keeps_the_union_of_unevaluated_cells_stale(self):
         from pp.engine.formualizer import FormualizerAdapter, VisibleBlocks
