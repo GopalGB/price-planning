@@ -1,9 +1,17 @@
 # STATE
 
 ## Current phase
-2026-10-11: fidelity track in progress on `feat/v2-fidelity` from `f74d131`. User GO-TOKEN approves all five presentation features and local acceptance. Synthetic fixtures only. Engine and calculation pipeline remain read-only because another agent owns them on `feat/v2-integration`. Plan: `.planning/excel-grid/PLAN-fidelity.md`. No fidelity feature completion or release is claimed yet.
+2026-10-11: fidelity track complete and locally accepted on `feat/v2-fidelity` at 301943d. All five presentation features ship: conditional formatting end to end, drawings with macro actions, notes, table styles with local filters, and sheet views. User GO-TOKEN approved all five and local acceptance. Synthetic fixtures only. Engine and calculation pipeline remained read-only throughout. Plan: `.planning/excel-grid/PLAN-fidelity.md`. Branch is NOT pushed or merged; it merges into feat/v2-integration after the other agent finishes the engine.
 
 ## Last handoff
+2026-10-11 22:50 final acceptance. HIGH1 f958f06, HIGH2 f64e28d and HIGH3 425ca95 each closed with a regression test; sheet views a9a809c; two browser-found defects fixed in 301943d (overlay layers detached by Univer remount, template scroll cell leaking into the Univer freeze split) plus the rebuilt bundle 17ba91a. Acceptance evidence: Python 321/321 twice, web 124/124 twice, content guard 0, `ruff check pp run_v2.py tests/v2` clean, pinned Prettier clean, two identical production builds (bundle 3efadf59), real-server Ego check on port 8791 with the synthetic eight-sheet fixture, TaskSpace 42 finished with keep: []. Screenshots in results-private/fidelity/shots/, checks in results-private/fidelity/final-ego.json. Disk stayed above 13 GB free.
+
+2026-10-11 resume: the previous agent stopped on a resource guard, not a failure. No uncommitted production work existed. The three HIGH Opus findings were finished first (HIGH1 and HIGH2 already committed), then sheet views, then acceptance. No external model was invoked: this run is headless, so the pending exact Opus re-review is still outstanding and must run in the supervisor lane.
+
+HIGH1 fixed and committedf958f06: local filter apply/clear/eviction visibility mutations use PlanningGrid internal guard. Behavioral RED5 pass/2 fail; focused GREEN7/7; executor relevant grid37/37 and controller37/37. Content guard0, pinned Prettier/diff check green. HIGH2 resumed next in same Sol session. Latest disk10545 MB. Full acceptance remains pending.
+
+2026-10-11 21:04 user-approved resume: current resource rule is `df -m /` Available at least 2500 MB. Swap growth alone is not a stop reason; all older swap ceilings below are superseded. Controller initial disk5108 MB, branch feat/v2-fidelity HEAD4ca148b. Same Sol takeover session resumed for HIGH1, then HIGH2 and HIGH3, each test-first and separately committed, before sheet views and full acceptance. Existing unrun view tests and shared environment symlinks preserved. No push or merge authorized.
+
 2026-10-11 resume STOPPED by current user resource gate. Baseline swap5278.62 MB; ceiling6814.62 MB. Controller measured swap6882.50 MB (growth1603.88 MB), disk3436 MB, so execution stopped immediately. No server or browser check started in this resume, no owned executors remain. Tables/AutoFilter committed7b4ae03 after Python36/36, web31/31, content guard0, global Ruff, pinned Prettier and diff check green. Phase5 added only unrun tests/v2/test_fidelity_views.py and web/test/fidelity-views.test.mjs; production unchanged. Never stage .venv or web/node_modules.
 
 Pending exact Claude review now RAN successfully: response modelUsage contains only claude-opus-5-5, is_error false; verdict FIX-FIRST. Evidence results-private/fidelity/resume-opus-review.json and resume-opus-result.md. Three HIGH findings require regression tests and fixes: (1) local hide/show rows are cancelled by PlanningGrid.command because calls lack the internal mutation guard; (2) pp/server.py async rows handler blocks the event loop during synchronous CF work, use existing asyncio.to_thread pattern; (3) one formula-result error rolls back healthy CF targets, treat error result as false while retaining EngineError handling. MED findings to investigate in same pass: deterministic function batching/template-block reuse, explicit cell styling precedence over table styles, overlay scroll redraw/asset caching. Header clipping needs coverage; table-order memory claim is unverified and must not be accepted without source evidence. Full review is preserved verbatim. No shipping/acceptance claim.
@@ -34,6 +42,10 @@ Fidelity checkpoint: initial Luna tests rejected for insufficient real-boundary 
 
 Resource incident: a hook could not write state when disk reached 190 MiB free. Only owned executors were interrupted; no other process or user file was removed. Disk then recovered above 4 GiB but continues fluctuating. Keep execution sequential and stop before heavyweight work if capacity falls below 1 GiB.
 
+## Next task
+Stop and record only if `df -m /` Available drops below 2500 MB. Still open, none blocking a merge: the MED review findings (deterministic function batching and template-block reuse, explicit cell styling precedence over table styles, overlay scroll redraw and asset caching), header-clipping coverage, the unverified table-order memory claim, the pending exact claude-opus-5-5 re-review, and a final all-source security scan plus web dependency audit on this branch. Do not push or merge without user approval.
+
+
 Historical integration handoff follows; its checks do not verify this fidelity work.
 
 2026-10-11 06:40 IST, controller (claude-opus-5-5). Commits after Round 5: `0079f66` refuse to start when another program holds the port (found live: a first start bound 0.0.0.0:8000 beside a loopback listener on 8000); `0ff02dd` literal dropdown members take the type Excel enters on pick, IMPORT_VERSION 6 (independent review finding N1).
@@ -43,6 +55,3 @@ Checks run by the controller: Python 294/294 twice, web 101/101 twice, content g
 Independent Claude review of fbd67a1..4903d79: all seven original defects CLOSED, General width CLOSED; each new regression test fails on the old code. Open, not blocking: N2 General precision depends on the browser's fallback font (display only); N3 one stale template row makes backup fail closed; backups made before Round 5 restore without template relocation; copy retry limit (3) under heavy edit churn untested; refreshing the page returns to the copies list instead of the open copy.
 
 Codex usage limit reached; Astra/Sol unavailable until 2026-10-14 09:03 IST.
-
-## Next task
-Resume only when current disk is at least2500 MB and swap at or below6814.62 MB; establish a fresh baseline if the user changes the limit. Fix the three verified HIGH Opus findings with RED/GREEN tests in focused commits before resuming Phase5. Reuse Sol takeover session01a12961-bb90-71b3-af7a-07bc42b2cd29. Unrun view tests are present; do not discard them or claim RED/GREEN yet. Then complete sheet-view fixture/production/tests, review MED findings, exact Opus re-review and planner/security closure, full Python/web twice, content guard0, Ruff, pinned Prettier, coverage, identical builds, real-server Ego screenshots using one retained TaskSpace42 and finish keep:[] when accepted. No push or merge.
