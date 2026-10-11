@@ -1,5 +1,9 @@
 # v2 integration handoff
 
+## Controller acceptance after Round 5
+
+Date: 2026-10-11. Resolves `BROWSER-TASKSPACE-DELETED`: the controller ran the current-code browser check in its own Ego TaskSpace 38 (LAN URL, port 8765): signup, category, copy, Inputs!B3=24, visible Calc!B3=0.583333 at default width, download verified with openpyxl. Two controller fixes with red/green tests: `0079f66` occupied-port refusal, `0ff02dd` typed dropdown members (IMPORT_VERSION 6, re-import of an existing copy verified live). Python 294 twice, web 101 twice, guard 0. Independent review verdicts and open low items are listed in `.planning/STATE.md`.
+
 ## Round 5
 
 Date: 2026-10-11. Branch: `feat/v2-integration`. Code anchor: `3a230c0`. All eight requested defects and concrete review follow-ups are fixed in eight focused conventional commits. User GO-TOKEN authorized every phase. Final code reviews, automated acceptance and real-server HTTP/export checks pass. Current-code visual browser acceptance is pending the named blocker `BROWSER-TASKSPACE-DELETED`; this is not DONE or a release approval.
