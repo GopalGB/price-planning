@@ -182,6 +182,86 @@ class CachedStartupTests(unittest.TestCase):
 
             self.assertIn((0, 0, 1, 65), changes)
 
+    def test_whole_column_dependency_recalculates_downstream_after_edit(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "whole-column.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"], sheet["A2"] = 1, 2
+            sheet["B1"], sheet["C1"] = "=SUM(A:A)", "=B1*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet1.xml": {
+                "B1": ("3", None), "C1": ("6", None),
+            }})
+
+            changes = FormualizerAdapter.load(source).apply([(0, 1, 0, 4)])
+
+            self.assertIn((0, 0, 1, 5), changes)
+            self.assertIn((0, 0, 2, 10), changes)
+
+    def test_whole_row_dependency_recalculates_downstream_after_edit(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "whole-row.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"], sheet["B1"] = 1, 2
+            sheet["A2"], sheet["B2"] = "=SUM(1:1)", "=A2*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet1.xml": {
+                "A2": ("3", None), "B2": ("6", None),
+            }})
+
+            changes = FormualizerAdapter.load(source).apply([(0, 0, 1, 4)])
+
+            self.assertIn((0, 1, 0, 5), changes)
+            self.assertIn((0, 1, 1, 10), changes)
+
+    def test_quoted_sheet_whole_column_recalculates_downstream_after_edit(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "quoted-sheet-column.xlsx"
+            workbook = Workbook()
+            inputs = workbook.active
+            inputs.title = "Sheet 2"
+            inputs["A1"], inputs["A2"] = 1, 2
+            calc = workbook.create_sheet("Calc")
+            calc["A1"], calc["B1"] = "=SUM('Sheet 2'!$A:$A)", "=A1*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet2.xml": {
+                "A1": ("3", None), "B1": ("6", None),
+            }})
+
+            changes = FormualizerAdapter.load(source).apply([(0, 1, 0, 4)])
+
+            self.assertIn((1, 0, 0, 5), changes)
+            self.assertIn((1, 0, 1, 10), changes)
+
+    def test_escaped_sheet_name_whole_column_recalculates_after_edit(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "escaped-sheet-column.xlsx"
+            workbook = Workbook()
+            inputs = workbook.active
+            inputs.title = "Owner's Data"
+            inputs["A1"], inputs["A2"] = 1, 2
+            calc = workbook.create_sheet("Calc")
+            calc["A1"], calc["B1"] = "=SUM('Owner''s Data'!$A:$A)", "=A1*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet2.xml": {
+                "A1": ("3", None), "B1": ("6", None),
+            }})
+
+            changes = FormualizerAdapter.load(source).apply([(0, 1, 0, 4)])
+
+            self.assertIn((1, 0, 0, 5), changes)
+            self.assertIn((1, 0, 1, 10), changes)
+
     def test_dependency_trace_budget_covers_defined_name_members(self):
         from pp.engine.formualizer import FormualizerAdapter
 
@@ -278,7 +358,9 @@ class CachedStartupTests(unittest.TestCase):
                 source, {"xl/worksheets/sheet1.xml": {"B1": ("3", None)}}
             )
 
-            with self.assertRaisesRegex(EngineError, "structured formula reference"):
+            with self.assertRaisesRegex(
+                EngineError, "structured or external formula reference"
+            ):
                 FormualizerAdapter.load(source)
 
     def test_named_range_operator_fails_before_cached_value_can_go_stale(self):

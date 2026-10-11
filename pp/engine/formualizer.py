@@ -193,7 +193,7 @@ def _expand_defined_names(formulas, names, ranges):
             if token.type != "OPERAND" or token.subtype != "RANGE":
                 continue
             if "[" in token.value:
-                raise EngineError("unsupported structured formula reference")
+                raise EngineError("unsupported structured or external formula reference")
             if _static_reference(token.value, names):
                 continue
             if ":" in token.value:
@@ -374,7 +374,8 @@ def _rewrite_isformula(formula: str, lookup: FormulaLookup) -> str:
 
 def _formula_runs(registrations):
     run = []
-    for coordinate, formula in sorted(registrations.items()):
+    for coordinate in sorted(registrations):
+        formula = registrations[coordinate]
         if run:
             previous = run[-1][0]
             contiguous = (coordinate[:2] == previous[:2]
