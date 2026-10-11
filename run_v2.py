@@ -76,6 +76,15 @@ def _print_share_urls(bind: str, port: int, origins: tuple[str, ...]) -> None:
         print(f"Share with your team: {origin}", flush=True)
 
 
+def _port_in_use(port: int) -> bool:
+    # A wildcard bind can coexist with a loopback listener on macOS, silently shadowing it for LAN users.
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Price Planning v2 backend")
     parser.add_argument("--import-template", action="store_true",
@@ -91,6 +100,11 @@ def main(argv=None) -> int:
     _create_first_start_settings(ROOT)
     runtime = create_runtime(ROOT)
     try:
+        if _port_in_use(runtime.config.port):
+            print(f"Port {runtime.config.port} is already in use by another program. "
+                  f"Change \"port\" in {ROOT / 'settings.json'} (for example to 8765) and start again.",
+                  flush=True)
+            return 1
         _print_share_urls(
             runtime.config.bind,
             runtime.config.port,

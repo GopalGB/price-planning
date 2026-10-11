@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import socket
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,8 @@ class RunnerContractTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         with mock.patch.dict(sys.modules, {"pp.runtime": runtime_module}):
             spec.loader.exec_module(module)
+        # keep tests independent of whatever else listens on this machine
+        module._port_in_use = lambda port: False
         return module
 
     def runtime(self):
@@ -223,6 +226,41 @@ class RunnerContractTests(unittest.TestCase):
                 share_lines,
                 ["Share with your team: http://10.0.0.25:8000"],
             )
+
+    def test_port_in_use_detects_a_real_loopback_listener(self):
+        runner = self.runner_module()
+        spec = importlib.util.spec_from_file_location(
+            "test_run_v2_probe", Path(__file__).resolve().parents[2] / "run_v2.py"
+        )
+        real = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"pp.runtime": ModuleType("pp.runtime")}):
+            sys.modules["pp.runtime"].create_runtime = None
+            spec.loader.exec_module(real)
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            port = listener.getsockname()[1]
+            self.assertTrue(real._port_in_use(port))
+        self.assertFalse(real._port_in_use(port))
+        self.assertFalse(runner._port_in_use(port))
+
+    def test_occupied_port_refuses_to_start_with_an_actionable_message(self):
+        """Another app on the port (e.g. the legacy v1 server on 8000) must not be shadowed."""
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            runner, root, runtime = self.runner_module(), Path(temp), self.runtime()
+            runner._port_in_use = lambda port: port == 8000
+            output = io.StringIO()
+            with mock.patch.object(runner, "ROOT", root), mock.patch.object(
+                runner, "create_runtime", return_value=runtime
+            ), mock.patch.object(
+                runner, "_detected_ipv4", return_value=set(), create=True
+            ), mock.patch.object(runner.uvicorn, "run") as serve, contextlib.redirect_stdout(output):
+                self.assertEqual(runner.main([]), 1)
+
+            serve.assert_not_called()
+            self.assertIn("Port 8000 is already in use", output.getvalue())
+            self.assertIn("settings.json", output.getvalue())
+            self.assertNotIn("Share with your team", output.getvalue())
 
     def test_existing_server_settings_are_never_overwritten(self):
         """Replacing a configured server setting on restart would be data loss."""
