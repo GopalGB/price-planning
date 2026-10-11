@@ -1,5 +1,7 @@
 #!/bin/sh
-# Max HQ sensitive-info gate when present on the development Mac.
-MAXHQ_HOOK="$(git rev-parse --show-toplevel)/../security/tools/pre-push-hook.sh"
-[ -f "$MAXHQ_HOOK" ] && exec bash "$MAXHQ_HOOK" "$@"
+# Max HQ sensitive-info gate when present on the development Mac (sibling checkout or the standard Max HQ path).
+for MAXHQ_HOOK in "$(git rev-parse --show-toplevel)/../security/tools/pre-push-hook.sh" \
+                  "$HOME/Desktop/Max HQ/security/tools/pre-push-hook.sh"; do
+  [ -f "$MAXHQ_HOOK" ] && exec bash "$MAXHQ_HOOK" "$@"
+done
 exit 0
