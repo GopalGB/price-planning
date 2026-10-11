@@ -426,6 +426,14 @@ export class PlanningGrid {
       this.internal--;
     }
   }
+  localViewMutation(action) {
+    this.internal++;
+    try {
+      action();
+    } finally {
+      this.internal--;
+    }
+  }
   async switchSheet(index) {
     if (this.controller.busy || this.preparing) {
       this.toast("Wait for your edit to finish");
@@ -541,12 +549,14 @@ export class PlanningGrid {
     this.store.resetBlockStyles(sheet, start, data);
     for (const evicted of cache.lastEvicted) {
       if (evicted.sheet === this.sheet)
-        this.tableFilters?.release({
-          worksheet: this.worksheet,
-          start: evicted.start,
-          end: Math.min(evicted.start + BLOCK_ROWS, shape.rows),
-          manualHidden: this.manualHiddenRows(),
-        });
+        this.localViewMutation(() =>
+          this.tableFilters?.release({
+            worksheet: this.worksheet,
+            start: evicted.start,
+            end: Math.min(evicted.start + BLOCK_ROWS, shape.rows),
+            manualHidden: this.manualHiddenRows(),
+          }),
+        );
       const cleared = {};
       for (
         let r = evicted.start;
@@ -674,12 +684,14 @@ export class PlanningGrid {
   }
   refreshTableFilters(rows = this.loadedFilterRows()) {
     if (!this.worksheet || !this.tableFilters) return;
-    this.tableFilters.apply({
-      worksheet: this.worksheet,
-      rows,
-      valueAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
-      manualHidden: this.manualHiddenRows(),
-    });
+    this.localViewMutation(() =>
+      this.tableFilters.apply({
+        worksheet: this.worksheet,
+        rows,
+        valueAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
+        manualHidden: this.manualHiddenRows(),
+      }),
+    );
   }
   changeTableFilter(control, predicate) {
     if (predicate) this.tableFilters.set(control, predicate);
@@ -688,10 +700,12 @@ export class PlanningGrid {
   }
   clearTableFilters() {
     if (!this.worksheet || !this.tableFilters) return;
-    this.tableFilters.clear({
-      worksheet: this.worksheet,
-      manualHidden: this.manualHiddenRows(),
-    });
+    this.localViewMutation(() =>
+      this.tableFilters.clear({
+        worksheet: this.worksheet,
+        manualHidden: this.manualHiddenRows(),
+      }),
+    );
   }
   paint(coordinates) {
     if (!this.worksheet || this.closed) return;

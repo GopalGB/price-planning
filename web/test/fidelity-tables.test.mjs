@@ -79,7 +79,7 @@ function documentBoundary() {
   return { document, elements };
 }
 
-function worksheetBoundary() {
+function worksheetBoundary(commandTarget) {
   const hidden = new Set(),
     calls = [],
     cell = (row, col, header = false) => ({
@@ -105,10 +105,16 @@ function worksheetBoundary() {
         cell(row, col, header),
     }),
     hideRows(row, count = 1) {
+      const event = { id: "sheet.mutation.set-row-hidden" };
+      commandTarget?.command(event);
+      if (event.cancel) return;
       calls.push(["hide", row, count]);
       for (let index = row; index < row + count; index++) hidden.add(index);
     },
     showRows(row, count = 1) {
+      const event = { id: "sheet.mutation.set-row-hidden" };
+      commandTarget?.command(event);
+      if (event.cancel) return;
       calls.push(["show", row, count]);
       for (let index = row; index < row + count; index++) hidden.delete(index);
     },
@@ -224,11 +230,11 @@ test("local filters preserve manual rows, update after values, and remain per-in
 
 test("PlanningGrid reapplies local filters after edited values", () => {
   const { document } = documentBoundary(),
-    worksheet = worksheetBoundary(),
     grid = Object.create(PlanningGrid.prototype),
     other = Object.create(PlanningGrid.prototype),
     control = filterControls(filters)[0],
-    store = new CellStore({ 2: { 0: { v: "West", s: 0, k: "c" } } });
+    store = new CellStore({ 2: { 0: { v: "West", s: 0, k: "c" } } }),
+    worksheet = worksheetBoundary(grid);
   global.document = document;
   Object.assign(grid, {
     meta: {
@@ -236,11 +242,13 @@ test("PlanningGrid reapplies local filters after edited values", () => {
       sheets: [{ index: 0, rows: 260, cols: 4, hidden_rows: [], filters }],
     },
     sheet: 0,
+    internal: 0,
     worksheet,
     closed: false,
     store,
     cache: new RowCache(1),
     tableFilters: new LocalTableFilters(),
+    u: { getActiveWorkbook: () => null },
     rendered: new Map(),
     styleMap: new Map(),
     inputHighlight: false,
@@ -249,6 +257,9 @@ test("PlanningGrid reapplies local filters after edited values", () => {
     selectionInfo() {},
   });
   other.tableFilters = new LocalTableFilters();
+  const unguarded = { id: "sheet.mutation.set-row-hidden" };
+  grid.command(unguarded);
+  assert.equal(unguarded.cancel, true);
   grid.tableFilters.set(control, { kind: "equals", value: "East" });
 
   grid.paint([{ sheet: 0, r: 2, c: 0 }]);
@@ -256,12 +267,18 @@ test("PlanningGrid reapplies local filters after edited values", () => {
   store.cells.set("0:2:0", { v: "East", s: 0, k: "c" });
   grid.paint([{ sheet: 0, r: 2, c: 0 }]);
   assert.equal(worksheet.hidden.has(2), false);
+  store.cells.set("0:2:0", { v: "West", s: 0, k: "c" });
+  grid.paint([{ sheet: 0, r: 2, c: 0 }]);
+  assert.equal(worksheet.hidden.has(2), true);
+  grid.clearTableFilters();
+  assert.equal(worksheet.hidden.has(2), false);
+  assert.equal(grid.internal, 0);
   assert.equal(other.tableFilters.active.size, 0);
 });
 
 test("real block loading filters arrivals and releases only evicted filter rows", async () => {
-  const worksheet = worksheetBoundary(),
-    grid = Object.create(PlanningGrid.prototype),
+  const grid = Object.create(PlanningGrid.prototype),
+    worksheet = worksheetBoundary(grid),
     control = filterControls(filters)[0];
   Object.assign(grid, {
     api: {
@@ -283,6 +300,7 @@ test("real block loading filters arrivals and releases only evicted filter rows"
       sheets: [{ index: 0, rows: 600, cols: 4, hidden_rows: [], filters }],
     },
     sheet: 0,
+    internal: 0,
     worksheet,
     generation: 1,
     closed: false,
@@ -291,6 +309,7 @@ test("real block loading filters arrivals and releases only evicted filter rows"
     loadTokens: new Map(),
     rendered: new Map(),
     tableFilters: new LocalTableFilters(),
+    u: { getActiveWorkbook: () => null },
     mutate() {},
     paint() {},
     warnConditionalFormatting() {},
