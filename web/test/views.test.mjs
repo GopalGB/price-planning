@@ -13,6 +13,23 @@ test('Copies home escapes user copy names and exposes open and fork actions',()=
 test('viewer workspace shows read-only role, export and external formula bar',()=>{
  const html=workspaceView({id:'c',name:'Test',my_role:'viewer'});assert.match(html,/Viewer/);assert.match(html,/export.xlsm/);assert.match(html,/id="formula-input"/);assert.match(html,/id="grid"/);assert.match(html,/id="input-highlight"[^>]*aria-pressed="true"[^>]*>Highlight inputs</);
 });
+test("download dialog defaults to xlsx and keeps hidden sheets selected", async () => {
+  const { downloadView } = await import("../src/views.mjs");
+  const html = downloadView([
+    { name: "Visible", hidden: null },
+    { name: "Hidden", hidden: "hidden" },
+  ]);
+  assert.match(html, /name="format"[^>]*><option value="xlsx" selected>/);
+  assert.match(html, /id="download-select-all"/);
+  assert.match(html, /id="download-select-none"/);
+  assert.match(html, /name="sheets" value="Visible" checked/);
+  assert.match(html, /name="sheets" value="Hidden" checked/);
+  assert.match(html, /Hidden \(hidden\)/);
+  assert.match(
+    workspaceView({ id: "c", name: "Test", my_role: "editor" }),
+    /id="download-button"/,
+  );
+});
 test('home view exposes unfiltered shared copies navigation',async()=>{const {homeView}=await import('../src/views.mjs');const html=homeView([{id:'a',name:'A'}],[{id:'shared',name:'B',owner:{name:'Owner'},visibility:'private',my_role:'viewer',members:[],last_edit:null}], 'a');assert.match(html,/Shared with me/);});
 test('empty category panel offers one enabled primary category action and keeps the sidebar action',()=>{
  const html=homeView([],[],"");

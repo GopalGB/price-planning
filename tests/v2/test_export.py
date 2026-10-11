@@ -130,15 +130,15 @@ class ExportContractTests(unittest.TestCase):
 
     def test_export_archive_work_runs_off_the_asgi_event_loop(self):
         """Large archive rewriting must not block edits and WebSocket traffic."""
-        from pp.export.xlsm import export_xlsm
+        from pp.export.transfer import export_transfer
 
         threads = []
 
-        def observed(source, cells, destination):
+        def observed(*args):
             threads.append(threading.get_ident())
-            return export_xlsm(source, cells, destination)
+            return export_transfer(*args)
 
-        with mock.patch("pp.server.export_xlsm", side_effect=observed):
+        with mock.patch("pp.server.export_transfer", side_effect=observed):
             response = self.client.get(f"/api/copies/{self.copy['id']}/export.xlsm")
 
         self.assertEqual(response.status_code, 200)
@@ -146,15 +146,15 @@ class ExportContractTests(unittest.TestCase):
 
     def test_server_uses_unique_outputs_and_removes_them_after_each_response(self):
         """Downloads must not collide or leave copy data behind on disk."""
-        from pp.export.xlsm import export_xlsm
+        from pp.export.transfer import export_transfer
 
         outputs = []
 
-        def observed(source, cells, destination):
-            outputs.append(destination)
-            return export_xlsm(source, cells, destination)
+        def observed(*args):
+            outputs.append(args[0].out_path)
+            return export_transfer(*args)
 
-        with mock.patch("pp.server.export_xlsm", side_effect=observed):
+        with mock.patch("pp.server.export_transfer", side_effect=observed):
             first = self.client.get(f"/api/copies/{self.copy['id']}/export.xlsm")
             second = self.client.get(f"/api/copies/{self.copy['id']}/export.xlsm")
 
@@ -166,12 +166,12 @@ class ExportContractTests(unittest.TestCase):
         """An exporter failure must not retain a partial response file."""
         outputs = []
 
-        def broken_export(source, cells, destination):
-            outputs.append(destination)
-            destination.write_bytes(b"partial")
+        def broken_export(request):
+            outputs.append(request.out_path)
+            request.out_path.write_bytes(b"partial")
             raise RuntimeError("synthetic export failure")
 
-        with mock.patch("pp.server.export_xlsm", side_effect=broken_export):
+        with mock.patch("pp.server.export_transfer", side_effect=broken_export):
             response = self.client.get(f"/api/copies/{self.copy['id']}/export.xlsm")
 
         self.assertEqual(response.status_code, 500)

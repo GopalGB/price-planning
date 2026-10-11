@@ -1,11 +1,63 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ApiClient, EditController } from '../src/client.mjs';
+import { ApiClient, EditController, startDownload } from '../src/client.mjs';
 import { CellStore } from '../src/model.mjs';
 test('API sends CSRF and cookies, throws structured errors, never sends undo metadata',async()=>{
  const requests=[];const api=new ApiClient(async(path,options)=>{requests.push({path,options});return {ok:true,status:200,json:async()=>({accepted:1})};});api.csrf='token';
  await api.request('/copies/one/ops',{method:'POST',body:{op_id:'a',action:'edit',cells:[]}});
  assert.equal(requests[0].options.credentials,'same-origin');assert.equal(requests[0].options.headers['X-CSRF-Token'],'token');
+});
+test("download preparation must pass before the native file click", async () => {
+  let link;
+  const events = [],
+    documentRef = {
+      body: { append: () => events.push("append") },
+      createElement: () =>
+        (link = {
+          click: () => events.push("click"),
+          remove: () => events.push("remove"),
+        }),
+    };
+  const api = {
+    request: async (path, options) => {
+      events.push(path);
+      assert.deepEqual(options, {
+        method: "POST",
+        body: { format: "xlsx", sheets: ["Inputs"] },
+      });
+      return { download_url: "/api/downloads/one-use" };
+    },
+  };
+  await startDownload(
+    api,
+    { copyId: "copy one", format: "xlsx", sheets: ["Inputs"] },
+    documentRef,
+  );
+  assert.match(events[0], /\/copies\/copy%20one\/downloads$/);
+  assert.deepEqual(events.slice(1), ["append", "click", "remove"]);
+  assert.equal(link.href, "/api/downloads/one-use");
+  assert.equal("download" in link, false);
+  events.length = 0;
+  api.request = async () => {
+    throw new Error("Calculation pending");
+  };
+  await assert.rejects(
+    startDownload(
+      api,
+      { copyId: "copy one", format: "xlsx", sheets: ["Inputs"] },
+      documentRef,
+    ),
+    /pending/,
+  );
+  assert.deepEqual(events, []);
+  await assert.rejects(
+    startDownload(
+      api,
+      { copyId: "c", format: "xlsx", sheets: [] },
+      documentRef,
+    ),
+    /one sheet/,
+  );
 });
 test('accepted edits undo and redo through server, remote edits never create local undo entries',async()=>{
  const store=new CellStore({0:{1:{v:10,k:'i',ver:0}}});const calls=[];let version=0,value=10;

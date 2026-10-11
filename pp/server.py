@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 import logging
@@ -12,7 +13,6 @@ import threading
 import time
 
 from starlette.applications import Starlette
-from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -25,7 +25,7 @@ from .copies import CopyService, ShareChange
 from .db import token_hash
 from .engine.pool import CalculationRequest
 from .errors import AppError
-from .export.xlsm import export_xlsm
+from .export.transfer import TransferRequest, export_transfer
 from .live import LiveHub, serve_live
 from .ops import OperationService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
@@ -33,6 +33,8 @@ from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog
 
 LOGGER = logging.getLogger(__name__)
 BODY_LIMIT = 2 * 1024 * 1024
+MAX_PREPARED_DOWNLOADS = 32
+PREPARED_DOWNLOAD_SECONDS = 2 * 60
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,25 @@ class ServiceContext:
     snapshot: object
     config: object
     engine_pool: object = None
+
+
+@dataclass(frozen=True)
+class ExportJob:
+    snapshot: dict
+    copy_id: str
+    fmt: str
+    selected: set[str] | None
+    path: Path
+
+
+@dataclass(frozen=True)
+class PreparedArtifact:
+    path: Path
+    user_id: str
+    session_hash: str
+    copy_id: str
+    filename: str
+    expires: float
 
 
 class Services:
@@ -58,6 +79,10 @@ class Services:
         self.engine_pool = context.engine_pool
         self.hub = LiveHub(context.database, context.config.replay_window)
         self.writes = WriteLimiter()
+        self.downloads = PreparedDownloadStore()
+
+    def close(self):
+        self.downloads.close()
 
     def auth_origin(self, connection):
         require_origin(connection.headers.get("origin"), self.config.allowed_origins)
@@ -82,15 +107,30 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
+        Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
+        Route("/api/copies/{copy_id}/downloads", _prepare_download, methods=["POST"]),
+        Route("/api/downloads/{token}", _prepared_download, methods=["GET"]),
         WebSocketRoute("/api/copies/{copy_id}/ws", _websocket),
         Route("/api/{path:path}", _api_not_found),
         Route("/{path:path}", _static),
     ]
-    app = Starlette(routes=routes, exception_handlers={AppError: _app_error, HTTPException: _http_error})
+    app = Starlette(
+        routes=routes,
+        exception_handlers={AppError: _app_error, HTTPException: _http_error},
+        lifespan=_lifespan,
+    )
     app.state.services = services
     app.state.engine_pool = context.engine_pool
     app.add_middleware(SecurityBoundaryMiddleware)
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    try:
+        yield
+    finally:
+        app.state.services.close()
 
 
 async def _signup(request: Request):
@@ -283,18 +323,149 @@ async def _calculate_baseline(services, copy, user_id):
 
 async def _export(request: Request):
     services, user = _read_auth(request)
-    source, overrides = services.workbooks.source_and_overrides(request.path_params["copy_id"], user["id"])
-    output_dir = Path(services.config.data_dir) / "exports"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"price-plan-{uuid4().hex}.xlsm"
-    cells = [(*coordinate, value) for coordinate, value in sorted(overrides.items())]
+    copy_id = request.path_params["copy_id"]
+    snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+    selected = _selected_sheets(request.query_params, snapshot["sheets"])
+    _require_export_ready(snapshot, selected)
+    if request.query_params.get("check") == "1":
+        return Response(status_code=204)
+    fmt = "xlsx" if request.url.path.endswith(".xlsx") else "xlsm"
+    path = _export_path(services, fmt, False)
+    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path))
+    return DisposableFileResponse(
+        path, media_type=_export_media(fmt), filename=f"price-plan.{fmt}",
+    )
+
+
+async def _prepare_download(request: Request):
+    services, user, _ = _write_auth(request)
+    payload = await _body(request)
+    fmt = _download_format(payload.get("format"))
+    copy_id = request.path_params["copy_id"]
+    snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+    selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
+    _require_export_ready(snapshot, selected)
+    path = _export_path(services, fmt, True)
+    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path))
+    artifact = PreparedArtifact(
+        path, user["id"], token_hash(request.cookies.get("pp_session", "")),
+        copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
+    )
+    token = services.downloads.add(artifact)
+    return JSONResponse({"download_url": f"/api/downloads/{token}"}, status_code=201)
+
+
+async def _prepared_download(request: Request):
+    services = _services(request)
+    token = request.path_params["token"]
+    artifact = None
     try:
-        await asyncio.to_thread(export_xlsm, source, cells, path)
+        user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
+        artifact = services.downloads.take(
+            token, user["id"], token_hash(request.cookies.get("pp_session", "")),
+        )
+        services.copies.get(user["id"], artifact.copy_id)
+        return DisposableFileResponse(
+            artifact.path, media_type=_export_media(artifact.path.suffix[1:]),
+            filename=artifact.filename,
+        )
     except BaseException:
-        path.unlink(missing_ok=True)
+        if artifact is None:
+            services.downloads.discard(token)
+        else:
+            artifact.path.unlink(missing_ok=True)
         raise
-    return FileResponse(path, media_type="application/vnd.ms-excel.sheet.macroenabled.12",
-                        filename="price-plan.xlsm", background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+async def _build_export(job):
+    try:
+        await asyncio.to_thread(_write_export, job)
+    except ValueError as exc:
+        job.path.unlink(missing_ok=True)
+        if str(exc).startswith("current calculation result"):
+            raise AppError(409, "calculation_required", str(exc)) from exc
+        raise
+    except BaseException:
+        job.path.unlink(missing_ok=True)
+        raise
+
+
+def _write_export(job):
+    cells = [(*coordinate, value)
+             for coordinate, value in sorted(job.snapshot["overrides"].items())]
+    export_transfer(TransferRequest(
+        template_path=job.snapshot["source"], cells=cells, out_path=job.path,
+        template_hash=job.snapshot["template_id"], copy_id=job.copy_id,
+        input_revision=job.snapshot["input_revision"], fmt=job.fmt,
+        selected=job.selected, results=job.snapshot["results"],
+    ))
+
+
+def _require_export_ready(snapshot, selected):
+    if (selected is not None and len(selected) < len(snapshot["sheets"])
+            and snapshot["calculated_revision"] != snapshot["input_revision"]):
+        raise AppError(
+            409, "calculation_required",
+            "Workbook calculation is pending; wait for current results before downloading a sheet subset",
+        )
+
+
+def _download_format(value):
+    if value not in {"xlsx", "xlsm"}:
+        raise AppError(422, "invalid_selection", "Download format is invalid")
+    return value
+
+
+def _export_path(services, fmt, prepared):
+    directory = Path(services.config.data_dir) / "exports"
+    if prepared:
+        directory /= "prepared"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"price-plan-{uuid4().hex}.{fmt}"
+
+
+def _export_media(fmt):
+    return ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx"
+            else "application/vnd.ms-excel.sheet.macroenabled.12")
+
+
+def _selected_sheets(query, sheets):
+    values = query.getlist("sheets")
+    if not values:
+        return None
+    known = {sheet["name"] for sheet in sheets}
+    selected = []
+    try:
+        for value in values:
+            if value.startswith("["):
+                decoded = json.loads(value)
+                if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
+                    raise ValueError
+                selected.extend(decoded)
+            elif value in known:
+                selected.append(value)
+            else:
+                selected.extend(value.split(","))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AppError(422, "invalid_selection", "Sheet selection is invalid") from exc
+    return _validate_selection(selected, sheets)
+
+
+def _selected_values(values, sheets):
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise AppError(422, "invalid_selection", "Sheet selection is invalid")
+    return _validate_selection(values, sheets)
+
+
+def _validate_selection(values, sheets):
+    selected = set(values)
+    known = {sheet["name"] for sheet in sheets}
+    if not selected or selected - known:
+        raise AppError(422, "invalid_selection", "Select known workbook sheets")
+    chosen = [sheet for sheet in sheets if sheet["name"] in selected]
+    if not any(sheet["hidden"] not in {"hidden", "veryHidden"} for sheet in chosen):
+        raise AppError(422, "invalid_selection", "Select at least one visible sheet")
+    return selected
 
 
 async def _websocket(websocket):
@@ -429,6 +600,69 @@ class WriteLimiter:
                 raise AppError(429, "rate_limited", "Write rate limit exceeded")
             entries.append(now)
             self._entries[key] = entries
+
+
+class PreparedDownloadStore:
+    def __init__(self):
+        self._items = {}
+        self._lock = threading.Lock()
+
+    def add(self, artifact):
+        token = uuid4().hex
+        try:
+            with self._lock:
+                self._purge()
+                while len(self._items) >= MAX_PREPARED_DOWNLOADS:
+                    removed = self._items.pop(next(iter(self._items)))
+                    removed.path.unlink(missing_ok=True)
+                self._items[token] = artifact
+        except BaseException:
+            artifact.path.unlink(missing_ok=True)
+            raise
+        return token
+
+    def take(self, token, user_id, session_hash):
+        with self._lock:
+            self._purge()
+            artifact = self._items.pop(token, None)
+        if artifact is None:
+            raise AppError(404, "download_expired", "Download expired; prepare it again")
+        if artifact.user_id != user_id or artifact.session_hash != session_hash:
+            artifact.path.unlink(missing_ok=True)
+            raise AppError(404, "download_expired", "Download expired; prepare it again")
+        return artifact
+
+    def close(self):
+        with self._lock:
+            artifacts = tuple(self._items.values())
+            self._items.clear()
+        for artifact in artifacts:
+            artifact.path.unlink(missing_ok=True)
+
+    def discard(self, token):
+        with self._lock:
+            artifact = self._items.pop(token, None)
+        if artifact is not None:
+            artifact.path.unlink(missing_ok=True)
+
+    def _purge(self):
+        now = time.monotonic()
+        for token, artifact in tuple(self._items.items()):
+            if artifact.expires <= now:
+                del self._items[token]
+                artifact.path.unlink(missing_ok=True)
+
+
+class DisposableFileResponse(FileResponse):
+    def __init__(self, path, **kwargs):
+        self.cleanup_path = Path(path)
+        super().__init__(path, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.cleanup_path.unlink(missing_ok=True)
 
 
 class SecurityBoundaryMiddleware:

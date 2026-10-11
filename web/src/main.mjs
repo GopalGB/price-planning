@@ -1,10 +1,11 @@
 import "./style.css";
 import "@univerjs/preset-sheets-core/lib/index.css";
-import { ApiClient } from "./client.mjs";
+import { ApiClient, startDownload } from "./client.mjs";
 import {
   authView,
   homeView,
   workspaceView,
+  downloadView,
   escapeHTML as e,
   roleOptions,
   loadHome,
@@ -142,6 +143,7 @@ async function openCopy(copy) {
   $("zoom").onchange = (event) =>
     grid.setZoom(parseInt(event.target.value, 10) / 100);
   $("hidden-button").onclick = () => grid.toggleHidden();
+  $("download-button").onclick = () => downloadModal(meta);
   $("name-box").onkeydown = (event) => {
     if (event.key === "Enter") safe(grid.goTo(event.target.value));
   };
@@ -196,6 +198,31 @@ function createCopyModal() {
     },
     "Create copy",
   );
+}
+function downloadModal(meta) {
+  modal(
+    "Download workbook",
+    downloadView(meta.sheets),
+    async (body) => {
+      const sheets = [
+        ...document.querySelectorAll('input[name="sheets"]:checked'),
+      ].map((input) => input.value);
+      await startDownload(api, {
+        copyId: activeCopy.id,
+        format: body.format,
+        sheets,
+      });
+    },
+    "Download",
+  );
+  $("download-select-all").onclick = () =>
+    document.querySelectorAll('input[name="sheets"]').forEach((input) => {
+      input.checked = true;
+    });
+  $("download-select-none").onclick = () =>
+    document.querySelectorAll('input[name="sheets"]').forEach((input) => {
+      input.checked = false;
+    });
 }
 function forkModal(copy) {
   modal(

@@ -251,6 +251,36 @@ class WorkbookService:
         return Path(template["source_path"]), {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
                                                  for item in rows}
 
+    def export_snapshot(self, copy_id: str, user_id: str):
+        """Read inputs and only results calculated for the same copy revision."""
+        with self.database.read_transaction() as connection:
+            copy = self._copy(connection, copy_id, user_id)
+            snapshot = self.templates.get(connection, copy["template_id"])
+            template = connection.execute(
+                "SELECT source_path FROM pp_templates WHERE id=?", (copy["template_id"],)
+            ).fetchone()
+            rows = connection.execute(
+                "SELECT sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?", (copy_id,)
+            ).fetchall()
+            for item in rows:
+                if not snapshot.is_input(item["sheet"], item["row"], item["col"]):
+                    raise AppError(422, "locked", "This cell is locked")
+            results = {}
+            if copy["calculated_revision"] == copy["input_revision"]:
+                result_rows = connection.execute(
+                    "SELECT sheet,row,col,value_json FROM pp_results WHERE copy_id=? AND calculated_revision=?",
+                    (copy_id, copy["input_revision"]),
+                ).fetchall()
+                results = {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
+                           for item in result_rows}
+        return {
+            "source": Path(template["source_path"]), "template_id": copy["template_id"],
+            "input_revision": copy["input_revision"],
+            "calculated_revision": copy["calculated_revision"], "overrides": {
+                (item["sheet"], item["row"], item["col"]): json.loads(item["value_json"]) for item in rows
+            }, "results": results, "sheets": snapshot.sheets,
+        }
+
     def calculation_source(self, copy_id: str) -> Path:
         with self.database.connect() as connection:
             copy = connection.execute(

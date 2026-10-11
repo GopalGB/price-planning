@@ -25,6 +25,23 @@ export class ApiClient {
     return result;
   }
 }
+export async function startDownload(
+  api,
+  { copyId, format, sheets },
+  documentRef = document,
+) {
+  if (!sheets.length) throw new Error("Select at least one sheet");
+  const extension = format === "xlsm" ? "xlsm" : "xlsx";
+  const prepared = await api.request(
+    `/copies/${encodeURIComponent(copyId)}/downloads`,
+    { method: "POST", body: { format: extension, sheets } },
+  );
+  const link = documentRef.createElement("a");
+  link.href = prepared.download_url;
+  documentRef.body.append(link);
+  link.click();
+  link.remove();
+}
 export class EditController {
   constructor({
     store,
