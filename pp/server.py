@@ -339,6 +339,7 @@ async def _calculate_baseline(services, copy, user_id):
 
 
 async def _export(request: Request):
+    _reject_head(request)
     services, user = _read_auth(request)
     admission = _admit_transfer(services)
     try:
@@ -385,6 +386,7 @@ async def _prepare_download(request: Request):
 
 
 async def _prepared_download(request: Request):
+    _reject_head(request)
     services = _services(request)
     token = request.path_params["token"]
     artifact = None
@@ -488,6 +490,22 @@ def _export_media(fmt):
             else "application/vnd.ms-excel.sheet.macroenabled.12")
 
 
+def _declared_length(request) -> int:
+    raw = request.headers.get("content-length", "")
+    if not raw:
+        return 0
+    try:
+        length = int(raw)
+    except ValueError as exc:
+        raise AppError(400, "invalid_length", "Content-Length header is not a number") from exc
+    return max(length, 0)
+
+
+def _reject_head(request) -> None:
+    if request.method == "HEAD":
+        raise AppError(405, "method_not_allowed", "Use GET to download this file")
+
+
 async def _upload_preview(request: Request):
     services, user, _ = _write_auth(request)
     admission = _admit_transfer(services)
@@ -499,7 +517,7 @@ async def _upload_preview(request: Request):
 
 async def _admitted_upload_preview(request, services, user):
     limit = getattr(services.config, "upload_max_mb", 100) * 1024 * 1024
-    length = int(request.headers.get("content-length", "0") or 0)
+    length = _declared_length(request)
     if length > limit:
         raise AppError(413, "too_large", "Upload exceeds the configured size limit")
     directory = Path(services.config.data_dir) / "uploads"
@@ -623,7 +641,7 @@ def _write_auth(request):
 
 
 async def _body(request: Request) -> dict:
-    length = int(request.headers.get("content-length", "0") or 0)
+    length = _declared_length(request)
     if length > BODY_LIMIT:
         raise AppError(413, "too_large", "Request body is too large")
     try:

@@ -193,6 +193,29 @@ class UploadAPITests(unittest.TestCase):
             f"/api/uploads/{token}/confirm", body, {"x-csrf-token": csrf}
         )
 
+    def test_non_numeric_content_length_is_a_client_error_not_a_crash(self):
+        for target in (f"/api/copies/{self.copy['id']}/uploads/preview",
+                       f"/api/uploads/preview?category_id={self.category['id']}"):
+            with self.subTest(target=target):
+                response = self.owner.raw(
+                    "POST", target, self.exported,
+                    {"x-csrf-token": self.owner_csrf, "x-upload-filename": "changed.xlsx",
+                     "content-type": "application/octet-stream", "content-length": "not-a-number"},
+                )
+
+                self.assertEqual(response.status_code, 400, response.body)
+                self.assertEqual(response.json()["error"], "invalid_length")
+
+    def test_unparsable_confirm_body_length_is_a_client_error_not_a_crash(self):
+        response = self.owner.raw(
+            "POST", "/api/uploads/not-a-token/confirm", b"{}",
+            {"x-csrf-token": self.owner_csrf, "content-type": "application/json",
+             "content-length": "12 megabytes"},
+        )
+
+        self.assertEqual(response.status_code, 400, response.body)
+        self.assertEqual(response.json()["error"], "invalid_length")
+
     def test_preview_uses_content_not_extension_and_reports_changes_and_ignored_edits(self):
         upload = _workbook_bytes(
             self.exported,
