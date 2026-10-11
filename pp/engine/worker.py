@@ -1,6 +1,7 @@
 """Spawn-safe calculation worker entry point."""
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -12,6 +13,12 @@ from ..values import exactly_equal
 MISSING = object()
 
 
+@dataclass(frozen=True)
+class WorkerBatch:
+    changes: list[tuple]
+    base_revision: int | None = None
+
+
 class WarmCopy:
     def __init__(self, copy_id: str):
         self.copy_id = copy_id
@@ -20,45 +27,81 @@ class WarmCopy:
         self.baseline = {}
         self.overrides = {}
         self.cleared = frozenset()
+        self.last_applied_revision = None
 
-    def apply(self, revision: int, template_path: str, changes: list[tuple]) -> dict:
-        self._load(template_path)
+    def apply(self, revision: int, template_path: str, changes: list[tuple] | WorkerBatch) -> dict:
+        batch = changes if isinstance(changes, WorkerBatch) else WorkerBatch(changes)
+        reset = self._load(template_path)
+        changes = batch.changes
         desired = {(sheet, row, col): value for sheet, row, col, value in changes}
         cleared = frozenset(coordinate for coordinate, value in desired.items() if value is None)
-        if cleared != self.cleared:
-            self._reload_with_clears(template_path, cleared)
+        restored_blanks = frozenset(
+            coordinate for coordinate in self.overrides.keys() - desired.keys()
+            if self.baseline.get(coordinate, MISSING) is None
+        )
+        reload_clears = cleared | restored_blanks
+        if reload_clears != self.cleared:
+            self._reload_with_clears(template_path, reload_clears)
+            self.overrides = {coordinate: None for coordinate in cleared}
+            reset = True
         updates = []
         for coordinate in sorted(self.overrides.keys() | desired.keys()):
             if coordinate not in self.baseline:
-                self.baseline[coordinate] = self.engine.get(*coordinate)
+                self.baseline[coordinate] = self._template_value(coordinate)
             before = self.overrides.get(coordinate, MISSING)
             after = desired.get(coordinate, MISSING)
             if _different(before, after):
+                if after is MISSING and self.baseline[coordinate] is None:
+                    continue
                 value = self.baseline[coordinate] if after is MISSING else after
                 updates.append((*coordinate, value))
         calculated = self.engine.apply(updates)
         self.overrides = desired
+        self.cleared = cleared
+        delta = (not reset and batch.base_revision is not None
+                 and batch.base_revision == self.last_applied_revision)
+        if delta:
+            results, removals = self.engine.overlay_delta()
+        else:
+            results, removals = self.engine.overlay_snapshot(), []
+        self.last_applied_revision = revision
         return {"copy_id": self.copy_id, "revision": revision, "pid": os.getpid(),
-                "changes": calculated, "results": self.engine.result_snapshot()}
+                "changes": calculated, "results": results, "removals": removals,
+                "delta": delta, "base_revision": batch.base_revision}
 
-    def _load(self, template_path: str) -> None:
+    def _template_value(self, coordinate):
+        formula_cells = getattr(self.engine, "formula_cells", ())
+        formula_anchors = getattr(self.engine, "formula_anchors", ())
+        if coordinate in formula_cells and coordinate not in formula_anchors:
+            return None
+        return self.engine.get(*coordinate)
+
+    def _load(self, template_path: str) -> bool:
         if self.engine is None:
             self.source = template_path
             self.engine = FormualizerAdapter.load(Path(template_path))
+            return True
         elif template_path != self.source:
             raise EngineError("copy template changed while its worker was active")
+        return False
 
     def _reload_with_clears(self, template_path: str, cleared: frozenset) -> None:
+        baseline = self.engine
+        changed_clears = set(self.cleared | cleared)
+        if changed_clears:
+            baseline.remember_baseline_for_roots(changed_clears)
         for coordinate in cleared:
             if coordinate not in self.baseline:
-                self.baseline[coordinate] = self.engine.get(*coordinate)
+                self.baseline[coordinate] = self._template_value(coordinate)
         with TemporaryDirectory(prefix="pp-calc-") as directory:
             source = Path(template_path)
             target = Path(directory) / source.name
             export_xlsm(source, [(*coordinate, None) for coordinate in sorted(cleared)], target)
             self.engine = FormualizerAdapter.load(target)
-        self.overrides = {coordinate: None for coordinate in cleared}
-        self.cleared = cleared
+            changed_spills = self.engine.adopt_baseline(baseline)
+            roots = set(cleared) | set(changed_spills)
+            if roots:
+                self.engine.recalculate(roots)
 
 
 def _different(before, after):
@@ -75,9 +118,14 @@ def worker_loop(connection, copy_id: str) -> None:
             request = connection.recv()
             if request is None:
                 return
-            revision, template_path, changes = request
+            if len(request) == 3:
+                revision, template_path, changes = request
+                batch = WorkerBatch(changes)
+            else:
+                revision, template_path, changes, base_revision = request
+                batch = WorkerBatch(changes, base_revision)
             try:
-                connection.send((True, copy.apply(revision, template_path, changes)))
+                connection.send((True, copy.apply(revision, template_path, batch)))
             except Exception as exc:
                 copy = WarmCopy(copy_id)
                 connection.send((False, type(exc).__name__))

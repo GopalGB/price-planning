@@ -197,6 +197,18 @@ class OperationAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotEqual(threads, [threading.get_ident()])
 
+    def test_live_calculation_request_uses_current_published_revision_as_base(self):
+        pool = self.fixture.pool
+        with mock.patch.object(pool, "apply", wraps=pool.apply) as apply:
+            response = self.client.post(f"/api/copies/{self.copy['id']}/ops", {
+                "op_id": "published-base", "action": "edit",
+                "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12,
+                           "expected_version": 0}],
+            }, {"x-csrf-token": self.csrf})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(apply.call_args.args[0].base_revision, 0)
+
 
 class DynamicSpillAPIContractTests(unittest.TestCase):
     def setUp(self):

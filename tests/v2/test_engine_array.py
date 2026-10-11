@@ -21,7 +21,9 @@ def array_fixture(path, ref="$B$1:$B$1", formula_type="array"):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Calc"
+    sheet.protection.sheet = True
     sheet["A1"] = 3
+    sheet["A1"].protection = Protection(locked=False)
     sheet["B1"] = "=A1*2"
     sheet["B1"].protection = Protection(locked=False)
     sheet["C1"] = "=ISFORMULA(B1)"
@@ -47,28 +49,34 @@ class SingleCellArrayTests(unittest.TestCase):
         from pp.engine.formualizer import FormualizerAdapter
 
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
-            source = Path(temp) / "array.xlsm"
-            array_fixture(source)
-            engine = FormualizerAdapter.load(source)
+            for ref in ("$B$1:$B$1", "B1", "B1:B1"):
+                with self.subTest(ref=ref):
+                    source = Path(temp) / f"array-{ref.replace(':', '-')}.xlsm"
+                    array_fixture(source, ref=ref)
+                    engine = FormualizerAdapter.load(source)
 
-            self.assertEqual(engine.get(0, 0, 1), 6)
-            changes = engine.apply([(0, 0, 0, 5)])
+                    self.assertEqual(engine.get(0, 0, 1), 6)
+                    changes = engine.apply([(0, 0, 0, 5)])
 
-            self.assertEqual(engine.get(0, 0, 1), 10)
-            self.assertIn((0, 0, 1, 10), changes)
+                    self.assertEqual(engine.get(0, 0, 1), 10)
+                    self.assertIn((0, 0, 1, 10), changes)
 
     def test_array_anchor_is_formula_for_native_and_isformula_views(self):
         from pp.engine.formualizer import FormualizerAdapter
 
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
-            source = Path(temp) / "array-isformula.xlsm"
-            array_fixture(source)
-            engine = FormualizerAdapter.load(source)
+            for ref in ("$B$1:$B$1", "B1", "B1:B1"):
+                with self.subTest(ref=ref):
+                    source = Path(temp) / f"array-isformula-{ref.replace(':', '-')}.xlsm"
+                    array_fixture(source, ref=ref)
+                    engine = FormualizerAdapter.load(source)
 
-            self.assertTrue(engine.is_formula(0, 0, 1))
-            self.assertIs(engine.get(0, 0, 2), True)
+                    self.assertTrue(engine.is_formula(0, 0, 1))
+                    self.assertIs(engine.get(0, 0, 2), True)
 
-    def test_import_does_not_unlock_array_formula_with_unlocked_style(self):
+    def test_protected_import_keeps_array_locked_and_ordinary_input_editable(self):
+        from pp.workbook_service import TemplateSnapshot
+
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
             source = Path(temp) / "array-import.xlsm"
             destination = Path(temp) / "snapshot"
@@ -76,23 +84,30 @@ class SingleCellArrayTests(unittest.TestCase):
             snapshot = import_template(source, destination)
 
             mask = json.loads((snapshot / "input_mask.json").read_text())
+            imported = TemplateSnapshot(snapshot)
+            self.assertIn("0:0:0", mask)
             self.assertNotIn("0:0:1", mask)
+            self.assertTrue(imported.is_input(0, 0, 0))
+            self.assertFalse(imported.is_input(0, 0, 1))
 
     def test_export_preserves_array_ref_and_formula_text_after_input_edit(self):
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
-            source = Path(temp) / "array-export-source.xlsm"
-            output = Path(temp) / "array-exported.xlsm"
-            array_fixture(source)
-            export_xlsm(source, [(0, 0, 0, 5)], output)
+            for ref in ("$B$1:$B$1", "B1", "B1:B1"):
+                with self.subTest(ref=ref):
+                    source = Path(temp) / f"array-export-{ref.replace(':', '-')}.xlsm"
+                    output = Path(temp) / f"exported-{ref.replace(':', '-')}.xlsm"
+                    array_fixture(source, ref=ref)
+                    export_xlsm(source, [(0, 0, 0, 5)], output)
 
-            with zipfile.ZipFile(output) as archive:
-                root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
-            formula = root.find(f".//{NS}c[@r='B1']/{NS}f")
-            self.assertEqual(formula.get("t"), "array")
-            self.assertEqual(formula.get("ref"), "$B$1:$B$1")
-            self.assertEqual(formula.text, "A1*2")
-            self.assertEqual(root.findtext(f".//{NS}c[@r='A1']/{NS}v"), "5")
-            self.assertEqual(root.find(f".//{NS}c[@r='D1']/{NS}f").text, '"array-text"')
+                    with zipfile.ZipFile(output) as archive:
+                        root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+                    formula = root.find(f".//{NS}c[@r='B1']/{NS}f")
+                    self.assertEqual(formula.get("t"), "array")
+                    self.assertEqual(formula.get("ref"), ref)
+                    self.assertEqual(formula.text, "A1*2")
+                    self.assertEqual(root.findtext(f".//{NS}c[@r='A1']/{NS}v"), "5")
+                    self.assertEqual(root.find(f".//{NS}c[@r='D1']/{NS}f").text,
+                                     '"array-text"')
 
     def test_array_rejects_missing_malformed_foreign_and_multi_cell_refs(self):
         from pp.engine.formualizer import EngineError, FormualizerAdapter

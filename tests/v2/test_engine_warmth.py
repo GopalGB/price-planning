@@ -8,12 +8,153 @@ import unittest
 from unittest import mock
 
 from openpyxl import Workbook
+from openpyxl.styles import Protection
 
 from pp.engine.pool import CalculationRequest, EnginePool
 from tests.v2.support import BackendFixture, TMP
 
 
 class WarmEngineTests(unittest.TestCase):
+    def test_zero_revision_open_has_an_empty_sparse_overlay(self):
+        from pp.engine.worker import WarmCopy
+
+        fixture = BackendFixture()
+        self.addCleanup(fixture.close)
+
+        opened = WarmCopy("empty-overlay").apply(0, str(fixture.source), [])
+
+        self.assertEqual(opened["results"], [])
+
+    def test_sparse_overlay_excludes_unrelated_formula_results(self):
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "sparse-overlay.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 1
+            sheet["B1"] = "=A1*2"
+            for column in range(3, 103):
+                sheet.cell(1, column, f"={column}")
+            workbook.save(source)
+            copy = WarmCopy("sparse-overlay")
+
+            changed = copy.apply(1, str(source), [(0, 0, 0, 4)])
+
+            self.assertEqual(changed["results"], [(0, 0, 1, 8)])
+
+    def test_warm_delta_after_broad_edit_contains_only_changed_overlay_rows(self):
+        from pp.engine.worker import WarmCopy, WorkerBatch
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "delta-overlay.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 1
+            sheet["A2"] = 1
+            for row in range(1, 101):
+                sheet.cell(row, 2, f"=$A$1*{row}")
+            sheet["C1"] = "=A2*3"
+            workbook.save(source)
+            copy = WarmCopy("delta-overlay")
+
+            broad = copy.apply(1, str(source), WorkerBatch([(0, 0, 0, 2)], 0))
+            ordinary = copy.apply(
+                2, str(source), WorkerBatch([(0, 0, 0, 2), (0, 1, 0, 3)], 1)
+            )
+
+            self.assertFalse(broad["delta"])
+            self.assertEqual(len(broad["results"]), 100)
+            self.assertTrue(ordinary["delta"])
+            self.assertEqual(ordinary["base_revision"], 1)
+            self.assertEqual(ordinary["results"], [(0, 0, 2, 9)])
+            self.assertEqual(ordinary["removals"], [])
+
+    def test_worker_base_mismatch_falls_back_to_one_full_overlay(self):
+        from pp.engine.worker import WarmCopy, WorkerBatch
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "delta-mismatch.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 1
+            sheet["B1"] = "=A1*2"
+            workbook.save(source)
+            copy = WarmCopy("delta-mismatch")
+            copy.apply(1, str(source), WorkerBatch([(0, 0, 0, 2)], 0))
+
+            mismatched = copy.apply(2, str(source), WorkerBatch([(0, 0, 0, 3)], 0))
+
+            self.assertFalse(mismatched["delta"])
+            self.assertEqual(mismatched["base_revision"], 0)
+            self.assertEqual(mismatched["results"], [(0, 0, 1, 6)])
+
+    def test_restoring_baseline_removes_sparse_overlay_row(self):
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "restore-overlay.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 1
+            sheet["B1"] = "=A1*2"
+            workbook.save(source)
+            copy = WarmCopy("restore-overlay")
+
+            self.assertEqual(copy.apply(1, str(source), [(0, 0, 0, 4)])["results"],
+                             [(0, 0, 1, 8)])
+            restored = copy.apply(2, str(source), [])
+
+            self.assertEqual(restored["results"], [])
+
+    def test_shrunk_baseline_spill_uses_null_tombstone_until_restored(self):
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "baseline-spill.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 2
+            sheet["B1"] = "=SEQUENCE(A1)"
+            workbook.save(source)
+            copy = WarmCopy("baseline-spill")
+
+            self.assertEqual(copy.apply(0, str(source), [])["results"], [])
+            shrunk = copy.apply(1, str(source), [(0, 0, 0, 1)])
+            restored = copy.apply(2, str(source), [])
+
+            self.assertIn((0, 1, 1, None), shrunk["results"])
+            self.assertEqual(restored["results"], [])
+
+    def test_removed_input_spill_member_reveals_immutable_input(self):
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "input-spill.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.protection.sheet = True
+            sheet["A1"] = 2
+            sheet["A1"].protection = Protection(locked=False)
+            sheet["B1"] = "=SEQUENCE(A1)"
+            sheet["B2"] = 7
+            sheet["B2"].protection = Protection(locked=False)
+            workbook.save(source)
+            copy = WarmCopy("input-spill")
+
+            expanded = copy.apply(1, str(source), [(0, 1, 1, None)])
+            restored = copy.apply(2, str(source), [])
+
+            self.assertIn((0, 1, 1, 2), expanded["results"])
+            self.assertNotIn((0, 1, 1, None), restored["results"])
+            self.assertEqual(restored["results"], [])
+
     def test_warm_revision_does_not_reload_source_and_restores_removed_overrides(self):
         fixture = BackendFixture()
         self.addCleanup(fixture.close)
@@ -49,7 +190,7 @@ class WarmEngineTests(unittest.TestCase):
             pool.apply(CalculationRequest("typed-copy", 1, source, [(0, 0, 0, 1)]))
             boolean = pool.apply(CalculationRequest("typed-copy", 2, source, [(0, 0, 0, True)]))
 
-            self.assertIn("results", boolean, "workers must expose an exact full result snapshot")
+            self.assertIn("results", boolean, "workers must expose an exact complete overlay")
             results = {(sheet, row, col): value for sheet, row, col, value in boolean["results"]}
             self.assertIs(results[(1, 0, 0)], True)
 
@@ -134,7 +275,7 @@ class WarmEngineTests(unittest.TestCase):
                     raise EngineError("failure after native mutation")
                 return [(1, 0, 0, self.value * 2)]
 
-            def result_snapshot(self):
+            def overlay_snapshot(self):
                 return [(1, 0, 0, self.value * 2)]
 
         class ScriptedConnection:

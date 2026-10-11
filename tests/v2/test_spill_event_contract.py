@@ -86,21 +86,11 @@ class SpillEventContractTests(unittest.TestCase):
         from pp.calc_service import CalculationPublication
 
         with self.fixture.database.transaction() as connection:
-            rows = connection.execute(
-                "SELECT sheet,row,col,value_json FROM pp_results WHERE copy_id=?",
-                (self.copy["id"],),
-            ).fetchall()
             connection.execute(
                 "UPDATE pp_copies SET input_revision=1 WHERE id=?", (self.copy["id"],)
             )
-        results = [
-            (item["sheet"], item["row"], item["col"],
-             None if (item["sheet"], item["row"], item["col"]) == (0, 0, 2)
-             else json.loads(item["value_json"]))
-            for item in rows
-        ]
         self.assertTrue(self.fixture.app.state.services.calculations.complete(
-            CalculationPublication(self.copy["id"], 1, results)
+            CalculationPublication(self.copy["id"], 1, [(0, 0, 2, None)])
         ))
         row = self.client.get(
             f"/api/copies/{self.copy['id']}/sheets/0/rows?start=0&count=1"

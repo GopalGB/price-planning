@@ -20,7 +20,9 @@ from starlette.routing import Route, WebSocketRoute
 
 from .auth import AuthService, require_csrf, require_origin
 from .categories import CategoryService, MembershipChange
-from .calc_service import CalculationPublication, CalculationService
+from .calc_service import (
+    CalculationPublication, CalculationService, PublicationBaseMismatch,
+)
 from .copies import CopyService, ShareChange
 from .db import token_hash
 from .engine.pool import CalculationRequest
@@ -249,10 +251,10 @@ async def _calculate_and_publish(services, copy_id, revision):
     try:
         source = services.workbooks.calculation_source(copy_id)
         changes = services.operations.revision_changes(copy_id, revision)
-        request = CalculationRequest(copy_id, revision, source, changes)
-        result = await asyncio.to_thread(services.engine_pool.apply, request)
-        publication = CalculationPublication(copy_id, revision, result["results"])
-        published = await asyncio.to_thread(services.calculations.complete, publication)
+        request = CalculationRequest(
+            copy_id, revision, source, changes, state["calculated_revision"]
+        )
+        published = await _run_calculation(services, request)
         if published:
             await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
     except Exception as exc:
@@ -266,10 +268,10 @@ async def _calculate_baseline(services, copy, user_id):
         try:
             source = services.workbooks.calculation_source(copy["id"])
             changes = services.operations.revision_changes(copy["id"], 0)
-            request = CalculationRequest(copy["id"], 0, source, changes)
-            result = await asyncio.to_thread(services.engine_pool.apply, request)
-            publication = CalculationPublication(copy["id"], 0, result["results"])
-            published = await asyncio.to_thread(services.calculations.complete, publication)
+            request = CalculationRequest(
+                copy["id"], 0, source, changes, copy["calculated_revision"]
+            )
+            published = await _run_calculation(services, request)
             if published:
                 event = _event(services.database, copy["id"], ("calc", 0))
                 await services.hub.broadcast(copy["id"], event)
@@ -279,6 +281,24 @@ async def _calculate_baseline(services, copy, user_id):
             await asyncio.to_thread(services.calculations.failed, copy["id"], 0, type(exc).__name__)
             raise
     return services.copies.get(user_id, copy["id"])
+
+
+async def _run_calculation(services, request):
+    result = await asyncio.to_thread(services.engine_pool.apply, request)
+    publication = CalculationPublication.from_result(
+        request.copy_id, request.revision, result
+    )
+    try:
+        return await asyncio.to_thread(services.calculations.complete, publication)
+    except PublicationBaseMismatch:
+        replay = CalculationRequest(
+            request.copy_id, request.revision, request.template_path, request.changes
+        )
+        result = await asyncio.to_thread(services.engine_pool.apply, replay)
+        publication = CalculationPublication.from_result(
+            request.copy_id, request.revision, result
+        )
+        return await asyncio.to_thread(services.calculations.complete, publication)
 
 
 async def _export(request: Request):

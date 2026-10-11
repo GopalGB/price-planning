@@ -185,8 +185,6 @@ class WorkbookService:
                     record.update(_spill_input_metadata(
                         render.snapshot, (query.sheet, row, col), input_record
                     ))
-                elif record["k"] == "f":
-                    record["v"] = None
                 if override and (row, col) not in render.results:
                     record.update(input_record)
                 elif record["k"] == "i":
@@ -214,7 +212,7 @@ class WorkbookService:
         record = dict(snapshot.cell(query.sheet, query.row, query.col))
         if result:
             record["k"] = "f"
-        fallback = None if record["k"] == "f" else record["v"]
+        fallback = record["v"]
         value = json.loads(result["value_json"]) if result else input_record["v"] if input_record else fallback
         response = {"v": value, "s": record["s"], "k": record["k"],
                     "formula": record.get("formula"),

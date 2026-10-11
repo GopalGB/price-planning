@@ -39,8 +39,8 @@ class RecoveryContractTests(unittest.TestCase):
         self.assertEqual(copy[0], 2)
         self.assertEqual((result[0], result[1]), ("30", 2))
 
-    def test_full_results_survive_out_of_order_evaluation_and_matching_revision(self):
-        """R3 must publish a full snapshot even when its engine delta is empty after stale R1."""
+    def test_complete_overlays_survive_out_of_order_evaluation_and_matching_revision(self):
+        """R3 must publish its complete overlay even when its edit delta is empty after stale R1."""
         from pp.calc_service import CalculationPublication, CalculationService
         from pp.engine.pool import CalculationRequest, EnginePool
 
@@ -57,17 +57,17 @@ class RecoveryContractTests(unittest.TestCase):
         second = pool.apply(CalculationRequest(
             "copy-a", 2, self.fixture.source, self.operations.revision_changes("copy-a", 2)
         ))
-        self.assertIn("results", second, "workers must expose an exact full result snapshot")
+        self.assertIn("results", second, "workers must expose an exact complete overlay")
         self.assertTrue(service.complete(CalculationPublication("copy-a", 2, second["results"])))
         first = pool.apply(CalculationRequest(
             "copy-a", 1, self.fixture.source, self.operations.revision_changes("copy-a", 1)
         ))
-        self.assertIn("results", first, "workers must expose an exact full result snapshot")
+        self.assertIn("results", first, "workers must expose an exact complete overlay")
         self.assertFalse(service.complete(CalculationPublication("copy-a", 1, first["results"])))
         third = pool.apply(CalculationRequest(
             "copy-a", 3, self.fixture.source, self.operations.revision_changes("copy-a", 3)
         ))
-        self.assertIn("results", third, "workers must expose an exact full result snapshot")
+        self.assertIn("results", third, "workers must expose an exact complete overlay")
         self.assertEqual(third["changes"], [])
         self.assertTrue(service.complete(CalculationPublication("copy-a", 3, third["results"])))
 
@@ -85,10 +85,11 @@ class RecoveryContractTests(unittest.TestCase):
                    for item in json.loads(event["payload_json"])["changes"]}
         self.assertEqual(changes[(2, 1, 1)], 24.0)
 
-    def test_full_results_preserve_unchanged_constant_formula_across_edits(self):
-        """Replacing stored results with a delta must not erase unchanged formulas."""
+    def test_sparse_results_fall_back_to_unchanged_constant_formula_baseline(self):
+        """Omitting an unchanged formula overlay must retain its immutable cached value."""
         from pp.calc_service import CalculationPublication, CalculationService
         from pp.engine.pool import CalculationRequest, EnginePool
+        from pp.workbook_service import CellQuery, WorkbookService
 
         pool = EnginePool(max_workers=1)
         self.addCleanup(pool.close)
@@ -103,7 +104,7 @@ class RecoveryContractTests(unittest.TestCase):
                 "copy-a", revision, self.fixture.source,
                 self.operations.revision_changes("copy-a", revision),
             ))
-            self.assertIn("results", result, "workers must expose an exact full result snapshot")
+            self.assertIn("results", result, "workers must expose an exact complete overlay")
             self.assertTrue(service.complete(CalculationPublication("copy-a", revision, result["results"])))
             if revision == 1:
                 pool.apply(CalculationRequest("evict-copy-a", 0, self.fixture.source, []))
@@ -113,10 +114,13 @@ class RecoveryContractTests(unittest.TestCase):
                 "SELECT row,value_json,calculated_revision FROM pp_results "
                 "WHERE copy_id='copy-a' AND sheet=2 AND row IN (1,16) ORDER BY row"
             ).fetchall()
-        self.assertEqual([(row["row"], row["calculated_revision"]) for row in rows], [(1, 2), (16, 2)])
-        self.assertEqual(rows[1]["value_json"], '"x b"')
+        constant = WorkbookService(self.fixture.database, self.fixture.snapshot).cell(
+            CellQuery("copy-a", "owner", 2, 16, 1)
+        )
+        self.assertEqual([(row["row"], row["calculated_revision"]) for row in rows], [(1, 2)])
+        self.assertEqual(constant["v"], "x b")
 
-    def test_full_result_removal_publishes_a_null_delta_for_stale_spill_cells(self):
+    def test_overlay_removal_publishes_a_null_delta_for_stale_spill_cells(self):
         """A shrinking spill must tell connected clients to clear removed followers."""
         from pp.calc_service import CalculationPublication, CalculationService
 
@@ -138,11 +142,149 @@ class RecoveryContractTests(unittest.TestCase):
         changes = json.loads(event["payload_json"])["changes"]
         self.assertIn({"sheet": 0, "r": 1, "c": 1, "v": None}, changes)
 
+    def test_delta_publication_only_mutates_named_rows_and_distinguishes_null(self):
+        from pp.calc_service import CalculationPublication, CalculationService
+
+        self.operations.apply("copy-a", "editor", {
+            "op_id": "delta-one", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        })
+        service = CalculationService(self.fixture.database)
+        initial = [(2, 1, 1, 24), (2, 2, 1, 30), (2, 3, 1, 40)]
+        self.assertTrue(service.complete(CalculationPublication("copy-a", 1, initial)))
+        self.operations.apply("copy-a", "editor", {
+            "op_id": "delta-two", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 15, "expected_version": 1}],
+        })
+
+        publication = CalculationPublication(
+            "copy-a", 2, [(2, 1, 1, None)], delta=True, base_revision=1,
+            removals=[(2, 2, 1)],
+        )
+        self.assertTrue(service.complete(publication))
+
+        with self.fixture.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT row,value_json,calculated_revision FROM pp_results "
+                "WHERE copy_id='copy-a' AND sheet=2 ORDER BY row"
+            ).fetchall()
+        self.assertEqual(
+            [(row["row"], row["value_json"], row["calculated_revision"]) for row in rows],
+            [(1, "null", 2), (3, "40", 1)],
+        )
+
+    def test_removed_delta_row_reveals_touched_input_instead_of_stale_formula(self):
+        from pp.calc_service import CalculationPublication, CalculationService
+
+        self.operations.apply("copy-a", "editor", {
+            "op_id": "covered-input-one", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        })
+        service = CalculationService(self.fixture.database, self.fixture.snapshot)
+        self.assertTrue(service.complete(CalculationPublication(
+            "copy-a", 1, [(0, 1, 1, 99)],
+        )))
+        self.operations.apply("copy-a", "editor", {
+            "op_id": "covered-input-two", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 15, "expected_version": 1}],
+        })
+
+        publication = CalculationPublication(
+            "copy-a", 2, [], delta=True, base_revision=1,
+            removals=[(0, 1, 1)],
+        )
+        self.assertTrue(service.complete(publication))
+
+        with self.fixture.database.connect() as connection:
+            row = connection.execute(
+                "SELECT payload_json FROM pp_events WHERE copy_id='copy-a' "
+                "AND event_type='calc' AND input_revision=2"
+            ).fetchone()
+        change = json.loads(row["payload_json"])["changes"][0]
+        self.assertEqual((change["k"], change["v"], change["ver"]), ("i", 15, 2))
+
+    def test_delta_base_mismatch_is_rejected_without_mutating_results(self):
+        from pp.calc_service import (
+            CalculationPublication, CalculationService, PublicationBaseMismatch,
+        )
+
+        for revision, value, expected in ((1, 12, 0), (2, 15, 1)):
+            self.operations.apply("copy-a", "editor", {
+                "op_id": f"base-{revision}", "action": "edit",
+                "cells": [{"sheet": 0, "r": 1, "c": 1, "v": value,
+                           "expected_version": expected}],
+            })
+        service = CalculationService(self.fixture.database)
+        self.assertTrue(service.complete(CalculationPublication("copy-a", 1, [(2, 1, 1, 24)])))
+
+        with self.assertRaises(PublicationBaseMismatch):
+            service.complete(CalculationPublication(
+                "copy-a", 2, [(2, 1, 1, 30)], delta=True, base_revision=0,
+            ))
+
+        with self.fixture.database.connect() as connection:
+            copy = connection.execute(
+                "SELECT calculated_revision FROM pp_copies WHERE id='copy-a'"
+            ).fetchone()
+            row = connection.execute(
+                "SELECT value_json FROM pp_results WHERE copy_id='copy-a' "
+                "AND sheet=2 AND row=1 AND col=1"
+            ).fetchone()
+        self.assertEqual((copy["calculated_revision"], row["value_json"]), (1, "24"))
+
+    def test_stale_delta_is_superseded_before_its_base_is_considered(self):
+        from pp.calc_service import CalculationPublication, CalculationService
+
+        with self.fixture.database.transaction() as connection:
+            connection.execute(
+                "UPDATE pp_copies SET input_revision=2 WHERE id='copy-a'"
+            )
+        service = CalculationService(self.fixture.database)
+        self.assertTrue(service.complete(CalculationPublication("copy-a", 2, [(2, 1, 1, 30)])))
+
+        stale = CalculationPublication(
+            "copy-a", 1, [(2, 1, 1, 24)], delta=True, base_revision=0,
+        )
+
+        self.assertFalse(service.complete(stale))
+
+    def test_recovery_replays_full_once_when_delta_base_is_lost(self):
+        from pp.calc_service import CalculationPublication, CalculationService
+        from pp.recovery import recover_unfinished
+
+        for revision, value, expected in ((1, 12, 0), (2, 15, 1)):
+            self.operations.apply("copy-a", "editor", {
+                "op_id": f"recover-base-{revision}", "action": "edit",
+                "cells": [{"sheet": 0, "r": 1, "c": 1, "v": value,
+                           "expected_version": expected}],
+            })
+        with self.fixture.database.transaction() as connection:
+            connection.execute(
+                "UPDATE pp_calc_jobs SET status='complete' WHERE copy_id='copy-a' AND revision=1"
+            )
+        service = CalculationService(self.fixture.database)
+        calls = []
+
+        def calculate(copy_id, revision, base_revision):
+            calls.append((copy_id, revision, base_revision))
+            if base_revision == 0:
+                service.complete(CalculationPublication("copy-a", 1, [(2, 1, 1, 24)]))
+                return {"results": [(2, 1, 1, 30)], "removals": [],
+                        "delta": True, "base_revision": 0}
+            return {"results": [(2, 1, 1, 30)], "removals": [],
+                    "delta": False, "base_revision": None}
+
+        recovered = recover_unfinished(self.fixture.database, calculate)
+
+        self.assertEqual(recovered, {"completed": 1, "failed": 0})
+        self.assertEqual(calls, [("copy-a", 2, 0), ("copy-a", 2, None)])
+
     def test_revision_zero_job_replays_after_create_crash(self):
         """Startup recovery must finish a durable baseline job before serving the copy."""
         from pp.copies import CopyService
         from pp.engine.pool import CalculationRequest, EnginePool
         from pp.recovery import recover_unfinished
+        from pp.workbook_service import CellQuery, WorkbookService
 
         with self.fixture.database.transaction() as connection:
             connection.execute(
@@ -176,8 +318,12 @@ class RecoveryContractTests(unittest.TestCase):
                 "SELECT value_json FROM pp_results WHERE copy_id=? AND sheet=2 AND row=1 AND col=1",
                 (copy["id"],),
             ).fetchone()
+        baseline = WorkbookService(self.fixture.database, self.fixture.snapshot).cell(
+            CellQuery(copy["id"], "owner", 2, 1, 1)
+        )
         self.assertEqual(current["calculated_revision"], 0)
-        self.assertEqual(value["value_json"], "20.0")
+        self.assertIsNone(value)
+        self.assertEqual(baseline["v"], 20)
 
     def test_recovery_returns_and_finishes_only_unfinished_jobs(self):
         """Startup recovery must be idempotent and leave failures unfinished."""

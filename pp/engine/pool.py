@@ -22,6 +22,7 @@ class CalculationRequest:
     revision: int
     template_path: Path
     changes: list[tuple[int, int, int, object]]
+    base_revision: int | None = None
 
 
 class _CopyWorker:
@@ -33,11 +34,12 @@ class _CopyWorker:
         child.close()
         self.busy = False
 
-    def calculate(self, revision: int, template_path: Path, changes: list[tuple]) -> dict:
+    def calculate(self, request: CalculationRequest) -> dict:
         if not self.process.is_alive():
             raise _WorkerUnavailable("calculation worker is unavailable")
         try:
-            self.connection.send((revision, str(template_path), changes))
+            self.connection.send((request.revision, str(request.template_path), request.changes,
+                                  request.base_revision))
             success, payload = self.connection.recv()
         except (BrokenPipeError, EOFError, OSError) as exc:
             raise _WorkerUnavailable("calculation worker transport failed") from exc
@@ -103,7 +105,7 @@ class EnginePool:
         for attempt in range(2):
             worker = self._acquire(request.copy_id)
             try:
-                return worker.calculate(request.revision, request.template_path, request.changes)
+                return worker.calculate(request)
             except _WorkerUnavailable:
                 self._discard(request.copy_id, worker)
                 if attempt:

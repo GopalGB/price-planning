@@ -48,10 +48,11 @@ def create_runtime(root: str | Path) -> Runtime:
     try:
         operations = OperationService(database, snapshot)
 
-        def calculate(copy_id, revision):
+        def calculate(copy_id, revision, base_revision):
             source = _copy_source(database, copy_id)
             changes = operations.revision_changes(copy_id, revision)
-            return pool.apply(CalculationRequest(copy_id, revision, source, changes))
+            request = CalculationRequest(copy_id, revision, source, changes, base_revision)
+            return pool.apply(request)
 
         recover_unfinished(database, calculate, snapshot)
         app = create_app(ServiceContext(database, snapshot, config, pool))

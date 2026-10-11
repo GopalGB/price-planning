@@ -6,13 +6,17 @@ import importlib.metadata
 import re
 import xml.etree.ElementTree as ET
 import zipfile
+from collections import Counter
+from collections.abc import Iterator, Set
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
 
 import formualizer
 from openpyxl.formula.translate import Translator
+from openpyxl.formula.tokenizer import Tokenizer
 from openpyxl.utils.cell import get_column_letter, quote_sheetname, range_to_tuple
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, to_excel
 
 from ops.typed import ENGINE_ERRORS, typed
@@ -27,6 +31,11 @@ ISFORMULA_CALL = re.compile(r"(?:_xlfn\.)?ISFORMULA\s*\(", re.IGNORECASE)
 QUOTED_TEXT = re.compile(r'("(?:[^"]|"")*")')
 ERROR_KINDS = {token: kind for kind, token in ENGINE_ERRORS.items()}
 UNSUPPORTED_EXTENT_TYPES = {"array", "dataTable"}
+DYNAMIC_ROOT = re.compile(r"\b(?:INDIRECT|OFFSET|NOW|TODAY|RAND|RANDBETWEEN|CELL)\s*\(", re.I)
+POTENTIAL_SPILL = re.compile(
+    r"\b(?:SEQUENCE|FILTER|UNIQUE|SORT(?:BY)?|RANDARRAY|TAKE|DROP|CHOOSECOLS|CHOOSEROWS|"
+    r"TOCOL|TOROW|WRAPCOLS|WRAPROWS|EXPAND|VSTACK|HSTACK)\s*\(", re.I)
+ABSENT = object()
 
 
 class EngineError(Exception):
@@ -38,6 +47,40 @@ class FormulaLookup:
     sheet: int
     formula_cells: frozenset[tuple[int, int, int]]
     names: list[str]
+
+
+@dataclass(frozen=True)
+class FormulaOutputs(Set):
+    anchors: frozenset[tuple[int, int, int]]
+    spill_counts: Counter
+
+    def __contains__(self, coordinate) -> bool:
+        return coordinate in self.anchors or self.spill_counts.get(coordinate, 0) > 0
+
+    def __iter__(self) -> Iterator[tuple[int, int, int]]:
+        yield from self.anchors
+        yield from (coordinate for coordinate, count in self.spill_counts.items()
+                    if count > 0 and coordinate not in self.anchors)
+
+    def __len__(self) -> int:
+        return len(self.anchors) + sum(
+            count > 0 and coordinate not in self.anchors
+            for coordinate, count in self.spill_counts.items()
+        )
+
+
+@dataclass(frozen=True)
+class TraceBudget:
+    nodes: int
+    links: int
+    range_members: int
+
+
+@dataclass(frozen=True)
+class FormulaBounds:
+    sheet: int
+    names: list[str]
+    dimensions: list[tuple[int, int]]
 
 
 def _require_version() -> None:
@@ -70,22 +113,29 @@ def _column_number(letters: str) -> int:
     return value
 
 
-def _formula_map(path: Path) -> tuple[frozenset[tuple[int, int, int]], dict[tuple[int, int, int], str], list[str]]:
-    cells, formulas, names = set(), {}, []
+def _formula_map(path: Path):
+    cells, formulas, names, caches, dimensions = set(), {}, [], {}, []
     masters, followers = {}, []
     with zipfile.ZipFile(path) as archive:
         for sheet_index, (name, part) in enumerate(_sheet_parts(archive)):
             names.append(name)
+            max_row = max_col = 1
             with archive.open(part) as stream:
                 for element in _formula_cells(stream):
                     formula, reference = element.find(f"{NS}f"), element.get("r")
+                    match = REF.fullmatch(reference or "")
+                    if match is not None:
+                        max_row = max(max_row, int(match.group("row")))
+                        max_col = max(max_col, _column_number(match.group("col")))
                     if formula is not None and reference:
                         _reject_unsupported_extent(formula, name, reference)
-                        match = REF.fullmatch(reference)
                         if match is not None:
                             key = (sheet_index, int(match.group("row")) - 1,
                                    _column_number(match.group("col")) - 1)
                             cells.add(key)
+                            parsed = _cached_value(element)
+                            if parsed is not None:
+                                caches[key] = parsed
                             if formula.text:
                                 text = "=" + formula.text.lstrip("=")
                                 formulas[key] = text
@@ -94,8 +144,65 @@ def _formula_map(path: Path) -> tuple[frozenset[tuple[int, int, int]], dict[tupl
                             elif formula.get("t") == "shared" and formula.get("si") is not None:
                                 followers.append((key, formula.get("si")))
                     element.clear()
+            dimensions.append((max_row, max_col))
     _expand_shared_text(formulas, masters, followers)
-    return frozenset(cells), formulas, names
+    budget = _trace_budget(formulas, names, dimensions)
+    return (frozenset(cells), formulas, names, caches,
+            frozenset(key for key, _ in followers), budget)
+
+
+def _trace_budget(formulas, names, dimensions):
+    links, ranges = 0, {}
+    for coordinate, formula in formulas.items():
+        bounds = FormulaBounds(coordinate[0], names, dimensions)
+        for token in Tokenizer(formula).items:
+            if token.type != "OPERAND" or token.subtype != "RANGE":
+                continue
+            count, identity = _reference_shape(token.value, bounds)
+            links += count
+            if identity is not None:
+                ranges[identity] = count
+    nodes = len(formulas) + len(ranges)
+    return TraceBudget(nodes, links, sum(ranges.values()))
+
+
+def _reference_shape(reference, bounds):
+    sheet_name, marker, address = reference.rpartition("!")
+    sheet = bounds.sheet
+    if marker:
+        normalized = sheet_name.strip("'").replace("''", "'")
+        sheet = next((index for index, name in enumerate(bounds.names)
+                      if name.casefold() == normalized.casefold()), sheet)
+    try:
+        min_col, min_row, max_col, max_row = range_boundaries(address)
+    except ValueError:
+        return 1, None
+    used_rows, used_cols = bounds.dimensions[sheet]
+    min_col, max_col = min_col or 1, max_col or used_cols
+    min_row, max_row = min_row or 1, max_row or used_rows
+    count = max_col - min_col + 1
+    count *= max_row - min_row + 1
+    identity = (sheet, min_row, min_col, max_row, max_col) if ":" in address else None
+    return count, identity
+
+
+def _cached_value(element):
+    value = element.find(f"{NS}v")
+    if value is None:
+        return None
+    raw, kind = value.text or "", element.get("t")
+    if not raw and kind is None:
+        return None
+    if kind == "e":
+        return {"error": raw}
+    if kind == "b":
+        return raw == "1"
+    if kind == "str":
+        return raw
+    try:
+        return float(raw) if any(ch in raw for ch in ".eE") else int(raw)
+    except ValueError:
+        return raw
 
 
 def _reject_unsupported_extent(formula, sheet, reference):
@@ -182,6 +289,8 @@ def _rewrite_isformula(formula: str, lookup: FormulaLookup) -> str:
 def _json_value(value, date1904):
     if isinstance(value, (date, time)):
         return to_excel(value, MAC_EPOCH if date1904 else WINDOWS_EPOCH)
+    if isinstance(value, dict) and set(value) == {"error"}:
+        return value
     if isinstance(value, str):
         return value
     kind, normalized = typed(value)
@@ -201,85 +310,304 @@ def _qualified(sheet: str, row: int, col: int) -> str:
     return f"{quote_sheetname(sheet)}!{get_column_letter(col + 1)}{row + 1}"
 
 
-def _spill_cells(workbook, anchors, names):
-    cells = set(anchors)
-    for sheet, row, col in anchors:
-        report = workbook.inspect_cell(_qualified(names[sheet], row, col))
-        spill = report.cell.to_dict().get("spill")
-        if not spill or spill.get("kind") != "Anchor" or not spill.get("extent"):
-            continue
-        spill_name, bounds = range_to_tuple(spill["extent"])
-        if spill_name != names[sheet]:
-            raise EngineError("formula spill extent crosses workbook sheets")
-        min_col, min_row, max_col, max_row = bounds
-        cells.update((sheet, spill_row - 1, spill_col - 1)
+def _spill_extent(workbook, coordinate, names):
+    sheet, row, col = coordinate
+    report = workbook.inspect_cell(_qualified(names[sheet], row, col))
+    spill = report.cell.to_dict().get("spill")
+    if not spill or spill.get("kind") != "Anchor" or not spill.get("extent"):
+        return frozenset()
+    spill_name, bounds = range_to_tuple(spill["extent"])
+    if spill_name != names[sheet]:
+        raise EngineError("formula spill extent crosses workbook sheets")
+    min_col, min_row, max_col, max_row = bounds
+    return frozenset((sheet, spill_row - 1, spill_col - 1)
                      for spill_row in range(min_row, max_row + 1)
                      for spill_col in range(min_col, max_col + 1))
-    return frozenset(cells)
+
+
+def _spill_map(workbook, anchors, names):
+    return {anchor: extent for anchor in anchors
+            if (extent := _spill_extent(workbook, anchor, names))}
+
+
+def _spill_counts(spills):
+    counts = Counter()
+    for extent in spills.values():
+        counts.update(extent)
+    return counts
 
 
 @dataclass
 class FormualizerEngine:
     workbook: object
     formula_anchors: frozenset[tuple[int, int, int]]
-    formula_cells: frozenset[tuple[int, int, int]]
-    formula_values: dict[tuple[int, int, int], object]
+    formula_cells: FormulaOutputs
     date1904: bool
+    names: list[str]
+    cached_values: dict[tuple[int, int, int], object]
+    dynamic_targets: frozenset[tuple[int, int, int]]
+    spill_cells: dict[tuple[int, int, int], frozenset[tuple[int, int, int]]]
+    spill_counts: Counter
+    baseline_spill_cells: frozenset[tuple[int, int, int]]
+    baseline_spills: dict[tuple[int, int, int], frozenset[tuple[int, int, int]]]
+    baseline_values: dict[tuple[int, int, int], object]
+    overlay_values: dict[tuple[int, int, int], object]
+    overlay_before: dict[tuple[int, int, int], object]
+    overlay_upserts: dict[tuple[int, int, int], object]
+    overlay_removals: set[tuple[int, int, int]]
+    trace_budget: TraceBudget
 
     @classmethod
-    def load(cls, template_path: str | Path) -> FormualizerEngine:
+    def load(cls, template_path: str | Path,
+             recalculate: tuple[tuple[int, int, int], ...] = ()) -> FormualizerEngine:
         _require_version()
         try:
             path = Path(template_path)
-            formula_cells, formulas, names = _formula_map(path)
+            mapped = _formula_map(path)
+            formula_cells, formulas, names, cached_values, shared_followers, trace_budget = mapped
             date1904 = _uses_1904_date_system(path)
             workbook = formualizer.load_workbook(str(path))
             if list(workbook.sheet_names) != names:
                 raise EngineError("template engine sheet names do not match workbook XML")
+            lookup = FormulaLookup(0, formula_cells, names)
             for (sheet, row, col), formula in formulas.items():
-                if ISFORMULA_CALL.search(formula):
-                    workbook.set_formula(names[sheet], row + 1, col + 1,
-                                         _rewrite_isformula(formula, FormulaLookup(sheet, formula_cells, names)))
-            workbook.evaluate_all()
+                if (sheet, row, col) in shared_followers or ISFORMULA_CALL.search(formula):
+                    if ISFORMULA_CALL.search(formula):
+                        formula = _rewrite_isformula(
+                            formula, FormulaLookup(sheet, lookup.formula_cells, lookup.names)
+                        )
+                    workbook.set_formula(names[sheet], row + 1, col + 1, formula)
+            dynamic = frozenset(key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula))
+            spill_roots = frozenset(key for key, formula in formulas.items() if POTENTIAL_SPILL.search(formula))
+            initial = sorted((formula_cells - cached_values.keys()) | spill_roots)
+            if initial:
+                workbook.evaluate_cells([(names[s], r + 1, c + 1) for s, r, c in initial])
+                for coordinate in initial:
+                    cached_values.pop(coordinate, None)
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("template calculation engine failed to load") from exc
-        engine = cls(workbook, formula_cells, frozenset(), {}, date1904)
-        engine.formula_cells = _spill_cells(workbook, formula_cells, names)
-        engine.formula_values = {coordinate: engine.get(*coordinate)
-                                 for coordinate in engine.formula_cells}
+        spills = _spill_map(workbook, spill_roots, names)
+        spill_counts = _spill_counts(spills)
+        outputs = FormulaOutputs(formula_cells, spill_counts)
+        engine = cls(workbook, formula_cells, outputs, date1904, names, cached_values, dynamic,
+                     spills, spill_counts, frozenset(spill_counts), dict(spills), {}, {}, {},
+                     {}, set(), trace_budget)
+        engine._close_bootstrap_spills(spill_roots)
+        if recalculate:
+            engine.recalculate(recalculate)
         return engine
 
     def apply(self, changes: list[tuple[int, int, int, object]]) -> list[tuple[int, int, int, object]]:
+        self._reset_overlay_delta()
+        if not changes:
+            return []
         try:
+            edited = {(sheet, row, col) for sheet, row, col, _ in changes}
             for sheet, row, col, value in changes:
                 self.workbook.set_value(self.workbook.sheet_names[sheet], row + 1, col + 1,
                                         _native_value(value))
-            return self.evaluate_dirty()
+            return self.evaluate_dirty(self._dependent_targets(self._calculation_roots(edited)))
+        except EngineError:
+            raise
         except Exception as exc:
             raise EngineError("template calculation engine failed to apply changes") from exc
 
-    def evaluate_dirty(self) -> list[tuple[int, int, int, object]]:
-        self.workbook.evaluate_all()
-        names = list(self.workbook.sheet_names)
-        current = _spill_cells(self.workbook, self.formula_anchors, names)
-        values, changes = {}, []
-        for sheet, row, col in sorted(self.formula_cells | current):
-            coordinate = sheet, row, col
-            value = self.get(*coordinate) if coordinate in current else None
-            if coordinate not in self.formula_values or not exactly_equal(self.formula_values[coordinate], value):
-                changes.append((*coordinate, value))
-            if coordinate in current:
-                values[coordinate] = value
-        self.formula_cells, self.formula_values = current, values
-        return changes
+    def _dependent_targets(self, roots, include_dynamic=True):
+        node_budget = max(self.trace_budget.nodes + len(roots), 1)
+        link_budget = max(self.trace_budget.links, node_budget)
+        work_budget = node_budget + link_budget + 1
+        native_roots = [(self.names[sheet], row + 1, col + 1) for sheet, row, col in roots]
+        self.workbook.get_eval_plan(native_roots)
+        trace = self.workbook.trace(
+            [_qualified(self.names[sheet], row, col) for sheet, row, col in roots],
+            direction=formualizer.TraceDirection.Dependents, max_depth=node_budget,
+            max_nodes=node_budget, max_links=link_budget, max_work=work_budget,
+            range_member_budget=max(self.trace_budget.range_members, 1),
+            include_values=False)
+        if trace.truncation.incomplete:
+            raise EngineError("dependency trace truncated")
+        targets = {target for address in trace.nodes.keys()
+                   if (target := _target_key(_normalize_address(address), 0, self.names))
+                   in self.formula_anchors}
+        return targets | self.dynamic_targets if include_dynamic else targets
+
+    def _close_bootstrap_spills(self, spill_roots) -> None:
+        if not spill_roots:
+            return
+        roots = set(spill_roots)
+        roots.update(*(self.spill_cells.get(root, frozenset()) for root in spill_roots))
+        self.evaluate_dirty(self._dependent_targets(roots, include_dynamic=False))
+        self.baseline_spill_cells = frozenset(self.spill_counts)
+        self.baseline_spills = dict(self.spill_cells)
+        self.baseline_values.clear()
+        self.overlay_values.clear()
+        self._reset_overlay_delta()
+
+    def evaluate_dirty(self, targets) -> list[tuple[int, int, int, object]]:
+        pending = {target for target in targets if target in self.formula_anchors}
+        if not pending:
+            return []
+        previous, touched = {}, set()
+        for _ in range(max(len(self.formula_anchors) + 1, 1)):
+            old_spills = {anchor: self.spill_cells.get(anchor, frozenset())
+                          for anchor in pending}
+            before = set(pending).union(*old_spills.values())
+            self._capture_previous(before, previous)
+            touched.update(before)
+            self._evaluate_targets(pending)
+            changed_spills = self._refresh_spills(pending, old_spills)
+            current = set(pending)
+            current.update(*(self.spill_cells.get(anchor, frozenset()) for anchor in pending))
+            touched.update(current)
+            if not changed_spills:
+                break
+            next_targets = self._dependent_targets(changed_spills, include_dynamic=False)
+            if not next_targets:
+                break
+            pending = next_targets
+        else:
+            raise EngineError("spill dependency closure did not converge")
+        return self._publish_changes(previous, touched)
+
+    def _capture_previous(self, coordinates, previous) -> None:
+        self._remember_baseline(coordinates)
+        for coordinate in coordinates:
+            if coordinate not in previous:
+                previous[coordinate] = (self.get(*coordinate)
+                                        if coordinate in self.formula_cells else ABSENT)
+
+    def _evaluate_targets(self, targets) -> None:
+        for target in targets:
+            self.cached_values.pop(target, None)
+        # Formualizer 0.11.1 has no cache setter. Targeted evaluation may evaluate
+        # cold native precedents, so every traced formula target loses its XML cache.
+        native = [(self.names[s], r + 1, c + 1) for s, r, c in sorted(targets)]
+        self.workbook.evaluate_cells(native)
+
+    def _refresh_spills(self, targets, old_spills):
+        changed = set()
+        for anchor in targets:
+            previous = old_spills[anchor]
+            current = _spill_extent(self.workbook, anchor, self.names)
+            self._replace_spill(anchor, current)
+            if previous != current:
+                changed.update(previous)
+                changed.update(current)
+        return changed
+
+    def _publish_changes(self, previous, touched):
+        values = {coordinate: self.get(*coordinate)
+                  if coordinate in self.formula_cells else ABSENT for coordinate in touched}
+        for coordinate, value in values.items():
+            self._update_overlay(coordinate, value)
+        return [(*coordinate, None if value is ABSENT else value)
+                for coordinate, value in sorted(values.items())
+                if _output_changed(previous.get(coordinate, ABSENT), value)]
+
+    def adopt_baseline(self, source: FormualizerEngine):
+        if self.formula_anchors != source.formula_anchors:
+            raise EngineError("copy baseline formula topology changed")
+        loaded_spills = dict(self.spill_cells)
+        self.baseline_spill_cells = source.baseline_spill_cells
+        self.baseline_spills = dict(source.baseline_spills)
+        self.baseline_values = dict(source.baseline_values)
+        self.spill_cells = dict(self.baseline_spills)
+        self.spill_counts.clear()
+        self.spill_counts.update(_spill_counts(self.spill_cells))
+        anchors = loaded_spills.keys() | self.baseline_spills.keys()
+        return frozenset(anchor for anchor in anchors
+                         if loaded_spills.get(anchor) != self.baseline_spills.get(anchor))
+
+    def recalculate(self, roots) -> list[tuple[int, int, int, object]]:
+        self._reset_overlay_delta()
+        return self.evaluate_dirty(self._dependent_targets(self._calculation_roots(roots)))
+
+    def remember_baseline_for_roots(self, roots) -> None:
+        targets = self._dependent_targets(self._calculation_roots(roots))
+        cells = set(targets)
+        cells.update(*(self.spill_cells.get(target, frozenset()) for target in targets))
+        self._remember_baseline(cells)
+
+    def _calculation_roots(self, edited):
+        edited = set(edited)
+        roots = edited | set(self.dynamic_targets)
+        roots.update(anchor for anchor, extent in self.spill_cells.items() if edited & extent)
+        return roots
+
+    def _remember_baseline(self, coordinates) -> None:
+        for coordinate in coordinates:
+            if self._is_baseline_output(coordinate) and coordinate not in self.baseline_values:
+                self.baseline_values[coordinate] = self.get(*coordinate)
+
+    def _replace_spill(self, anchor, extent) -> None:
+        previous = self.spill_cells.pop(anchor, frozenset())
+        for coordinate in previous:
+            remaining = self.spill_counts[coordinate] - 1
+            if remaining:
+                self.spill_counts[coordinate] = remaining
+            else:
+                self.spill_counts.pop(coordinate)
+        if extent:
+            self.spill_cells[anchor] = extent
+            self.spill_counts.update(extent)
+
+    def _is_baseline_output(self, coordinate) -> bool:
+        return coordinate in self.formula_anchors or coordinate in self.baseline_spill_cells
+
+    def _update_overlay(self, coordinate, value) -> None:
+        self.overlay_before.setdefault(coordinate, self.overlay_values.get(coordinate, ABSENT))
+        if value is ABSENT:
+            if self._is_baseline_output(coordinate):
+                self.overlay_values[coordinate] = None
+            else:
+                self.overlay_values.pop(coordinate, None)
+        elif not self._is_baseline_output(coordinate):
+            self.overlay_values[coordinate] = value
+        else:
+            if coordinate not in self.baseline_values:
+                raise EngineError("formula baseline value is unavailable")
+            if exactly_equal(self.baseline_values[coordinate], value):
+                self.overlay_values.pop(coordinate, None)
+            else:
+                self.overlay_values[coordinate] = value
+        self._record_overlay_delta(coordinate)
+
+    def _record_overlay_delta(self, coordinate) -> None:
+        before = self.overlay_before[coordinate]
+        after = self.overlay_values.get(coordinate, ABSENT)
+        if not _output_changed(before, after):
+            self.overlay_upserts.pop(coordinate, None)
+            self.overlay_removals.discard(coordinate)
+        elif after is ABSENT:
+            self.overlay_upserts.pop(coordinate, None)
+            self.overlay_removals.add(coordinate)
+        else:
+            self.overlay_upserts[coordinate] = after
+            self.overlay_removals.discard(coordinate)
+
+    def _reset_overlay_delta(self) -> None:
+        self.overlay_before.clear()
+        self.overlay_upserts.clear()
+        self.overlay_removals.clear()
 
     def result_snapshot(self) -> list[tuple[int, int, int, object]]:
         return [(*coordinate, self.get(*coordinate)) for coordinate in sorted(self.formula_cells)]
 
+    def overlay_snapshot(self) -> list[tuple[int, int, int, object]]:
+        return [(*coordinate, value) for coordinate, value in sorted(self.overlay_values.items())]
+
+    def overlay_delta(self):
+        upserts = [(*coordinate, value)
+                   for coordinate, value in sorted(self.overlay_upserts.items())]
+        return upserts, sorted(self.overlay_removals)
+
     def get(self, sheet: int, row: int, col: int):
         try:
+            coordinate = (sheet, row, col)
+            if coordinate in self.cached_values:
+                return _json_value(self.cached_values[coordinate], self.date1904)
             value = self.workbook.get_value(self.workbook.sheet_names[sheet], row + 1, col + 1)
             return _json_value(value, self.date1904)
         except Exception as exc:
@@ -306,3 +634,9 @@ def _normalize_address(address: str) -> str:
 
 
 FormualizerAdapter = FormualizerEngine
+
+
+def _output_changed(before, after):
+    if before is ABSENT or after is ABSENT:
+        return before is not after
+    return not exactly_equal(before, after)

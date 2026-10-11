@@ -375,8 +375,8 @@ class WebSocketContractTests(unittest.TestCase):
         ])
         self.assertEqual(socket.messages[0]["input_revision"], 1)
 
-    def test_cursor_zero_replays_baseline_calc_missed_after_pending_fetch(self):
-        """A pending baseline fetch followed by hello(0) must recover missed values."""
+    def test_cursor_zero_replays_baseline_completion_after_pending_fetch(self):
+        """A pending cached row fetch and hello(0) must recover calculation state."""
         entered, release = threading.Event(), threading.Event()
         original = self.fixture.pool.apply
         responses = {}
@@ -406,6 +406,7 @@ class WebSocketContractTests(unittest.TestCase):
                     f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1"
                 ).json()
                 self.assertEqual((rows["input_revision"], rows["calculated_revision"]), (0, -1))
+                self.assertEqual(rows["rows"]["1"]["1"]["v"], 20)
             finally:
                 release.set()
             creator.join(timeout=5)
@@ -417,8 +418,7 @@ class WebSocketContractTests(unittest.TestCase):
         socket.send_json({"type": "hello", "last_revision": 0})
         calc = socket.receive_json()
         self.assertEqual((calc["type"], calc["calculated_revision"]), ("calc", 0))
-        values = {(item["sheet"], item["r"], item["c"]): item["v"] for item in calc["changes"]}
-        self.assertEqual(values[(2, 1, 1)], 20)
+        self.assertEqual(calc["changes"], [])
         state = socket.receive_json()
         self.assertEqual((state["type"], state["calculated_revision"]), ("calc_state", 0))
 
