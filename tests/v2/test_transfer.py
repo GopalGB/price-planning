@@ -211,6 +211,23 @@ class PackageDownloadTests(unittest.TestCase):
         self.assertEqual(cell.findtext(f"{{{MAIN_NS}}}v"), "42")
         self.assertEqual(cell.get("s"), "1")
 
+    def test_self_closing_blanks_around_formula_do_not_break_freeze(self):
+        with zipfile.ZipFile(self.source) as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml")
+        sheet = sheet.replace(
+            b'<row r="2"><c r="B2"',
+            b'<row r="2"><c r="A2" s="1"/><c r="B2"',
+        ).replace(b"</c></row></sheetData>", b'</c><c r="C2" s="1"/></row></sheetData>')
+        _replace_members(self.source, {"xl/worksheets/sheet1.xml": sheet})
+
+        self.download()
+
+        with zipfile.ZipFile(self.output) as archive:
+            root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        self.assertEqual(root.findtext(f".//{{{MAIN_NS}}}c[@r='B2']/{{{MAIN_NS}}}v"), "42")
+        self.assertIsNotNone(root.find(f".//{{{MAIN_NS}}}c[@r='A2']"))
+        self.assertIsNotNone(root.find(f".//{{{MAIN_NS}}}c[@r='C2']"))
+
     def test_missing_current_result_refuses_to_substitute_a_template_cache(self):
         with self.assertRaisesRegex(ValueError, "current calculation result"):
             self.download(results={})

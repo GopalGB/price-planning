@@ -91,8 +91,7 @@ def _formula_fixture(path):
     formula(keep_a_xml, "B1", "Drop!A1:A2", t="array", ref="B1:B2")
     follower = keep_a_xml.find(f".//{{{MAIN}}}c[@r='B2']")
     for node in list(follower):
-        if node.tag == f"{{{MAIN}}}f":
-            follower.remove(node)
+        follower.remove(node)
     formula(keep_b_xml, "A1", "1+1", t="shared", ref="A1:A2", si="0")
     formula(keep_b_xml, "A2", None, t="shared", si="0")
     workbook_xml = workbook_xml.replace(

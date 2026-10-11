@@ -647,17 +647,21 @@ def _freeze_sheet(source, target, values):
             continue
         prefix = match.group("prefix") or b""
         closing = b"</" + prefix + b"c>"
-        end = buffer.find(closing, match.end())
-        if end < 0:
-            chunk = source.read(CHUNK)
-            if not chunk:
-                raise ValueError("worksheet XML ended inside a cell")
-            buffer += chunk
-            continue
-        end += len(closing)
+        self_closing = match.group().rstrip().endswith(b"/>")
+        end = match.end() if self_closing else buffer.find(closing, match.end())
+        if not self_closing:
+            if end < 0:
+                chunk = source.read(CHUNK)
+                if not chunk:
+                    raise ValueError("worksheet XML ended inside a cell")
+                buffer += chunk
+                continue
+            end += len(closing)
         cell = buffer[match.start():end]
         target.write(buffer[:match.start()])
         reference = _attribute(match.group(), "r")
+        if self_closing and reference in values:
+            cell = re.sub(rb"/\s*>$", b">", cell) + closing
         target.write(_freeze_cell(cell, values[reference]) if reference in values else cell)
         buffer = buffer[end:]
 
