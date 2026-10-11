@@ -1,6 +1,7 @@
 {
   "attempted_scales": [
-    0.05
+    0.05,
+    0.2
   ],
   "completed_scales": [
     0.05
@@ -310,11 +311,39 @@
       "status": "completed",
       "swap_baseline_mib": 8875.31,
       "swap_max_mib": 9196.56
+    },
+    {
+      "child_rss_bytes": 13205504,
+      "child_rss_max_bytes": 191528960,
+      "disk_free_mib": 8588.03515625,
+      "disk_min_free_mib": 6538.6328125,
+      "failure_stage": "timeout",
+      "generation_seconds": 4.167967458022758,
+      "latest_progress": {
+        "generation_seconds": 4.167967458022758,
+        "rss_at_stage_start_bytes": 28229632,
+        "stage": "load",
+        "status": "running"
+      },
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "rss_at_stage_start_bytes": 28229632,
+      "scale": 0.2,
+      "status": "failed",
+      "swap_baseline_mib": 8875.31,
+      "swap_current_mib": 4778.44,
+      "swap_max_mib": 8875.31
+    },
+    {
+      "reason": "timeout",
+      "scale": 0.5,
+      "status": "skipped"
     }
   ],
   "seed": 20261011,
-  "skipped_scales": [],
-  "stop_reason": null,
+  "skipped_scales": [
+    0.5
+  ],
+  "stop_reason": "timeout",
   "swap_baseline_mib": 8875.31,
   "topology_limitations": [
     "Synthetic formulas use a bounded three-row lookup palette, not the real inventory.",
