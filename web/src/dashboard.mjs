@@ -4,6 +4,8 @@ const EMU_TO_PX = 96 / 914400;
 const DEFAULT_FONT = "Calibri";
 const SOURCE_REFRESH_DELAY = 200;
 const PENDING_REFRESH_DELAY = 500;
+const PENDING_REFRESH_LIMIT = 8;
+const PENDING_REFRESH_MAX_DELAY = 5000;
 const CATEGORY_POLL_DELAY = 2000;
 const DEFAULT_SCROLL = {
   sheetViewStartRow: 0,
@@ -15,6 +17,9 @@ const DEFAULT_SCROLL = {
 const clone = (value) => structuredClone(value);
 const selectorKey = (value) => JSON.stringify([value?.kind, value?.value]);
 const sameSelector = (left, right) => selectorKey(left) === selectorKey(right);
+const isPending = (error) =>
+  error.status === 409 &&
+  ["calculation_pending", "category_calculation_pending"].includes(error.error);
 
 export function selectSlicer(view, name, selector, multi, selected = []) {
   const next = clone(view);
@@ -453,11 +458,9 @@ export class DashboardController {
     } catch (error) {
       if (token === this.token) {
         this.toast(error.message);
-        if (
-          this.scope === "category" &&
-          (error.status === 404 || error.error === "incompatible_templates")
-        )
+        if (this.scope === "category" && !isPending(error))
           return this.switchScope("copy");
+        this.recoverControls();
       }
       return false;
     }
@@ -470,7 +473,7 @@ export class DashboardController {
     return this.performRefresh(token, generation);
   }
 
-  async performRefresh(token, generation) {
+  async performRefresh(token, generation, attempt = 0) {
     if (!this.currentRefresh(token, generation)) return false;
     const path = requestPath(
       this.copyId,
@@ -490,26 +493,23 @@ export class DashboardController {
       return true;
     } catch (error) {
       if (!this.currentRefresh(token, generation)) return false;
-      if (
-        error.status === 409 &&
-        ["calculation_pending", "category_calculation_pending"].includes(
-          error.error,
-        )
-      ) {
-        this.retryRefresh(token, generation);
+      if (isPending(error)) {
+        if (this.scope === "category") this.scheduleCategoryPoll();
+        this.retryRefresh(token, generation, attempt);
         return false;
-      }
-      if (
-        this.scope === "category" &&
-        (error.status === 404 || error.error === "incompatible_templates")
-      ) {
-        this.toast(error.message);
-        return this.switchScope("copy");
       }
       this.setRefreshing(false);
       this.toast(error.message);
+      if (this.scope === "category") return this.switchScope("copy");
+      this.recoverControls();
       return false;
     }
+  }
+
+  recoverControls() {
+    if (!this.result) return;
+    this.renderControls();
+    this.position();
   }
 
   async update(view) {
@@ -587,12 +587,22 @@ export class DashboardController {
     return token === this.token && generation === this.refreshGeneration;
   }
 
-  retryRefresh(token, generation) {
+  retryRefresh(token, generation, attempt = 0) {
     this.cancelRefreshTimer();
-    this.refreshTimer = this.setTimer(() => {
-      this.refreshTimer = null;
-      return this.performRefresh(token, generation);
-    }, PENDING_REFRESH_DELAY);
+    if (attempt >= PENDING_REFRESH_LIMIT) {
+      this.setRefreshing(false);
+      this.toast(
+        "Dashboard calculations are still pending. Press Refresh to try again.",
+      );
+      return;
+    }
+    this.refreshTimer = this.setTimer(
+      () => {
+        this.refreshTimer = null;
+        return this.performRefresh(token, generation, attempt + 1);
+      },
+      Math.min(PENDING_REFRESH_DELAY * 2 ** attempt, PENDING_REFRESH_MAX_DELAY),
+    );
   }
 
   cancelRefreshTimer() {

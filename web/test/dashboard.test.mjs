@@ -867,6 +867,197 @@ test("category totals switch routes independently and makes the workbook read on
   assert.match(calls.at(-2).path, /\/category\/view$/);
 });
 
+test("a dashboard stuck on pending calculations stops retrying and restores refresh", async () => {
+  const timers = new Map(),
+    delays = [],
+    toasts = [];
+  let timerId = 0;
+  const controller = new DashboardController({
+    api: {
+      request: async () => {
+        throw Object.assign(new Error("Dashboard calculations are pending"), {
+          status: 409,
+          error: "calculation_pending",
+        });
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: (message) => toasts.push(message),
+    setTimer: (callback, delay) => {
+      const id = ++timerId;
+      delays.push(delay);
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  controller.sheet = { index: 0, pivots: [pivot], slicers: [] };
+  controller.pivot = pivot;
+  controller.view = structuredClone(baseView);
+  controller.render = () => {};
+
+  await controller.refresh();
+  while (timers.size) await [...timers.values()][0]();
+
+  assert.ok(delays.length > 0, "pending calculations must still be retried");
+  assert.ok(
+    delays.length <= 10,
+    `retries must be bounded, saw ${delays.length}`,
+  );
+  assert.ok(delays.at(-1) > delays[0], "retries must back off");
+  assert.ok(Math.max(...delays) <= 5000, "retry delay must stay capped");
+  assert.equal(timers.size, 0);
+  assert.equal(controller.refreshing, false);
+  assert.equal(toasts.length, 1);
+  assert.match(toasts[0], /pending|press refresh/i);
+});
+
+test("a failed category dashboard falls back to the copy dashboard", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div"),
+    calls = [];
+  const controller = new DashboardController({
+    api: {
+      request: async (path) => {
+        calls.push(path);
+        if (path.endsWith("/category/view"))
+          throw Object.assign(new Error("Dashboard failed"), {
+            status: 500,
+            error: "server_error",
+          });
+        if (path.endsWith("/view")) return baseView;
+        return result([]);
+      },
+    },
+    copyId: "copy-a",
+    copyName: "Duplicate Plan",
+    categoryId: "category-a",
+    mutate: () => {},
+    gridElement: root,
+    worksheet: () => null,
+    toast: () => {},
+  });
+  t.after(() => controller.dispose());
+  controller.preferredScope = "category";
+
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+
+  assert.equal(controller.readOnly(), false);
+  assert.equal(controller.preferredScope, "copy");
+  assert.ok(calls.some((path) => path.endsWith("/view")));
+  assert.ok(
+    findElement(root.children.at(-1), (item) => item.textContent === "Refresh"),
+    "the copy dashboard must keep its refresh control",
+  );
+});
+
+test("a failed copy open keeps the controls of the last good dashboard", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div");
+  let fail = false;
+  const controller = new DashboardController({
+    api: {
+      request: async (path) => {
+        if (fail && path.endsWith("/view"))
+          throw Object.assign(new Error("Dashboard failed"), {
+            status: 500,
+            error: "server_error",
+          });
+        if (path.endsWith("/view")) return baseView;
+        if (path.startsWith("/copies?")) return { copies: [] };
+        return result([]);
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: root,
+    worksheet: () => null,
+    toast: () => {},
+  });
+  t.after(() => controller.dispose());
+  const sheet = { index: 0, pivots: [pivot], slicers: [] };
+  await controller.open(sheet);
+  assert.ok(
+    controller.refreshButton,
+    "a working dashboard renders a refresh control",
+  );
+
+  fail = true;
+  await controller.open(sheet);
+
+  assert.ok(
+    controller.refreshButton,
+    "a failed open must not remove the controls",
+  );
+  assert.equal(controller.refreshButton.disabled, false);
+  assert.equal(controller.controls.length > 0, true);
+});
+
+test("a pending category refresh keeps polling the other copies", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div"),
+    timers = new Map(),
+    delays = [];
+  let timerId = 0;
+  const controller = new DashboardController({
+    api: {
+      request: async (path) => {
+        if (path.endsWith("/category/refresh"))
+          throw Object.assign(new Error("Category calculations are pending"), {
+            status: 409,
+            error: "category_calculation_pending",
+          });
+        if (path.endsWith("/category/view") || path.endsWith("/view"))
+          return baseView;
+        if (path.startsWith("/copies?")) return { copies: [] };
+        return {
+          ...result([]),
+          pivot: { ...result([]).pivot, scope: "category" },
+        };
+      },
+    },
+    copyId: "copy-a",
+    copyName: "Duplicate Plan",
+    categoryId: "category-a",
+    mutate: () => {},
+    gridElement: root,
+    worksheet: () => null,
+    toast: () => {},
+    setTimer: (callback, delay) => {
+      const id = ++timerId;
+      delays.push(delay);
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  t.after(() => controller.dispose());
+  controller.preferredScope = "category";
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+  const before = delays.length;
+
+  await controller.refresh();
+
+  assert.equal(
+    controller.readOnly(),
+    true,
+    "a pending category must stay in category scope",
+  );
+  assert.ok(
+    delays.length > before,
+    "category polling must keep running while the category calculates",
+  );
+});
+
 test("category copy slicer uses its server anchor and preserves stable typed selection", async (t) => {
   dashboardDocument(t);
   const root = new FakeDashboardElement("div"),
