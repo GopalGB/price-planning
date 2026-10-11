@@ -9,6 +9,7 @@ import math
 
 from .authorization import authorized_category_copies, effective_role
 from .errors import AppError
+from .pivot import slicers_for_pivot
 from .workbook_service import TemplateCatalog
 
 
@@ -109,8 +110,7 @@ class DashboardViewService:
         if len(pivots) != 1:
             raise AppError(404, "not_found", "Pivot table not found")
         pivot = pivots[0]
-        slicers = [item for item in snapshot.sheets[query.sheet].get("slicers", [])
-                   if item["pivot_cache_id"] == pivot["cache_id"]]
+        slicers = slicers_for_pivot(snapshot.sheets[query.sheet].get("slicers", []), pivot)
         return pivot, slicers
 
     def _category_metadata(self, connection, query):
@@ -129,8 +129,7 @@ class DashboardViewService:
         if len(pivots) != 1:
             raise AppError(404, "not_found", "Pivot table not found")
         pivot = pivots[0]
-        slicers = [item for item in snapshot.sheets[query.sheet].get("slicers", [])
-                   if item["pivot_cache_id"] == pivot["cache_id"]]
+        slicers = slicers_for_pivot(snapshot.sheets[query.sheet].get("slicers", []), pivot)
         return base["category_id"], pivot, slicers, copies
 
 

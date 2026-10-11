@@ -311,6 +311,48 @@ class PivotServiceTests(unittest.TestCase):
         self.assertEqual(second["pivot"]["calculated_revision"], 1)
         self.assertEqual(totals[1] - totals[0], 899)
 
+    def test_slicer_follows_its_pivot_connection_not_the_shared_cache(self):
+        from pp.pivot import PivotQuery
+
+        sheet = self.fixture.snapshot.sheets[0]
+        other = {**self.pivot, "name": "OtherPivot",
+                 "location": {**self.pivot["location"], "ref": "A20:F29",
+                              "bounds": [19, 0, 28, 5]}}
+        sheet["pivots"].append(other)
+        for slicer in self.slicers:
+            slicer["pivot_tables"] = [{"sheet_id": 1, "name": "DashboardPivot"}]
+
+        service = self.service()
+        mine = service.refresh(PivotQuery(
+            "copy-a", "owner", 0, "DashboardPivot", options_all(self.pivot, self.slicers)))
+        theirs = service.refresh(PivotQuery(
+            "copy-a", "owner", 0, "OtherPivot", options_all(other, [])))
+
+        self.assertEqual(len(mine["filters"]["slicers"]), len(self.slicers))
+        self.assertEqual(theirs["filters"]["slicers"], [])
+
+    def test_slicer_without_pivot_connections_still_matches_its_cache(self):
+        for slicer in self.slicers:
+            slicer["pivot_tables"] = []
+        result = self.refresh(options_all(self.pivot, self.slicers))
+        self.assertEqual(len(result["filters"]["slicers"]), len(self.slicers))
+
+    def test_slicer_connected_to_two_pivots_filters_both(self):
+        from pp.pivot import PivotQuery
+
+        sheet = self.fixture.snapshot.sheets[0]
+        other = {**self.pivot, "name": "OtherPivot",
+                 "location": {**self.pivot["location"], "ref": "A20:F29",
+                              "bounds": [19, 0, 28, 5]}}
+        sheet["pivots"].append(other)
+        for slicer in self.slicers:
+            slicer["pivot_tables"] = [{"sheet_id": 1, "name": name}
+                                      for name in ("DashboardPivot", "OtherPivot")]
+
+        result = self.service().refresh(PivotQuery(
+            "copy-a", "owner", 0, "OtherPivot", options_all(other, self.slicers)))
+        self.assertEqual(len(result["filters"]["slicers"]), len(self.slicers))
+
     def test_current_dynamic_axis_values_have_stable_selectors(self):
         with self.fixture.database.transaction() as connection:
             connection.executemany(

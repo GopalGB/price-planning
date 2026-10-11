@@ -158,9 +158,7 @@ class PivotService:
     def _prepare(self, snapshot):
         for sheet in snapshot.sheets:
             for pivot in sheet.get("pivots", []):
-                slicers = [item for item in sheet.get("slicers", [])
-                           if item["pivot_cache_id"] == pivot["cache_id"]]
-                self._source(snapshot, pivot, slicers)
+                self._source(snapshot, pivot, slicers_for_pivot(sheet.get("slicers", []), pivot))
 
     def _cache_get(self, cache, key):
         with self._lock:
@@ -184,9 +182,17 @@ def _metadata(snapshot, sheet, name):
     if len(pivots) != 1:
         raise AppError(404, "not_found", "Pivot table not found")
     pivot = pivots[0]
-    slicers = [item for item in snapshot.sheets[sheet].get("slicers", [])
-               if item["pivot_cache_id"] == pivot["cache_id"]]
+    slicers = slicers_for_pivot(snapshot.sheets[sheet].get("slicers", []), pivot)
     return pivot, slicers
+
+
+def slicers_for_pivot(slicers, pivot):
+    """Slicers Excel connects to this pivot: by pivot table name, or by cache when undeclared."""
+    def connected(slicer):
+        names = {item["name"] for item in slicer["pivot_tables"]}
+        return pivot["name"] in names if names else slicer["pivot_cache_id"] == pivot["cache_id"]
+
+    return [item for item in slicers if connected(item)]
 
 
 def _ensure_output_safe(connection, snapshot, pivot, sheet, copy, result):
