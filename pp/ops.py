@@ -15,6 +15,8 @@ from .workbook_service import TemplateCatalog
 
 EDIT_ROLES = {"owner", "editor"}
 ACTIONS = {"edit", "paste", "fill", "clear", "undo"}
+UPLOAD_ACTION_PREFIX = "upload: "
+UPLOAD_INVERSE_PREFIX = "upload-inverse: "
 FORMULA_PREFIXES = ("=", "+", "-", "@")
 
 
@@ -37,6 +39,33 @@ class ConflictState:
     snapshot: object
 
 
+@dataclass(frozen=True)
+class UploadOperationRequest:
+    connection: object
+    copy_id: str
+    actor_id: str
+    payload: dict
+    session_check: object = None
+
+
+@dataclass(frozen=True)
+class OperationContext:
+    connection: object
+    copy_id: str
+    actor_id: str
+    payload: dict
+    session_check: object
+    trusted_action: str | None
+
+
+@dataclass(frozen=True)
+class InverseRequest:
+    connection: object
+    copy_id: str
+    actor_id: str
+    payload: dict
+
+
 class OperationService:
     def __init__(self, database, snapshot):
         self.database = database
@@ -47,26 +76,52 @@ class OperationService:
         return ack
 
     def apply_with_status(self, copy_id: str, actor_id: str, payload: dict, session_check=None) -> tuple[dict, bool]:
-        payload_hash = _payload_hash(payload)
-        cells, op_id, action = _shape(payload)
         with self.database.transaction() as connection:
-            _require_session(connection, actor_id, session_check)
-            copy = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
-            if copy is None or effective_role(connection, copy_id, actor_id) not in EDIT_ROLES:
-                raise AppError(403, "forbidden", "Editor access is required")
-            prior = connection.execute(
-                "SELECT * FROM pp_ops WHERE copy_id=? AND op_id=?", (copy_id, op_id)
-            ).fetchone()
-            if prior is not None:
-                if prior["actor_id"] == actor_id and prior["payload_hash"] == payload_hash:
-                    return json.loads(prior["ack_json"]), False
-                raise AppError(409, "op_id_reused", "This operation identifier was already used")
-            prepared = self._prepare(connection, copy, cells)
-            revision = copy["input_revision"] + 1
-            ack = {"op_id": op_id, "input_revision": revision, "accepted": len(prepared)}
-            commit = OperationCommit(copy, actor_id, op_id, action, payload_hash, ack, prepared)
-            self._commit(connection, commit)
-            return ack, True
+            ack, created, _ = self.apply_in_transaction(
+                connection, copy_id, actor_id, payload, session_check
+            )
+            return ack, created
+
+    def apply_in_transaction(self, connection, copy_id, actor_id, payload, session_check=None):
+        return self._apply_transaction(OperationContext(
+            connection, copy_id, actor_id, payload, session_check, None,
+        ))
+
+    def apply_upload_in_transaction(self, request):
+        return self._apply_transaction(OperationContext(
+            request.connection, request.copy_id, request.actor_id,
+            request.payload, request.session_check, "upload",
+        ))
+
+    def _apply_transaction(self, request):
+        payload_hash = _payload_hash(request.payload)
+        op_id = _operation_id(request.payload)
+        _require_session(request.connection, request.actor_id, request.session_check)
+        copy = request.connection.execute(
+            "SELECT * FROM pp_copies WHERE id=?", (request.copy_id,)
+        ).fetchone()
+        if copy is None or effective_role(
+                request.connection, request.copy_id, request.actor_id) not in EDIT_ROLES:
+            raise AppError(403, "forbidden", "Editor access is required")
+        prior = request.connection.execute(
+            "SELECT * FROM pp_ops WHERE copy_id=? AND op_id=?", (request.copy_id, op_id)
+        ).fetchone()
+        if prior is not None:
+            if prior["actor_id"] == request.actor_id and prior["payload_hash"] == payload_hash:
+                return json.loads(prior["ack_json"]), False, []
+            raise AppError(409, "op_id_reused", "This operation identifier was already used")
+        payload, trusted = _resolve_operation(InverseRequest(
+            request.connection, request.copy_id, request.actor_id, request.payload,
+        ), request.trusted_action)
+        cells, _, action = _shape(payload, trusted)
+        prepared = self._prepare(request.connection, copy, cells)
+        revision = copy["input_revision"] + 1
+        ack = {"op_id": op_id, "input_revision": revision, "accepted": len(prepared)}
+        commit = OperationCommit(
+            copy, request.actor_id, op_id, action, payload_hash, ack, prepared,
+        )
+        self._commit(request.connection, commit)
+        return ack, True, prepared
 
     def _prepare(self, connection, copy, cells: list[dict]) -> list[dict]:
         snapshot = self.templates.get(connection, copy["template_id"])
@@ -178,17 +233,86 @@ def _require_session(connection, actor_id, session_check):
         raise AppError(401, "unauthorized", "Session user changed")
 
 
-def _shape(payload):
+def _shape(payload, trusted_action=None):
     if not isinstance(payload, dict):
         raise AppError(422, "invalid", "Operation body must be an object")
     op_id, action, cells = payload.get("op_id"), payload.get("action"), payload.get("cells")
     if not isinstance(op_id, str) or not op_id or len(op_id) > 128:
         raise AppError(422, "invalid", "op_id is required")
-    if not isinstance(action, str) or action not in ACTIONS:
+    upload = isinstance(action, str) and action.startswith(UPLOAD_ACTION_PREFIX)
+    inverse = isinstance(action, str) and action.startswith(UPLOAD_INVERSE_PREFIX)
+    trusted_upload = trusted_action == "upload" and upload and len(action) <= 136
+    trusted_inverse = trusted_action == "upload_inverse" and inverse and len(action) <= 160
+    if not isinstance(action, str) or action not in ACTIONS and not trusted_upload and not trusted_inverse:
         raise AppError(422, "invalid", "Unknown edit action")
-    if not isinstance(cells, list) or not 1 <= len(cells) <= 10_000:
+    if not isinstance(cells, list) or not cells:
+        raise AppError(422, "invalid", "Submit at least one cell")
+    if len(cells) > 10_000 and not (trusted_upload or trusted_inverse):
         raise AppError(422, "invalid", "Submit between 1 and 10,000 cells")
     return cells, op_id, action
+
+
+def _operation_id(payload):
+    if not isinstance(payload, dict):
+        raise AppError(422, "invalid", "Operation body must be an object")
+    op_id = payload.get("op_id")
+    if not isinstance(op_id, str) or not op_id or len(op_id) > 128:
+        raise AppError(422, "invalid", "op_id is required")
+    return op_id
+
+
+def _resolve_operation(request, trusted_action):
+    source_id = request.payload.get("source_op_id") if isinstance(request.payload, dict) else None
+    if source_id is None or trusted_action is not None:
+        return request.payload, trusted_action
+    if (request.payload.get("action") != "undo"
+            or set(request.payload) != {"op_id", "action", "source_op_id"}
+            or not isinstance(source_id, str) or not source_id):
+        raise AppError(422, "invalid", "Upload undo reference is invalid")
+    return _upload_inverse(request), "upload_inverse"
+
+
+def _upload_inverse(request):
+    source_id = request.payload["source_op_id"]
+    source = request.connection.execute(
+        "SELECT * FROM pp_ops WHERE copy_id=? AND op_id=?",
+        (request.copy_id, source_id),
+    ).fetchone()
+    allowed = source and source["actor_id"] == request.actor_id and (
+        source["action"].startswith(UPLOAD_ACTION_PREFIX)
+        or source["action"].startswith(UPLOAD_INVERSE_PREFIX)
+    )
+    if not allowed:
+        raise AppError(409, "invalid_lineage", "Upload undo lineage is invalid")
+    inverse_action = f"{UPLOAD_INVERSE_PREFIX}{source_id}"
+    replay = request.connection.execute(
+        "SELECT 1 FROM pp_ops WHERE copy_id=? AND actor_id=? AND action=?",
+        (request.copy_id, request.actor_id, inverse_action),
+    ).fetchone()
+    if replay is not None:
+        raise AppError(409, "invalid_lineage", "Upload operation was already reversed")
+    rows = _source_history(request.connection, request.copy_id, source)
+    return {"op_id": request.payload["op_id"], "action": inverse_action, "cells": [
+        {"sheet": row["sheet"], "r": row["row"], "c": row["col"],
+         "v": json.loads(row["before_json"]), "expected_version": row["version"]}
+        for row in rows
+    ]}
+
+
+def _source_history(connection, copy_id, source):
+    rows = connection.execute(
+        "SELECT * FROM pp_history WHERE copy_id=? AND op_id=? ORDER BY id",
+        (copy_id, source["op_id"]),
+    ).fetchall()
+    try:
+        accepted = json.loads(source["ack_json"])["accepted"]
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AppError(409, "invalid_lineage", "Upload undo lineage is invalid") from exc
+    if (not rows or len(rows) != accepted
+            or any(row["actor_id"] != source["actor_id"]
+                   or row["action"] != source["action"] for row in rows)):
+        raise AppError(409, "invalid_lineage", "Upload undo lineage is invalid")
+    return rows
 
 
 def _coordinate(cell):

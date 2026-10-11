@@ -40,7 +40,10 @@ export function newOpId() {
 }
 function buildAuthorizedOp(store, changes, options = {}) {
   const { action = "edit", id = newOpId(), authorizedInputs = null } = options;
-  if (!changes.length || changes.length > MAX_OP_CELLS)
+  if (
+    !changes.length ||
+    (authorizedInputs === null && changes.length > MAX_OP_CELLS)
+  )
     throw new Error("Choose 1 to 10,000 loaded input cells");
   const before = {},
     displayBefore = {},

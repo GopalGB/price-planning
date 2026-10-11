@@ -114,7 +114,11 @@ class HistoryQuery:
 class TemplateCatalog:
     def __init__(self, database, current):
         self.database = database
+        self.current_hash = current.hash
         self._snapshots = {current.hash: current}
+
+    def current(self, connection):
+        return self.get(connection, self.current_hash)
 
     def get(self, connection, template_id):
         snapshot = self._snapshots.get(template_id)

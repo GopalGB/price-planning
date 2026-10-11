@@ -8,6 +8,8 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import tempfile
+from urllib.parse import unquote
 from uuid import uuid4
 import threading
 import time
@@ -28,6 +30,7 @@ from .errors import AppError
 from .export.transfer import TransferRequest, export_transfer
 from .live import LiveHub, serve_live
 from .ops import OperationService
+from .upload import ConfirmRequest, PreviewRequest, UploadDependencies, UploadService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
 
 
@@ -75,6 +78,10 @@ class Services:
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
         self.operations = OperationService(context.database, templates)
+        self.uploads = UploadService(UploadDependencies(
+            context.database, templates, self.copies, self.operations,
+            Path(context.config.data_dir) / "uploads" / "previews",
+        ))
         self.calculations = CalculationService(context.database, templates)
         self.engine_pool = context.engine_pool
         self.hub = LiveHub(context.database, context.config.replay_window)
@@ -83,6 +90,7 @@ class Services:
 
     def close(self):
         self.downloads.close()
+        self.uploads.close()
 
     def auth_origin(self, connection):
         require_origin(connection.headers.get("origin"), self.config.allowed_origins)
@@ -110,6 +118,9 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/downloads", _prepare_download, methods=["POST"]),
         Route("/api/downloads/{token}", _prepared_download, methods=["GET"]),
+        Route("/api/uploads/preview", _upload_preview, methods=["POST"]),
+        Route("/api/copies/{copy_id}/uploads/preview", _upload_preview, methods=["POST"]),
+        Route("/api/uploads/{token}/confirm", _upload_confirm, methods=["POST"]),
         WebSocketRoute("/api/copies/{copy_id}/ws", _websocket),
         Route("/api/{path:path}", _api_not_found),
         Route("/{path:path}", _static),
@@ -427,6 +438,59 @@ def _export_path(services, fmt, prepared):
 def _export_media(fmt):
     return ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx"
             else "application/vnd.ms-excel.sheet.macroenabled.12")
+
+
+async def _upload_preview(request: Request):
+    services, user, _ = _write_auth(request)
+    limit = getattr(services.config, "upload_max_mb", 100) * 1024 * 1024
+    length = int(request.headers.get("content-length", "0") or 0)
+    if length > limit:
+        raise AppError(413, "too_large", "Upload exceeds the configured size limit")
+    directory = Path(services.config.data_dir) / "uploads"
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(prefix="preview-", suffix=".xlsx", dir=directory, delete=False)
+    path = Path(handle.name)
+    try:
+        size = 0
+        with handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise AppError(413, "too_large", "Upload exceeds the configured size limit")
+                handle.write(chunk)
+        if size == 0:
+            raise AppError(422, "invalid_workbook", "Upload is empty")
+        preview = PreviewRequest(
+            path=path,
+            filename=unquote(request.headers.get("x-upload-filename", "")),
+            user_id=user["id"],
+            session_hash=token_hash(request.cookies.get("pp_session", "")),
+            target_copy_id=(request.path_params.get("copy_id")
+                            or request.query_params.get("copy_id")),
+            category_id=request.query_params.get("category_id"),
+        )
+        body = await asyncio.to_thread(services.uploads.preview, preview)
+        return JSONResponse(body)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+async def _upload_confirm(request: Request):
+    services, user, _ = _write_auth(request)
+    payload = await _body(request)
+    mode = payload.get("mode")
+    confirmation = ConfirmRequest(
+        token=request.path_params["token"], payload=payload, user_id=user["id"],
+        session_hash=token_hash(request.cookies.get("pp_session", "")),
+        session_check=_session_check(request, services),
+    )
+    body = await asyncio.to_thread(services.uploads.confirm, confirmation)
+    if body.get("accepted"):
+        copy_id = body.get("copy_id") or body["copy"]["id"]
+        await _calculate_and_publish(services, copy_id, body["input_revision"])
+    elif mode == "new_copy":
+        body["copy"] = await _calculate_baseline(services, body["copy"], user["id"])
+    return JSONResponse(body, status_code=201 if mode == "new_copy" else 200)
 
 
 def _selected_sheets(query, sheets):

@@ -25,6 +25,7 @@ class Config:
     cookie_secure: bool
     replay_window: int
     engine_ram_budget_mb: int
+    upload_max_mb: int
 
 
 def _read_settings(root: Path, settings_path: str | Path | None = None) -> dict:
@@ -230,6 +231,7 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
     max_workers = _positive(settings.get("max_workers", 1), "max_workers", 128)
     replay_window = _positive(settings.get("replay_window", 1000), "replay_window", 1_000_000)
     engine_ram = _positive(settings.get("engine_ram_budget_mb", 1024), "engine_ram_budget_mb", 1_000_000)
+    upload_max = _positive(settings.get("upload_max_mb", 100), "upload_max_mb", 10_000)
     demo_mode = settings.get("demo_mode", False)
     if not isinstance(demo_mode, bool):
         raise ValueError("demo_mode must be boolean")
@@ -250,4 +252,4 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         candidates = sorted((root / "template").glob("*.xlsm"))
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
-                  origins, cookie_secure, replay_window, engine_ram)
+                  origins, cookie_secure, replay_window, engine_ram, upload_max)
