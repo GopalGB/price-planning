@@ -15,6 +15,41 @@ from tests.v2.support import TMP
 
 
 class CachedStartupTests(unittest.TestCase):
+    def test_contiguous_formula_registrations_use_row_batches(self):
+        from pp.engine.formualizer import _set_native_formulas
+
+        class WorkbookSpy:
+            def __init__(self):
+                self.batches = []
+                self.singles = []
+
+            def set_formulas_batch(self, sheet, row, col, formulas):
+                self.batches.append((sheet, row, col, formulas))
+
+            def set_formula(self, sheet, row, col, formula):
+                self.singles.append((sheet, row, col, formula))
+
+        workbook = WorkbookSpy()
+        registrations = {
+            (0, 0, 0): "=A2+$D$1",
+            (0, 0, 1): "=B2+$D$1",
+            (0, 0, 3): "=D2+$D$1",
+            (0, 1, 0): "=A3+$D$1",
+            (0, 1, 1): "=B3+$D$1",
+            (1, 0, 0): "=A2+$D$1",
+        }
+
+        _set_native_formulas(workbook, ["One", "Two"], registrations)
+
+        self.assertEqual(workbook.batches, [
+            ("One", 1, 1, [["=A2+$D$1", "=B2+$D$1"]]),
+            ("One", 2, 1, [["=A3+$D$1", "=B3+$D$1"]]),
+        ])
+        self.assertEqual(workbook.singles, [
+            ("One", 1, 4, "=D2+$D$1"),
+            ("Two", 1, 1, "=A2+$D$1"),
+        ])
+
     def test_relative_shared_follower_is_traced_from_its_own_precedent(self):
         from pp.engine.formualizer import FormualizerAdapter
 

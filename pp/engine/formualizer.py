@@ -368,6 +368,32 @@ def _rewrite_isformula(formula: str, lookup: FormulaLookup) -> str:
     return "".join(segments)
 
 
+def _formula_runs(registrations):
+    run = []
+    for coordinate, formula in sorted(registrations.items()):
+        if run:
+            previous = run[-1][0]
+            contiguous = (coordinate[:2] == previous[:2]
+                          and coordinate[2] == previous[2] + 1)
+            if not contiguous:
+                yield run
+                run = []
+        run.append((coordinate, formula))
+    if run:
+        yield run
+
+
+def _set_native_formulas(workbook, names, registrations):
+    for run in _formula_runs(registrations):
+        (sheet, row, col), formula = run[0]
+        if len(run) == 1:
+            workbook.set_formula(names[sheet], row + 1, col + 1, formula)
+            continue
+        workbook.set_formulas_batch(
+            names[sheet], row + 1, col + 1, [[item[1] for item in run]]
+        )
+
+
 def _json_value(value, date1904):
     if isinstance(value, (date, time)):
         return to_excel(value, MAC_EPOCH if date1904 else WINDOWS_EPOCH)
@@ -453,13 +479,16 @@ class FormualizerEngine:
             if list(workbook.sheet_names) != names:
                 raise EngineError("template engine sheet names do not match workbook XML")
             lookup = FormulaLookup(0, formula_cells, names)
-            for (sheet, row, col), formula in formulas.items():
-                if (sheet, row, col) in native_formulas or ISFORMULA_CALL.search(formula):
+            registrations = {}
+            for coordinate, formula in formulas.items():
+                if coordinate in native_formulas or ISFORMULA_CALL.search(formula):
+                    sheet, _, _ = coordinate
                     if ISFORMULA_CALL.search(formula):
                         formula = _rewrite_isformula(
                             formula, FormulaLookup(sheet, lookup.formula_cells, lookup.names)
                         )
-                    workbook.set_formula(names[sheet], row + 1, col + 1, formula)
+                    registrations[coordinate] = formula
+            _set_native_formulas(workbook, names, registrations)
             dynamic = frozenset(
                 opaque_formulas | {
                     key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula)
