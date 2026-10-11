@@ -37,6 +37,11 @@ class DashboardMetadataError(ValueError):
     """Dashboard relationships or metadata are unsafe or inconsistent."""
 
 
+class _DashboardXML(ET.TreeBuilder):
+    def doctype(self, name, pubid, system):
+        raise DashboardMetadataError("dashboard XML DTDs are forbidden")
+
+
 def _bool(value, default=False):
     if value is None:
         return default
@@ -59,7 +64,7 @@ def _integer(value, label, minimum=0):
 
 def _part_xml(archive, part):
     try:
-        return ET.fromstring(archive.read(part))
+        return ET.fromstring(archive.read(part), parser=ET.XMLParser(target=_DashboardXML()))
     except KeyError as exc:
         raise DashboardMetadataError("dashboard relationship target is missing") from exc
     except ET.ParseError as exc:

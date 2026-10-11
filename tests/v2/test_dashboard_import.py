@@ -1,4 +1,5 @@
 import json
+from io import BytesIO
 from pathlib import Path
 import shutil
 import tempfile
@@ -96,6 +97,23 @@ class DashboardFixtureTests(unittest.TestCase):
 
 
 class DashboardImportTests(unittest.TestCase):
+    def test_related_xml_rejects_dtds_and_entities_in_utf8_and_utf16(self):
+        from pp.template.dashboard import DashboardMetadataError, _part_xml
+
+        documents = [
+            '<!DOCTYPE root [<!ENTITY a "expanded">]><root>&a;</root>',
+            '<!DOCTYPE root SYSTEM "https://example.test/blocked"><root/>',
+        ]
+        for encoding in ("utf-8", "utf-16"):
+            for document in documents:
+                with self.subTest(encoding=encoding, document=document):
+                    buffer = BytesIO()
+                    with zipfile.ZipFile(buffer, "w") as archive:
+                        archive.writestr("part.xml", document.encode(encoding))
+                    with zipfile.ZipFile(buffer) as archive:
+                        with self.assertRaisesRegex(DashboardMetadataError, "DTD"):
+                            _part_xml(archive, "part.xml")
+
     def import_dashboard(self, workspace):
         from pp.template.importer import import_template
 
