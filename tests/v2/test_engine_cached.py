@@ -8,6 +8,7 @@ import zipfile
 
 from openpyxl import Workbook
 from openpyxl.styles import Protection
+from openpyxl.workbook.defined_name import DefinedName
 
 from ops.engine_scale_fixture import generate
 from tests.v2.support import TMP
@@ -144,6 +145,118 @@ class CachedStartupTests(unittest.TestCase):
             changes = engine.apply([(0, 9, 0, 20)])
 
             self.assertIn((0, 0, 1, 65), changes)
+
+    def test_dependency_trace_budget_covers_defined_name_members(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "named-range-budget.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            for row in range(1, 11):
+                sheet.cell(row, 1, row)
+            workbook.defined_names.add(
+                DefinedName("PriceValues", attr_text="'Sheet'!$A$1:$A$10")
+            )
+            sheet["B1"] = "=SUM(PriceValues)"
+            sheet["C1"] = "=B1*2"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {
+                    "B1": ("55", None), "C1": ("110", None),
+                }}
+            )
+            engine = FormualizerAdapter.load(source)
+
+            changes = engine.apply([(0, 9, 0, 20)])
+
+            self.assertIn((0, 0, 1, 65), changes)
+            self.assertIn((0, 0, 2, 130), changes)
+
+    def test_defined_name_does_not_capture_let_local(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "let-name-shadow.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 2
+            sheet["A10"] = 100
+            workbook.defined_names.add(
+                DefinedName("v", attr_text="'Sheet'!$A$10")
+            )
+            sheet["B1"] = "=LET(v,A1+1,v*2)"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {"B1": ("6", None)}}
+            )
+
+            engine = FormualizerAdapter.load(source)
+            changes = engine.apply([(0, 0, 0, 3)])
+
+            self.assertIn((0, 0, 1, 8), changes)
+
+    def test_complex_defined_name_recalculates_on_consecutive_edits(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "complex-name.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"], sheet["A2"] = 1, 2
+            workbook.defined_names.add(
+                DefinedName("Total", attr_text="SUM(Sheet!$A$1:$A$2)")
+            )
+            sheet["B1"] = "=Total*2"
+            sheet["C1"] = "=B1+1"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {
+                    "B1": ("6", None), "C1": ("7", None),
+                }}
+            )
+            engine = FormualizerAdapter.load(source)
+
+            first = engine.apply([(0, 0, 0, 3)])
+            second = engine.apply([(0, 1, 0, 4)])
+
+            self.assertIn((0, 0, 1, 10), first)
+            self.assertIn((0, 0, 2, 11), first)
+            self.assertIn((0, 0, 1, 14), second)
+            self.assertIn((0, 0, 2, 15), second)
+
+    def test_ordinary_let_local_is_not_a_dynamic_target(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "ordinary-let.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 2
+            sheet["B1"] = "=LET(v,A1+1,v*2)"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {"B1": ("6", None)}}
+            )
+
+            engine = FormualizerAdapter.load(source)
+
+            self.assertNotIn((0, 0, 1), engine.dynamic_targets)
+
+    def test_spill_bootstrap_failure_is_exposed_as_engine_error(self):
+        from pp.engine.formualizer import EngineError, FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "spill-bootstrap.xlsx"
+            workbook = Workbook()
+            workbook.active["A1"] = "=SEQUENCE(2)"
+            workbook.save(source)
+            with mock.patch(
+                "pp.engine.formualizer._spill_map",
+                side_effect=RuntimeError("native spill inspection failed"),
+            ):
+                with self.assertRaisesRegex(EngineError, "failed to load"):
+                    FormualizerAdapter.load(source)
 
     def test_dependency_trace_budget_covers_dense_reference_fanout(self):
         from pp.engine.formualizer import FormualizerAdapter

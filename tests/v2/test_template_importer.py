@@ -167,7 +167,7 @@ class TemplateImporterTests(unittest.TestCase):
             snapshot = import_template(source, workspace / "data")
             meta_path = snapshot / "meta.json"
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            meta.pop("import_version", None)
+            meta["import_version"] = 6
             meta_path.write_text(json.dumps(meta), encoding="utf-8")
             (snapshot / "input_mask.json").write_text('["stale"]', encoding="utf-8")
 
@@ -178,6 +178,29 @@ class TemplateImporterTests(unittest.TestCase):
             self.assertEqual(refreshed, snapshot)
             self.assertEqual(current["import_version"], IMPORT_VERSION)
             self.assertNotIn("stale", mask)
+
+    def test_outdated_copy_snapshot_requires_owner_reimport(self):
+        from pp.errors import AppError
+        from pp.template.importer import import_template
+        from pp.workbook_service import TemplateSnapshot
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            workspace = Path(temp)
+            source = workspace / "old-copy.xlsm"
+            make_semantic(source)
+            snapshot = import_template(source, workspace / "data")
+            meta_path = snapshot / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["import_version"] = 6
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            with self.assertRaises(AppError) as raised:
+                TemplateSnapshot(snapshot)
+
+        self.assertEqual(raised.exception.status, 409)
+        self.assertEqual(raised.exception.code, "template_reimport_required")
+        self.assertIn("reimport", raised.exception.message.lower())
 
     def test_import_uses_one_immutable_source_capture_across_path_replacement(self):
         """Replacing the configured path mid-import must not mix hash, cells, and source bytes."""

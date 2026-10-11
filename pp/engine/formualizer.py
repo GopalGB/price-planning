@@ -32,6 +32,7 @@ QUOTED_TEXT = re.compile(r'("(?:[^"]|"")*")')
 ERROR_KINDS = {token: kind for kind, token in ENGINE_ERRORS.items()}
 UNSUPPORTED_EXTENT_TYPES = {"array", "dataTable"}
 DYNAMIC_ROOT = re.compile(r"\b(?:INDIRECT|OFFSET|NOW|TODAY|RAND|RANDBETWEEN|CELL)\s*\(", re.I)
+BINDING_ROOT = re.compile(r"\b(?:_xlfn\.)?(?:LET|LAMBDA)\s*\(", re.I)
 POTENTIAL_SPILL = re.compile(
     r"\b(?:SEQUENCE|FILTER|UNIQUE|SORT(?:BY)?|RANDARRAY|TAKE|DROP|CHOOSECOLS|CHOOSEROWS|"
     r"TOCOL|TOROW|WRAPCOLS|WRAPROWS|EXPAND|VSTACK|HSTACK)\s*\(", re.I)
@@ -117,7 +118,9 @@ def _formula_map(path: Path):
     cells, formulas, names, caches, dimensions = set(), {}, [], {}, []
     masters, followers = {}, []
     with zipfile.ZipFile(path) as archive:
-        for sheet_index, (name, part) in enumerate(_sheet_parts(archive)):
+        sheet_parts = _sheet_parts(archive)
+        defined_ranges = _defined_name_ranges(archive, [name for name, _ in sheet_parts])
+        for sheet_index, (name, part) in enumerate(sheet_parts):
             names.append(name)
             max_row = max_col = 1
             with archive.open(part) as stream:
@@ -146,9 +149,88 @@ def _formula_map(path: Path):
                     element.clear()
             dimensions.append((max_row, max_col))
     _expand_shared_text(formulas, masters, followers)
+    named_formulas, opaque_formulas = _expand_defined_names(formulas, names, defined_ranges)
     budget = _trace_budget(formulas, names, dimensions)
     return (frozenset(cells), formulas, names, caches,
-            frozenset(key for key, _ in followers), budget)
+            frozenset(key for key, _ in followers) | named_formulas,
+            opaque_formulas, budget)
+
+
+def _defined_name_ranges(archive, names):
+    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    ranges = {}
+    for item in workbook.findall(f"{NS}definedNames/{NS}definedName"):
+        name, expression = item.get("name"), (item.text or "").lstrip("=")
+        if not name:
+            continue
+        local = item.get("localSheetId")
+        if local is not None:
+            try:
+                local = int(local)
+            except ValueError:
+                continue
+            if not 0 <= local < len(names):
+                continue
+        target = None
+        if "!" in expression:
+            try:
+                sheet_name, _ = range_to_tuple(expression)
+            except ValueError:
+                pass
+            else:
+                if any(sheet_name.casefold() == candidate.casefold() for candidate in names):
+                    target = expression
+        ranges[(local, name.casefold())] = target
+    return ranges
+
+
+def _expand_defined_names(formulas, names, ranges):
+    rewritten, opaque = set(), set()
+    for coordinate, formula in list(formulas.items()):
+        tokens, changed = Tokenizer(formula).items, False
+        binding_formula = BINDING_ROOT.search(formula) is not None
+        for token in tokens:
+            if token.type != "OPERAND" or token.subtype != "RANGE":
+                continue
+            if _static_reference(token.value, names):
+                continue
+            target = _defined_name_target(token.value, coordinate[0], names, ranges)
+            if target is not ABSENT and not binding_formula and target is not None:
+                token.value, changed = target, True
+            elif target is not ABSENT or "!" in token.value or "[" in token.value:
+                opaque.add(coordinate)
+        if changed:
+            formulas[coordinate] = "=" + "".join(token.value for token in tokens)
+            rewritten.add(coordinate)
+    return frozenset(rewritten), frozenset(opaque)
+
+
+def _defined_name_target(reference, current_sheet, names, ranges):
+    sheet_name, marker, name = reference.rpartition("!")
+    sheet = current_sheet
+    if marker:
+        normalized = sheet_name.strip("'").replace("''", "'")
+        sheet = next((index for index, candidate in enumerate(names)
+                      if candidate.casefold() == normalized.casefold()), None)
+        if sheet is None:
+            return ABSENT
+    key = name.casefold()
+    if (sheet, key) in ranges:
+        return ranges[(sheet, key)]
+    return ranges.get((None, key), ABSENT)
+
+
+def _static_reference(reference, names):
+    sheet_name, marker, address = reference.rpartition("!")
+    if marker:
+        normalized = sheet_name.strip("'").replace("''", "'")
+        if not any(name.casefold() == normalized.casefold() for name in names):
+            return False
+    try:
+        range_boundaries(address)
+    except ValueError:
+        return False
+    return True
 
 
 def _trace_budget(formulas, names, dimensions):
@@ -364,20 +446,25 @@ class FormualizerEngine:
         try:
             path = Path(template_path)
             mapped = _formula_map(path)
-            formula_cells, formulas, names, cached_values, shared_followers, trace_budget = mapped
+            (formula_cells, formulas, names, cached_values, native_formulas,
+             opaque_formulas, trace_budget) = mapped
             date1904 = _uses_1904_date_system(path)
             workbook = formualizer.load_workbook(str(path))
             if list(workbook.sheet_names) != names:
                 raise EngineError("template engine sheet names do not match workbook XML")
             lookup = FormulaLookup(0, formula_cells, names)
             for (sheet, row, col), formula in formulas.items():
-                if (sheet, row, col) in shared_followers or ISFORMULA_CALL.search(formula):
+                if (sheet, row, col) in native_formulas or ISFORMULA_CALL.search(formula):
                     if ISFORMULA_CALL.search(formula):
                         formula = _rewrite_isformula(
                             formula, FormulaLookup(sheet, lookup.formula_cells, lookup.names)
                         )
                     workbook.set_formula(names[sheet], row + 1, col + 1, formula)
-            dynamic = frozenset(key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula))
+            dynamic = frozenset(
+                opaque_formulas | {
+                    key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula)
+                }
+            )
             spill_roots = frozenset(key for key, formula in formulas.items() if POTENTIAL_SPILL.search(formula))
             initial = sorted((formula_cells - cached_values.keys()) | spill_roots)
             if initial:
@@ -388,16 +475,21 @@ class FormualizerEngine:
             raise
         except Exception as exc:
             raise EngineError("template calculation engine failed to load") from exc
-        spills = _spill_map(workbook, spill_roots, names)
-        spill_counts = _spill_counts(spills)
-        outputs = FormulaOutputs(formula_cells, spill_counts)
-        engine = cls(workbook, formula_cells, outputs, date1904, names, cached_values, dynamic,
-                     spills, spill_counts, frozenset(spill_counts), dict(spills), {}, {}, {},
-                     {}, set(), trace_budget)
-        engine._close_bootstrap_spills(spill_roots)
-        if recalculate:
-            engine.recalculate(recalculate)
-        return engine
+        try:
+            spills = _spill_map(workbook, spill_roots, names)
+            spill_counts = _spill_counts(spills)
+            outputs = FormulaOutputs(formula_cells, spill_counts)
+            engine = cls(workbook, formula_cells, outputs, date1904, names, cached_values, dynamic,
+                         spills, spill_counts, frozenset(spill_counts), dict(spills), {}, {}, {},
+                         {}, set(), trace_budget)
+            engine._close_bootstrap_spills(spill_roots)
+            if recalculate:
+                engine.recalculate(recalculate)
+            return engine
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise EngineError("template calculation engine failed to load") from exc
 
     def apply(self, changes: list[tuple[int, int, int, object]]) -> list[tuple[int, int, int, object]]:
         self._reset_overlay_delta()

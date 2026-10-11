@@ -9,12 +9,19 @@ from pathlib import Path
 
 from .authorization import effective_role
 from .errors import AppError
+from .template.importer import IMPORT_VERSION
 
 
 class TemplateSnapshot:
     def __init__(self, path: str | Path):
         self.path = Path(path)
         self.meta = _read_json(self.path / "meta.json")
+        if self.meta.get("import_version") != IMPORT_VERSION:
+            raise AppError(
+                409,
+                "template_reimport_required",
+                "The copy template must be reimported before it can be opened",
+            )
         self.styles = _read_json(self.path / "styles.json")
         self.input_mask = frozenset(_read_json(self.path / "input_mask.json"))
         self.hash = self.meta["hash"]
