@@ -22,6 +22,7 @@ from openpyxl.utils.datetime import MAC_EPOCH, WINDOWS_EPOCH, to_excel
 from ops.typed import ENGINE_ERRORS, typed
 
 from ..values import exactly_equal
+from .native_load import prepared_template
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
@@ -490,15 +491,17 @@ class FormualizerEngine:
 
     @classmethod
     def load(cls, template_path: str | Path,
-             recalculate: tuple[tuple[int, int, int], ...] = ()) -> FormualizerEngine:
+             recalculate: tuple[tuple[int, int, int], ...] = (),
+             cache_dir: str | Path | None = None) -> FormualizerEngine:
         _require_version()
         try:
             path = Path(template_path)
-            mapped = _formula_map(path)
+            prepared = prepared_template(path, cache_dir)
+            mapped = _formula_map(prepared)
             (formula_cells, formulas, names, cached_values, native_formulas,
              opaque_formulas, trace_budget) = mapped
-            date1904 = _uses_1904_date_system(path)
-            workbook = formualizer.load_workbook(str(path))
+            date1904 = _uses_1904_date_system(prepared)
+            workbook = formualizer.load_workbook(str(prepared))
             if list(workbook.sheet_names) != names:
                 raise EngineError("template engine sheet names do not match workbook XML")
             lookup = FormulaLookup(0, formula_cells, names)
@@ -511,7 +514,8 @@ class FormualizerEngine:
                             formula, FormulaLookup(sheet, lookup.formula_cells, lookup.names)
                         )
                     registrations[coordinate] = formula
-            _set_native_formulas(workbook, names, registrations)
+            if registrations:
+                _set_native_formulas(workbook, names, registrations)
             dynamic = frozenset(
                 opaque_formulas | {
                     key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula)
