@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import re
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass
 from datetime import date, time
-import importlib.metadata
 from pathlib import Path
-import re
-import zipfile
-import xml.etree.ElementTree as ET
 
 import formualizer
 from openpyxl.formula.translate import Translator
@@ -19,12 +19,11 @@ from ops.typed import ENGINE_ERRORS, typed
 
 from ..values import exactly_equal
 
-
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
-REF = re.compile(r"(?:(?P<sheet>'(?:[^']|'')+'|[^!(),]+)!)?\$?(?P<col>[A-Z]{1,3})\$?(?P<row>[1-9][0-9]*)", re.I)
-ISFORMULA = re.compile(r"(?:_xlfn\.)?ISFORMULA\(\s*((?:'(?:[^']|'')+'|[^!(),]+)!)?\$?[A-Z]{1,3}\$?[1-9][0-9]*\s*\)", re.I)
-ISFORMULA_CALL = re.compile(r"(?:_xlfn\.)?ISFORMULA\s*\(", re.I)
+REF = re.compile(r"(?:(?P<sheet>'(?:[^']|'')+'|[^!(),]+)!)?\$?(?P<col>[A-Z]{1,3})\$?(?P<row>[1-9][0-9]*)", re.IGNORECASE)
+ISFORMULA = re.compile(r"(?:_xlfn\.)?ISFORMULA\(\s*((?:'(?:[^']|'')+'|[^!(),]+)!)?\$?[A-Z]{1,3}\$?[1-9][0-9]*\s*\)", re.IGNORECASE)
+ISFORMULA_CALL = re.compile(r"(?:_xlfn\.)?ISFORMULA\s*\(", re.IGNORECASE)
 QUOTED_TEXT = re.compile(r'("(?:[^"]|"")*")')
 ERROR_KINDS = {token: kind for kind, token in ENGINE_ERRORS.items()}
 UNSUPPORTED_EXTENT_TYPES = {"array", "dataTable"}
@@ -101,11 +100,27 @@ def _formula_map(path: Path) -> tuple[frozenset[tuple[int, int, int]], dict[tupl
 
 def _reject_unsupported_extent(formula, sheet, reference):
     formula_type = formula.get("t")
+    if formula_type == "array" and _is_own_cell_array(formula.get("ref"), reference):
+        return
     if formula_type in UNSUPPORTED_EXTENT_TYPES:
-        extent = formula.get("ref") or reference
-        raise EngineError(
-            f"unsupported multi-cell formula type {formula_type} at {sheet}!{extent}"
-        )
+        extent = formula.get("ref") or "<missing>"
+        raise EngineError(f"unsupported {formula_type} extent at {sheet}!{reference}: {extent}")
+
+
+def _is_own_cell_array(extent, reference):
+    if not extent:
+        return False
+    own = REF.fullmatch(reference)
+    if own is None or own.group("sheet"):
+        return False
+    bounds = extent.split(":")
+    if len(bounds) > 2:
+        return False
+    cells = [REF.fullmatch(item.strip()) for item in bounds]
+    if any(match is None or match.group("sheet") for match in cells):
+        return False
+    return all((match.group("col").upper(), int(match.group("row"))) ==
+               (own.group("col").upper(), int(own.group("row"))) for match in cells)
 
 
 def _formula_cells(stream, parser=ET.iterparse):
@@ -212,7 +227,7 @@ class FormualizerEngine:
     date1904: bool
 
     @classmethod
-    def load(cls, template_path: str | Path) -> "FormualizerEngine":
+    def load(cls, template_path: str | Path) -> FormualizerEngine:
         _require_version()
         try:
             path = Path(template_path)
