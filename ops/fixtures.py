@@ -6,6 +6,7 @@ import base64
 from openpyxl import Workbook
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill, Protection
+from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 
@@ -300,6 +301,111 @@ def make_volatile_conditional_formatting(path):
         ),
     )
     book.save(path)
+
+
+def make_tables(path):
+    """Create two sparse tables, an overlapping sheet filter, and custom DXFs."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Tables"
+    for cell, value in {
+        "A1": "Region", "B1": "Price", "C1": "Status", "D1": "Sheet only",
+        "A2": "East", "B2": 10, "C2": "Keep", "D2": "Open",
+        "A3": "West", "B3": 20, "C3": "Drop", "D3": "Closed",
+        "A256": "East", "B256": 30, "C256": "Keep",
+        "A257": "West", "B257": 40, "C257": "Drop",
+        "A260": "North", "B260": 50, "C260": "Keep",
+        "E1": "Item", "F1": "Amount", "G1": "State",
+        "E2": "One", "F2": 11, "G2": "Open",
+        "E3": "Two", "F3": 22, "G3": "Closed",
+        "E4": "Three", "F4": 33, "G4": "Open",
+    }.items():
+        sheet[cell] = value
+    sheet["F2"].protection = Protection(locked=False)
+    sheet.protection.sheet = True
+    sheet.auto_filter.ref = "A1:D260"
+    built_in = Table(displayName="Orders", ref="A1:C260")
+    built_in.tableStyleInfo = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=True,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    custom = Table(displayName="CustomPlan", ref="E1:G4")
+    custom.tableStyleInfo = TableStyleInfo(
+        name="CustomPlanning",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+    sheet.add_table(built_in)
+    sheet.add_table(custom)
+    sheet.conditional_formatting.add(
+        "F2",
+        FormulaRule(
+            formula=["TRUE()"],
+            fill=PatternFill(patternType="solid", fgColor="FF0000"),
+        ),
+    )
+    book.save(path)
+    _inject_custom_table_style(path)
+
+
+def _inject_custom_table_style(path):
+    with zipfile.ZipFile(path, "r") as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    root = ET.fromstring(members["xl/styles.xml"])
+    dxfs = root.find(f"{{{CF_NS}}}dxfs")
+    if dxfs is None:
+        dxfs = ET.SubElement(root, f"{{{CF_NS}}}dxfs")
+    base = len(dxfs)
+    _append_table_dxf(dxfs, "whole")
+    _append_table_dxf(dxfs, "header")
+    _append_table_dxf(dxfs, "stripe")
+    dxfs.set("count", str(len(dxfs)))
+    styles = root.find(f"{{{CF_NS}}}tableStyles")
+    custom = ET.SubElement(styles, f"{{{CF_NS}}}tableStyle", {
+        "name": "CustomPlanning", "pivot": "0", "table": "1", "count": "3",
+    })
+    for kind, offset in (("wholeTable", 0), ("headerRow", 1), ("firstRowStripe", 2)):
+        ET.SubElement(custom, f"{{{CF_NS}}}tableStyleElement", {
+            "type": kind, "dxfId": str(base + offset),
+        })
+    styles.set("count", str(int(styles.get("count", "0")) + 1))
+    members["xl/styles.xml"] = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
+def _append_table_dxf(dxfs, kind):
+    dxf = ET.SubElement(dxfs, f"{{{CF_NS}}}dxf")
+    if kind == "whole":
+        font = ET.SubElement(dxf, f"{{{CF_NS}}}font")
+        ET.SubElement(font, f"{{{CF_NS}}}color", {"rgb": "FF333333"})
+        ET.SubElement(dxf, f"{{{CF_NS}}}numFmt", {
+            "numFmtId": "176", "formatCode": "$0.00",
+        })
+        border = ET.SubElement(dxf, f"{{{CF_NS}}}border")
+        for side in ("left", "right", "top", "bottom"):
+            node = ET.SubElement(border, f"{{{CF_NS}}}{side}", {"style": "thin"})
+            ET.SubElement(node, f"{{{CF_NS}}}color", {"rgb": "FF112233"})
+        for side, style, color in (("vertical", "dotted", "FF445566"),
+                                   ("horizontal", "dashed", "FF778899")):
+            node = ET.SubElement(border, f"{{{CF_NS}}}{side}", {"style": style})
+            ET.SubElement(node, f"{{{CF_NS}}}color", {"rgb": color})
+        return
+    if kind == "header":
+        ET.SubElement(ET.SubElement(dxf, f"{{{CF_NS}}}font"), f"{{{CF_NS}}}b")
+        color = "FFABCDEF"
+    else:
+        color = "FFEEDDCC"
+    pattern = ET.SubElement(ET.SubElement(dxf, f"{{{CF_NS}}}fill"),
+                            f"{{{CF_NS}}}patternFill", {"patternType": "solid"})
+    ET.SubElement(pattern, f"{{{CF_NS}}}fgColor", {"rgb": color})
+    ET.SubElement(pattern, f"{{{CF_NS}}}bgColor", {"rgb": color})
 
 
 def _inject_conditional_formats(path):

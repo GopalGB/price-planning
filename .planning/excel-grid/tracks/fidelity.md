@@ -6,6 +6,10 @@
 Synthetic fixtures only. No private workbook access. pp/engine and calculation pipeline remain read-only.
 
 ## Progress
+Tables/AutoFilter resumed and controller-verified: Python36/36, web31/31, content guard0, Ruff and Prettier green. New resource guard: disk2500 MB, swap6814.62 MB. Phase4 local commit follows; review and final acceptance pending.
+
+2026-10-11 19:33 IST resume stopped at the resource gate: df -g / available 3 GB, df -k / available 3323888 KiB, swap used 9912.44 MB baseline. Tables/AutoFilter changes and tests are present but uncommitted and unverified in this resume. No source edits, tests, commits, review calls or browser checks ran; checkpoint documentation only. Pending exact claude-opus-5-5 review is deferred by low disk, not a newly verified quota failure. TaskSpace 42 remains retained.
+
 Wide CF block correction is green: scoped Python30/30, CF11/11; 50x312 and256x312 emit15600 and79872 expected styles without warnings, using one public engine load for TRUE(). Per-target volatile/named evaluation is preserved. Table work resumes next.
 
 Notes Phase3 implementation passes scoped Python27/27 and final popup web23/23. Drawings are committed082fea3; table styles/filtering are next. All features remain unaccepted pending Opus and final whole-track checks.
@@ -26,7 +30,7 @@ Latest focused checks: Python 22/22 and web 23/23. Earlier full Python 296/296 p
 No passing feature tests or final acceptance claimed yet. Runtime evidence belongs in results-private/fidelity. Active Python lock audit: no known vulnerabilities. Active web lock audit: zero findings. Exact Opus probe: canonical claude-opus-5-5. These are preliminary gates, not a code review or feature acceptance. TaskSpace 42 reserved. Low-disk incident preserved in STATE; checks remain sequential.
 
 ## Next
-Recover disk capacity, then resume exact Sol session 01a12961-bb90-71b3-af7a-07bc42b2cd29 with results-private/fidelity/sol-next-review.md. Resolve CF findings and rerun full checks before first feature commit. TaskSpace 42 stays open until successful acceptance.
+Recover to at least 4 GB free, confirm swap growth stays within 2 GB of the 9912.44 MB resume baseline, then test and commit the uncommitted tables/AutoFilter feature. Run pending exact claude-opus-5-5 review and implement sheet views before final acceptance gates. TaskSpace 42 stays open until successful acceptance.
 
 Implement conditional formatting first, then drawings, notes, tables/filters and sheet view in order.
 

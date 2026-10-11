@@ -12,6 +12,7 @@ from .errors import AppError
 from .fidelity.conditional_formatting import (
     CurrentCopyValues, conditional_style_overrides,
 )
+from .fidelity.tables import merge_style_overrides, table_style_overrides
 
 
 class TemplateSnapshot:
@@ -163,6 +164,9 @@ class WorkbookService:
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                     "merges": item["merges"],
                     "has_conditional_formats": item.get("has_conditional_formats", False),
+                   **({"tables": _client_tables(item.get("tables", [])),
+                       "filters": item.get("filters", [])}
+                      if item.get("tables") or item.get("filters") else {}),
                    **({"drawings": item["drawings"]} if item.get("drawings") else {})}
                   for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
@@ -206,7 +210,9 @@ class WorkbookService:
             conditional = conditional_style_overrides(
                 snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
             )
-            rows = self._row_data(connection, render, conditional.styles)
+            table_styles = table_style_overrides(snapshot.sheets[query.sheet], query)
+            styles = merge_style_overrides(table_styles, conditional.styles)
+            rows = self._row_data(connection, render, styles)
         return {"calculated_revision": copy["calculated_revision"], "input_revision": copy["input_revision"],
                 "start": query.start, "rows": rows,
                 "conditional_format_warnings": conditional.warnings}
@@ -344,6 +350,11 @@ def _group_rows(records):
     for (row, col), value in records.items():
         grouped.setdefault(row, {})[col] = value
     return grouped
+
+
+def _client_tables(tables):
+    return [{key: value for key, value in table.items() if key != "style"}
+            for table in tables]
 
 
 def _requested_notes(snapshot, query):

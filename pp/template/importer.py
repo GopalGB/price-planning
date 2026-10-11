@@ -8,6 +8,7 @@ import logging
 import math
 import posixpath
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 import re
 import shutil
@@ -34,13 +35,15 @@ DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 XDR_NS = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
 REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 10
+IMPORT_VERSION = 11
 DRAWING_ASSET_BYTES = 5 * 1024 * 1024
 DRAWING_TOTAL_BYTES = 25 * 1024 * 1024
 DRAWING_ASSET_COUNT = 100
 DRAWING_COUNT = 500
 NOTE_COUNT = 10_000
 NOTE_TEXT_BYTES = 64 * 1024
+TABLE_COUNT = 1_000
+TABLE_PART_BYTES = 2 * 1024 * 1024
 MAX_SHEET_ROWS = 1_048_576
 MAX_SHEET_COLS = 16_384
 CF_RULE_TYPES = frozenset({"expression", "cellIs", "containsText", "duplicateValues", "beginsWith", "containsErrors"})
@@ -90,6 +93,8 @@ class SheetContext:
     destination: Path
     drawing_budget: DrawingBudget
     note_budget: NoteBudget
+    table_styles: dict[str, dict]
+    theme: dict[int, str]
 
 
 @dataclass(frozen=True)
@@ -347,6 +352,74 @@ def _dxf_style(node: ET.Element, theme: dict[int, str]) -> dict:
     return style
 
 
+def _table_dxf_style(node: ET.Element, theme: dict[int, str]) -> dict:
+    style = _dxf_style(node, theme)
+    border = node.find(f"{NS}border")
+    if border is None:
+        return style
+    edges = dict(style.get("border", {}))
+    for name in ("vertical", "horizontal"):
+        side = border.find(f"{NS}{name}")
+        border_style = None if side is None else CF_BORDER_STYLES.get(side.get("style"))
+        if border_style is None:
+            continue
+        edge = {"s": border_style}
+        if color := _color(side.find(f"{NS}color"), theme):
+            edge["cl"] = {"rgb": color}
+        edges[name] = edge
+    if edges:
+        style["border"] = edges
+    return style
+
+
+def _table_style_elements(node, dxfs, theme, built_in=False):
+    output = {}
+    for element in node.findall(f"{NS}tableStyleElement"):
+        try:
+            dxf_id = int(element.get("dxfId", "-1")) - (1 if built_in else 0)
+            size = max(1, int(element.get("size", "1")))
+        except ValueError:
+            continue
+        if not 0 <= dxf_id < len(dxfs):
+            continue
+        output[element.get("type", "")] = {
+            "size": size,
+            "style": _table_dxf_style(dxfs[dxf_id], theme),
+        }
+    return output
+
+
+def _custom_table_styles(archive, theme):
+    if "xl/styles.xml" not in archive.namelist():
+        return {}
+    root = ET.fromstring(archive.read("xl/styles.xml"))
+    dxfs = list(root.findall(f"{NS}dxfs/{NS}dxf"))
+    return {
+        node.get("name", ""): _table_style_elements(node, dxfs, theme)
+        for node in root.findall(f"{NS}tableStyles/{NS}tableStyle")
+        if node.get("table", "1") not in {"0", "false"}
+    }
+
+
+@lru_cache(maxsize=1)
+def _preset_table_style_nodes():
+    path = Path(__file__).parents[1] / "fidelity" / "preset_table_styles.xml"
+    root = ET.parse(path).getroot()
+    return {node.tag: node for node in root}
+
+
+def _preset_table_style(name, theme):
+    node = _preset_table_style_nodes().get(name)
+    if node is None:
+        return {}
+    normalized = ET.fromstring(ET.tostring(node, encoding="utf-8"))
+    for item in normalized.iter():
+        item.tag = f"{NS}{item.tag}"
+    dxfs = list(normalized.findall(f"{NS}dxfs/{NS}dxf"))
+    style = normalized.find(f"{NS}tableStyles/{NS}tableStyle")
+    return {} if style is None else _table_style_elements(style, dxfs, theme, True)
+
+
 def _default_style() -> dict:
     return {"id": 0, "nf": "General", "bold": False, "italic": False, "color": None,
             "fill": None, "align": None, "valign": None, "wrap": False, "font_size": None,
@@ -508,10 +581,60 @@ def _internal_target(part: str, relationship: dict | None) -> str | None:
     if not relationship or relationship.get("TargetMode", "").lower() == "external":
         return None
     target = relationship.get("Target", "")
-    if not target or "\\" in target or ":" in target or target.startswith("/"):
+    if not target or "\\" in target or ":" in target:
         return None
-    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(part), target))
+    if target.startswith("/"):
+        if not target.startswith("/xl/"):
+            return None
+        resolved = target.lstrip("/")
+    else:
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(part), target))
     return resolved if resolved.startswith("xl/") and "../" not in resolved else None
+
+
+def _table_item(context: SheetContext, sheet_part: str, relationship: dict):
+    if not relationship.get("Type", "").endswith("/table"):
+        return None
+    part = _internal_target(sheet_part, relationship)
+    if part is None or part not in context.archive.namelist():
+        return None
+    with context.archive.open(part) as stream:
+        data = stream.read(TABLE_PART_BYTES + 1)
+    if len(data) > TABLE_PART_BYTES:
+        raise TemplateImportError("table part exceeds the import limit")
+    root = ET.fromstring(data)
+    bounds = _bounds(root.get("ref", ""))
+    style_info = root.find(f"{NS}tableStyleInfo")
+    style_name = "" if style_info is None else style_info.get("name", "")
+    style = context.table_styles.get(style_name)
+    if style is None:
+        style = _preset_table_style(style_name, context.theme)
+    header_row = int(root.get("headerRowCount", "1")) > 0
+    totals_row = int(root.get("totalsRowCount", "0")) > 0
+    columns = [item.get("name", "") for item in root.findall(f"{NS}tableColumns/{NS}tableColumn")]
+    return {
+        "id": root.get("displayName") or root.get("name") or posixpath.basename(part),
+        "name": root.get("name", ""), "range": bounds, "columns": columns,
+        "header_row": header_row, "totals_row": totals_row, "style_name": style_name,
+        "show_first_column": _xml_bool(style_info, "showFirstColumn"),
+        "show_last_column": _xml_bool(style_info, "showLastColumn"),
+        "show_row_stripes": _xml_bool(style_info, "showRowStripes"),
+        "show_column_stripes": _xml_bool(style_info, "showColumnStripes"),
+        "filter": header_row and root.find(f"{NS}autoFilter") is not None,
+        "style": style,
+    }
+
+
+def _xml_bool(node, name):
+    return node is not None and node.get(name) in {"1", "true"}
+
+
+def _table_items(context: SheetContext, sheet_part: str, relation_ids: list[str]):
+    if len(relation_ids) > TABLE_COUNT:
+        raise TemplateImportError("table count exceeds the import limit")
+    relations = _relationships(context.archive, sheet_part)
+    return [item for relation_id in relation_ids
+            if (item := _table_item(context, sheet_part, relations.get(relation_id, {}))) is not None]
 
 
 def _anchor_marker(node: ET.Element | None) -> dict:
@@ -773,7 +896,8 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     metadata = {**sheet_info, "rows": 0, "cols": 0, "freeze": {"rows": 0, "cols": 0},
                 "col_widths": {}, "row_heights": {}, "hidden_rows": [], "hidden_cols": [],
                 "col_styles": [], "row_styles": {}, "merges": [], "validations": [],
-                "conditional_formats": [], "has_conditional_formats": False}
+                "conditional_formats": [], "has_conditional_formats": False,
+                "table_relationships": [], "sheet_filter": None}
     metadata.pop("part")
     block_index, block_rows, protected = None, {}, False
     sheet_dir = context.destination / "sheets" / str(index)
@@ -806,6 +930,11 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
                              if relation_id else [])
     _extend_for_drawings(metadata)
     metadata["has_notes"] = _import_notes(context, sheet_info["part"], metadata)
+    metadata["tables"] = _table_items(
+        context, sheet_info["part"], metadata.pop("table_relationships"),
+    )
+    metadata["filters"] = _table_filters(metadata.pop("sheet_filter"), metadata["tables"])
+    _extend_for_tables(metadata)
     return metadata, protected
 
 
@@ -845,9 +974,31 @@ def _sheet_metadata(element, metadata, protected, dxf_styles):
     elif element.tag == f"{NS}conditionalFormatting":
         metadata["conditional_formats"].extend(_conditional_formats(element, dxf_styles))
         metadata["has_conditional_formats"] = bool(metadata["conditional_formats"])
+    elif element.tag == f"{NS}autoFilter" and element.get("ref"):
+        metadata["sheet_filter"] = _bounds(element.get("ref"))
+    elif element.tag == f"{NS}tablePart" and element.get(f"{RNS}id"):
+        metadata["table_relationships"].append(element.get(f"{RNS}id"))
     elif element.tag == f"{NS}drawing" and element.get(f"{RNS}id"):
         metadata["drawing_relationship"] = element.get(f"{RNS}id")
     return protected
+
+
+def _table_filters(sheet_filter, tables):
+    output = []
+    if sheet_filter is not None:
+        output.append({"id": "sheet-auto-filter", "source": "sheet",
+                       "range": sheet_filter, "columns": []})
+    for table in tables:
+        if table.pop("filter"):
+            output.append({"id": f"table:{table['id']}", "source": "table",
+                           "range": table["range"], "columns": table["columns"]})
+    return output
+
+
+def _extend_for_tables(metadata):
+    for item in [*metadata["tables"], *metadata["filters"]]:
+        metadata["rows"] = max(metadata["rows"], item["range"][2] + 1)
+        metadata["cols"] = max(metadata["cols"], item["range"][3] + 1)
 
 
 def _conditional_formats(element, dxf_styles: list[dict]) -> list[dict]:
@@ -984,10 +1135,12 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
             dxf_styles = _dxf_data(archive)
+            theme = _theme_colors(archive)
             sheet_specs, names = _workbook_data(archive)
             metadata, protected = [], set()
             context = SheetContext(
-                archive, database, unlocked, dxf_styles, staging, DrawingBudget(), NoteBudget()
+                archive, database, unlocked, dxf_styles, staging, DrawingBudget(), NoteBudget(),
+                _custom_table_styles(archive, theme), theme,
             )
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)

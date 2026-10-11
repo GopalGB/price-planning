@@ -1,5 +1,6 @@
 import "./style.css";
 import "./notes.css";
+import "./tables.css";
 import "@univerjs/preset-sheets-core/lib/index.css";
 import { ApiClient } from "./client.mjs";
 import {

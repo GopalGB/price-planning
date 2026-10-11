@@ -18,6 +18,7 @@ import {
 import { EditController } from "./client.mjs";
 import { DrawingLayer } from "./drawings.mjs";
 import { NoteLayer } from "./notes.mjs";
+import { LocalTableFilters, TableFilterLayer } from "./tables.mjs";
 import {
   makeSnapshot,
   displayWidth,
@@ -72,6 +73,7 @@ export class PlanningGrid {
     this.measureText = createTextMeasurer();
     this.drawingScroll = { x: 0, y: 0 };
     this.drawingZoom = 1;
+    this.tableFilters = new LocalTableFilters();
     this.controller = new EditController({
       store: this.store,
       api,
@@ -109,6 +111,13 @@ export class PlanningGrid {
       toast: this.toast,
     });
     this.noteLayer = new NoteLayer({ container: $("grid") });
+    this.tableFilterLayer = new TableFilterLayer({
+      container: $("grid"),
+      labelAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
+      valuesFor: (control) => this.loadedFilterValues(control),
+      onChange: (control, predicate) =>
+        this.changeTableFilter(control, predicate),
+    });
     this.bindEvents();
     await this.switchSheet(this.sheet);
     if (this.closed) return;
@@ -428,6 +437,8 @@ export class PlanningGrid {
       )
     )
       return;
+    this.clearTableFilters();
+    this.tableFilterLayer?.clear();
     const generation = ++this.generation;
     this.sheet = index;
     this.drawingLayer?.clear();
@@ -529,6 +540,13 @@ export class PlanningGrid {
     this.store.registerBlock(sheet, start, data.calculated_revision);
     this.store.resetBlockStyles(sheet, start, data);
     for (const evicted of cache.lastEvicted) {
+      if (evicted.sheet === this.sheet)
+        this.tableFilters?.release({
+          worksheet: this.worksheet,
+          start: evicted.start,
+          end: Math.min(evicted.start + BLOCK_ROWS, shape.rows),
+          manualHidden: this.manualHiddenRows(),
+        });
       const cleared = {};
       for (
         let r = evicted.start;
@@ -557,6 +575,12 @@ export class PlanningGrid {
     this.store.calculatedRevision = Math.max(
       this.store.calculatedRevision,
       data.calculated_revision,
+    );
+    this.refreshTableFilters(
+      Array.from(
+        { length: Math.min(BLOCK_ROWS, shape.rows - start) },
+        (_, offset) => start + offset,
+      ),
     );
     this.warnConditionalFormatting(data.conditional_format_warnings);
     this.paint();
@@ -601,6 +625,7 @@ export class PlanningGrid {
     const view = this.drawingView();
     this.drawingLayer?.refresh(view);
     this.noteLayer?.refresh(view);
+    this.tableFilterLayer?.refresh(view);
   }
   renderNotes() {
     if (!this.noteLayer || !this.worksheet?.getSkeleton()) return;
@@ -611,6 +636,62 @@ export class PlanningGrid {
         notes.push({ sheet, r, c, ...cell.note });
     }
     this.noteLayer.show(notes, this.drawingView());
+  }
+  renderTableFilters() {
+    if (!this.tableFilterLayer || !this.worksheet?.getSkeleton()) return;
+    this.tableFilterLayer.show(
+      this.currentSheet().filters ?? [],
+      this.drawingView(),
+    );
+  }
+  manualHiddenRows() {
+    return new Set(this.currentSheet()?.hidden_rows ?? []);
+  }
+  loadedFilterRows() {
+    const rows = [];
+    for (const key of this.cache?.blocks?.keys?.() ?? []) {
+      const [sheet, start] = key.split(":").map(Number);
+      if (sheet !== this.sheet) continue;
+      const end = Math.min(start + BLOCK_ROWS, this.currentSheet().rows);
+      for (let row = start; row < end; row++) rows.push(row);
+    }
+    return rows;
+  }
+  loadedFilterValues(control) {
+    const values = [],
+      seen = new Set();
+    for (const row of this.loadedFilterRows()) {
+      if (values.length >= 50) break;
+      if (!control.ranges.some((range) => row > range[0] && row <= range[2]))
+        continue;
+      const value = this.store.get(this.sheet, row, control.column)?.v,
+        key = `${typeof value}:${String(value).toLocaleLowerCase()}`;
+      if (row <= control.row || seen.has(key)) continue;
+      seen.add(key);
+      values.push(value);
+    }
+    return values;
+  }
+  refreshTableFilters(rows = this.loadedFilterRows()) {
+    if (!this.worksheet || !this.tableFilters) return;
+    this.tableFilters.apply({
+      worksheet: this.worksheet,
+      rows,
+      valueAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
+      manualHidden: this.manualHiddenRows(),
+    });
+  }
+  changeTableFilter(control, predicate) {
+    if (predicate) this.tableFilters.set(control, predicate);
+    else this.tableFilters.delete(control);
+    this.refreshTableFilters();
+  }
+  clearTableFilters() {
+    if (!this.worksheet || !this.tableFilters) return;
+    this.tableFilters.clear({
+      worksheet: this.worksheet,
+      manualHidden: this.manualHiddenRows(),
+    });
   }
   paint(coordinates) {
     if (!this.worksheet || this.closed) return;
@@ -650,7 +731,16 @@ export class PlanningGrid {
       : `Saved · rev ${this.store.inputRevision}`;
     $("save-chip").classList.toggle("busy", busy);
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
-    if (!coordinates) this.renderNotes();
+    if (coordinates?.length)
+      this.refreshTableFilters([
+        ...new Set(
+          coordinates.filter((c) => c.sheet === this.sheet).map((c) => c.r),
+        ),
+      ]);
+    if (!coordinates) {
+      this.renderNotes();
+      this.renderTableFilters();
+    }
     this.selectionInfo();
   }
   refreshInputHighlight(enabled) {
@@ -935,7 +1025,7 @@ export class PlanningGrid {
         "input,textarea,select,[contenteditable=true]",
       ),
       overlayControl = event.target.closest(
-        ".drawing-layer button,.drawing-layer input,.drawing-layer select,.drawing-layer textarea,.note-layer button,.note-layer input,.note-layer select,.note-layer textarea",
+        ".drawing-layer button,.drawing-layer input,.drawing-layer select,.drawing-layer textarea,.note-layer button,.note-layer input,.note-layer select,.note-layer textarea,.table-filter-layer button,.table-filter-layer input,.table-filter-layer select,.table-filter-layer textarea",
       );
     const mod = event.ctrlKey || event.metaKey,
       key = event.key.toLowerCase(),
@@ -950,6 +1040,7 @@ export class PlanningGrid {
         !!input,
         !!event.target.closest("#grid"),
       );
+    if (overlayControl) return;
     if (undo) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -972,7 +1063,6 @@ export class PlanningGrid {
       else this.copyDirection(key === "r");
     }
     if (event.key === "Delete" || event.key === "Backspace") {
-      if (overlayControl) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       this.clearSelection();
@@ -1218,8 +1308,11 @@ export class PlanningGrid {
       await this.refreshOpDetails(message);
   }
   async refreshCalculatedBlocks() {
-    if (!this.cache?.blocks || !this.currentSheet()?.has_conditional_formats)
-      return;
+    if (!this.cache?.blocks) return;
+    const requiresRows =
+      this.currentSheet()?.has_conditional_formats ||
+      this.tableFilters?.active?.size;
+    if (!requiresRows) return;
     if (this.cfRefreshPromise) {
       this.cfRefreshDirty = true;
       return this.cfRefreshPromise;
@@ -1412,6 +1505,7 @@ export class PlanningGrid {
     }
   }
   dispose() {
+    this.clearTableFilters();
     this.closed = true;
     clearTimeout(this.scrollTimer);
     clearTimeout(this.reconnectTimer);
@@ -1420,6 +1514,7 @@ export class PlanningGrid {
     for (const d of [...this.disposables, ...this.highlights]) d.dispose();
     this.drawingLayer?.dispose();
     this.noteLayer?.dispose();
+    this.tableFilterLayer?.dispose();
     this.univer?.dispose();
     if (import.meta.env.DEV) delete window.planning;
   }
