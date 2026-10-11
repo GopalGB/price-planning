@@ -722,8 +722,9 @@ def _dimension_value(current, row, field):
 
 
 def _dimension_from_value(metadata, field, value):
-    index = metadata[field].get(_value_key(value))
-    return index if index is not None else ("value", _value_key(value))
+    key = _value_key(value)
+    index = metadata[field].get(key)
+    return index if index is not None else ("value", key)
 
 
 def _add_values(total, values):
