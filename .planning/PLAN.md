@@ -1,5 +1,9 @@
 # Approved v2 integration plan
 
+## Transfer track, approved 2026-10-11
+
+Owner GO-TOKEN authorizes all transfer phases and local verification in feat/v2-transfer from f74d131. The owner-supplied PRD and phased execution checklist are recorded in excel-grid/tracks/transfer.md. Follow that checklist for this worktree; earlier integration records below are historical. Synthetic fixtures only; calculation pipeline read-only; no Docker, real workbook, push or deployment.
+
 ## Round 5, approved 2026-10-11
 
 User GO-TOKEN authorizes all eight test-first repairs and every local acceptance phase on feat/v2-integration. Synthetic fixtures only; no private directory or real workbook. Existing tests/assertions retained; each defect has observed red/green proof and one focused conventional commit.
