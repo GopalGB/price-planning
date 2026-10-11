@@ -1,5 +1,26 @@
 # Approved v2 integration plan
 
+## Round 5, approved 2026-10-11
+
+User GO-TOKEN authorizes all eight test-first repairs and every local acceptance phase on feat/v2-integration. Synthetic fixtures only; no private directory or real workbook. Existing tests/assertions retained; each defect has observed red/green proof and one focused conventional commit.
+
+- [x] 1 HIGH spill membership, sparse creation, extents and bounded temporary cache: `b7ecc61`.
+- [x] 2 HIGH immutable template backup/verified relocation including lost original root: `283f9fa`.
+- [x] 3 MEDIUM consistent multi-block clipboard revision pair with bounded retries: `956deeb`.
+- [x] 4 MEDIUM spill input undo/redo, original-input authorization, metadata, coalesced intervals and formula-bar/pending state: `844657f`.
+- [x] 5 MEDIUM per-text-node OOXML decoding and edit/history/undo/export round trip: `5838637`.
+- [x] 6 MEDIUM native validation dropdown member types: `308f3d4`.
+- [x] 7 MEDIUM coherent authoritative cell-detail metadata including version zero: `24c5589`.
+- [x] 8 MEDIUM real-font General measurement, shared default64 width, imported fonts and deterministic fallback: `3a230c0`.
+- [x] Close every concrete blocking review follow-up test-first and fold into its focused defect commit; preserve source/pins/CI boundaries.
+- [x] Exact claude-opus-5-5 identity and independent gpt-5.6-sol xhigh final SHIP reviews; scoped secrets/SAST and active dependency audit pass.
+- [x] Automated acceptance: Python 290 twice, web 101 twice, zero failures/errors/skips; content guard, ruff, pinned Prettier; two identical 170-file dist manifests. Any later commit triggers the complete sequence again.
+- [x] Actual free-port synthetic server HTTP signup/category/copy/edit/dependent formula/spill extents/download/openpyxl on 55409; no port8000 bind/intervention.
+- [ ] Final current-code browser acceptance: true default-width 0.583333, WebSocket update, signup/category/copy/edit/browser download/openpyxl. BLOCKED by deleted TaskSpace41; Ego skill explicitly requires permission for one replacement. Prior browser proof is historical only.
+- [x] Update required STATE headings and Round5 report with exact commits, evidence, lossless decisions and named browser blocker; record BROWSER-FINAL-GATE lesson.
+
+Out of scope: private/real data, port8000 intervention, unowned processes, dependency upgrades, push/PR/merge/deployment, physical Windows/Excel/P5 acceptance. Evidence: ignored results-private/round-5/. Controller owns planning, Git, review, runtime/browser and final evidence; one routed executor handled code and regression tasks.
+
 Date: 2026-10-11. Branch: feat/v2-integration. User supplied approval and all-phase execution authorization.
 Spec: excel-grid/SPEC.md, excel-grid/API.md and user integration checklist.
 Goal: one coherent synthetic-tested v2 app using the merged tracks.
