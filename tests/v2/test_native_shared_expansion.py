@@ -135,6 +135,19 @@ class NativeSharedFormulaTests(unittest.TestCase):
                          'LOG10(B2)+MyRange1+_xlfn.CONCAT("S01!$A$1",B2)')
 
 
+    def test_expansion_accepts_alt_enter_line_breaks_stored_as_crlf(self):
+        # Excel writes Alt+Enter breaks inside long formulas as raw CR LF; XML
+        # readers see LF, so the expansion must too.
+        from pp.engine.native_load import expand_shared_formulas
+
+        master = 'IF(S01!$A$1>2,\r\n"big",\r\n"small")&B1'
+        directory = _tmp()
+        source = shared_workbook(directory / "crlf.xlsx", master)
+        expand_shared_formulas(source, directory / "crlf-expanded.xlsx")
+        with zipfile.ZipFile(directory / "crlf-expanded.xlsx") as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
+        self.assertIn('<c r="C2" t="n"><f>IF(S01!$A$1&gt;2,\n"big",\n"small")&amp;D1</f>', sheet)
+
     def test_a_cell_split_across_two_reads_is_still_expanded(self):
             from pp.engine import native_load
             from pp.engine.native_load import expand_shared_formulas

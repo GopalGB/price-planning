@@ -189,7 +189,9 @@ def _expand_cell(cell, families, stats):
     address = reference.group(1).decode("utf-8")
     key = index.group(1)
     if body:
-        families[key] = _Family(address, unescape(body.decode("utf-8")))
+        # XML parsers turn raw CR/CRLF (Alt+Enter in Excel) into LF; openpyxl's tokenizer only accepts LF.
+        text = unescape(body.decode("utf-8")).replace("\r\n", "\n").replace("\r", "\n")
+        families[key] = _Family(address, text)
         stats.masters += 1
         return cell[:start] + b"<f>" + body + b"</f>" + cell[end:]
     family = families.get(key)
