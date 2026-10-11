@@ -562,10 +562,12 @@ def _column_path(pivot, column):
 
 def _refresh(pivot, slicers, source, overlays, options, copy, sheet):
     rows = _current_rows(source, overlays)
-    return _refresh_rows(pivot, slicers, source, rows, options, copy, sheet)
+    fields = {item["field"] for item in options["page"]} | {item["field"] for item in slicers}
+    counts = {field: _current_counts(source, overlays, field) for field in fields}
+    return _refresh_rows(pivot, slicers, source, rows, options, copy, sheet, counts)
 
 
-def _refresh_rows(pivot, slicers, source, rows, options, copy, sheet):
+def _refresh_rows(pivot, slicers, source, rows, options, copy, sheet, counts=None):
     clauses = _clauses(pivot, options)
     visible = [row for row in rows if _matches(row, clauses)]
     cube = _aggregate(pivot, visible)
@@ -574,10 +576,10 @@ def _refresh_rows(pivot, slicers, source, rows, options, copy, sheet):
     cells = _cells(pivot, output_rows, columns, cube, options)
     return {
         "pivot": _pivot_summary(pivot, copy, sheet),
-        "filters": _filter_summary(pivot, rows, options),
+        "filters": _filter_summary(pivot, rows, options, counts),
         "columns": [_public_column(item) for item in columns],
         "rows": [_public_row(item) for item in output_rows], "cells": cells,
-        "slicers": _slicer_states(pivot, slicers, rows, options),
+        "slicers": _slicer_states(pivot, slicers, rows, options, counts),
     }
 
 
@@ -979,7 +981,7 @@ def _category_summary(pivot, base, sheet, revisions):
             "revisions": revisions}
 
 
-def _slicer_states(pivot, slicers, rows, options):
+def _slicer_states(pivot, slicers, rows, options, counts):
     clauses = _clauses(pivot, options)
     output = []
     for slicer in slicers:
@@ -988,8 +990,9 @@ def _slicer_states(pivot, slicers, rows, options):
         items = []
         excluded = ("slicers", slicer["name"], slicer["field"])
         imported = {item["cache_index"]: item for item in slicer["items"]}
-        current_keys = {_dimension_value(current, current[1], slicer["field"])
-                        for current in rows}
+        current_keys = (set(counts[slicer["field"]]) if counts is not None else
+                        {_dimension_value(current, current[1], slicer["field"])
+                         for current in rows})
         available_keys = {_dimension_value(current, current[1], slicer["field"])
                           for current in rows if _matches(current, clauses, excluded)}
         keys = list(imported) + sorted(
@@ -1042,11 +1045,12 @@ def _slicer_selection(slicer, field, options):
     return selected
 
 
-def _filter_summary(pivot, rows, options):
+def _filter_summary(pivot, rows, options, counts):
     result = deepcopy(options)
     for item in result["page"]:
         field = pivot["fields"][item["field"]]
-        keys = {_dimension_value(current, current[1], item["field"]) for current in rows}
+        keys = (set(counts[item["field"]]) if counts is not None else
+                {_dimension_value(current, current[1], item["field"]) for current in rows})
         item["available_items"] = [{"cache_index": key if isinstance(key, int) else None,
                                     "selector": _selector(field, key),
                                     "caption": _caption(field, key)}
