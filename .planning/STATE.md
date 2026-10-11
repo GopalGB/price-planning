@@ -10,6 +10,18 @@ v2 integration is feature-complete and verified on the Mac with synthetic fixtur
 
 ## Last handoff
 
+2026-10-11 20:08 IST checkpoint: review repairs committed65c190a/8b5a076;
+batch registration c1b06fc; unsupported structured/external and named-range
+operators fail closed in final source. Focused77/77 PASS twice and planner
+gpt-5.6-sol verdict NO BLOCKING DEFECTS. Exact Opus followup SHIP with verified
+claude-opus-5-5 identity; final narrow batch/reference/runner review running.
+Initial benchmark:5% correct(load455.1497s,first edit0.5580s,broad5.7170s,
+75k deltas,peakRSS605929472bytes);20%load timeout600s;50%skipped. Saved aggregate
+commitd66923d and raw prior report results-private/p6-unbatched-scale.json.
+New batch benchmark is running with unchanged8875.31MiB baseline; final unchanged
+Python/web repetitions and result/host recommendation remain. No push.
+
+
 2026-10-11 19:49 IST: exact review returned verified modelUsage
 claude-opus-5-5 and FIX-FIRST. HIGH outdated runner limits and LOW fixture
 cleanup already resolved by 63e4391. Named-range trace budget, import baseline
