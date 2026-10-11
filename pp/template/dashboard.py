@@ -252,13 +252,14 @@ def _page_fields(root, fields):
         field = _integer(node.get("fld"), "page field index")
         if field >= len(fields):
             raise DashboardMetadataError("page field index is outside the cache")
-        item = _integer(node.get("item", "0"), "page item index")
-        if item >= len(fields[field]["items"]):
+        raw_item = node.get("item")
+        item = _integer(raw_item, "page item index") if raw_item is not None else None
+        if item is not None and item >= len(fields[field]["items"]):
             raise DashboardMetadataError("page item index is outside the pivot field")
-        selected = fields[field]["items"][item]
+        selected = fields[field]["items"][item] if item is not None else None
         result.append({
             "field": field, "item": item, "hierarchy": int(node.get("hier", "-1")),
-            "cache_index": selected["cache_index"], "name": fields[field]["name"],
+            "cache_index": selected["cache_index"] if selected else None, "name": fields[field]["name"],
             "caption": fields[field]["caption"],
         })
     return result
@@ -288,7 +289,7 @@ def _display_items(root, section):
         data_index = node.get("i")
         output.append({
             "type": node.get("t", "data"), "repeat": _integer(node.get("r", "0"), "pivot item repeat"),
-            "data_index": _integer(data_index, "pivot data index") if data_index is not None else None,
+            "data_index": _integer(data_index, "pivot data index") if data_index is not None else 0,
             "indexes": [_integer(item.get("v"), "pivot display index")
                         for item in node.findall(f"{MAIN}x")],
         })
@@ -347,10 +348,21 @@ def _read_pivot(archive, part, context):
         raise DashboardMetadataError("pivot table must have one cache definition")
     cache = _part_xml(archive, cache_parts[0])
     cache_id = _integer(root.get("cacheId"), "pivot cache id")
+    cache_fields = cache.findall(f"{MAIN}cacheFields/{MAIN}cacheField")
+    source = _cache_source(cache, sheet_names)
+    start_row, start_col, _, end_col = _bounds(source["ref"])
+    if end_col - start_col + 1 < len(cache_fields):
+        raise DashboardMetadataError("pivot source width is narrower than cache fields")
+    if any(field.get("databaseField") == "0" or field.get("fieldGroup") is not None
+           for field in cache_fields):
+        raise DashboardMetadataError("calculated and grouped pivot fields are unsupported")
+    for field in root.findall(f"{MAIN}dataFields/{MAIN}dataField"):
+        if field.get("subtotal", "sum") != "sum" or field.get("showDataAs") is not None:
+            raise DashboardMetadataError("pivot data field feature is unsupported")
     fields = _pivot_fields(root, _cache_fields(cache, number_formats))
     return {
         "name": root.get("name", ""), "cache_id": _pivot_cache_id(cache, cache_id),
-        "source": _cache_source(cache, sheet_names), "location": _pivot_location(root),
+        "source": source, "location": _pivot_location(root),
         "captions": {"row": root.get("rowHeaderCaption", "Row Labels"),
                      "column": root.get("colHeaderCaption", "Column Labels"),
                      "data": root.get("dataCaption", "Values"),
@@ -429,8 +441,8 @@ def _matching_pivot(cache, pivots):
     names = {item["name"] for item in cache["pivot_tables"]}
     matches = [pivot for pivot in pivots
                if pivot["cache_id"] == cache["pivot_cache_id"] and (not names or pivot["name"] in names)]
-    if len(matches) != 1:
-        raise DashboardMetadataError("slicer cache does not identify one pivot table")
+    if not matches:
+        raise DashboardMetadataError("slicer cache does not identify a pivot table")
     return matches[0]
 
 

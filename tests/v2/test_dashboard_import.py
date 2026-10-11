@@ -128,6 +128,70 @@ class DashboardImportTests(unittest.TestCase):
             sheet = self.import_dashboard(Path(temp))
 
         self.assertEqual(len(sheet.get("pivots", [])), 1)
+
+    def test_excel_omitted_page_and_value_indexes_use_zero_defaults(self):
+        from pp.template.importer import import_template
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            workspace = Path(temp)
+            source = dashboard_fixture(workspace)
+
+            def omit_defaults(data):
+                root = ET.fromstring(data)
+                root.find(f"{MAIN}pageFields/{MAIN}pageField").attrib.pop("item")
+                root.find(f"{MAIN}colItems/{MAIN}i").attrib.pop("i")
+                return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+            rewrite_member(source, "xl/pivotTables/pivotTable1.xml", omit_defaults)
+            snapshot = import_template(source, workspace / "data")
+            sheet = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))["sheets"][0]
+
+        self.assertEqual(sheet["pivots"][0]["page_fields"][0]["item"], None)
+        self.assertIsNone(sheet["pivots"][0]["page_fields"][0]["cache_index"])
+        self.assertEqual(sheet["pivots"][0]["column_items"][0]["data_index"], 0)
+
+    def test_unsupported_pivot_features_are_rejected(self):
+        from pp.template.importer import TemplateImportError, import_template
+        cases = {
+            "subtotal": lambda root: root.find(f"{MAIN}dataFields/{MAIN}dataField").set("subtotal", "count"),
+            "showDataAs": lambda root: root.find(f"{MAIN}dataFields/{MAIN}dataField").set("showDataAs", "percent"),
+            "calculated": lambda root: root.find(f"{MAIN}cacheFields/{MAIN}cacheField").set("databaseField", "0"),
+            "group": lambda root: root.find(f"{MAIN}cacheFields/{MAIN}cacheField").set("fieldGroup", "1"),
+            "cache width": lambda root: root.find(f"{MAIN}cacheSource/{MAIN}worksheetSource").set("ref", "A1:R33"),
+        }
+        for label, transform in cases.items():
+            with self.subTest(feature=label):
+                with tempfile.TemporaryDirectory(dir=TMP) as temp:
+                    workspace = Path(temp)
+                    source = dashboard_fixture(workspace)
+
+                    def mutate(data, transform=transform):
+                        root = ET.fromstring(data)
+                        transform(root)
+                        return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+                    member = "xl/pivotTables/pivotTable1.xml" if label in {"subtotal", "showDataAs"} else "xl/pivotCache/pivotCacheDefinition1.xml"
+                    rewrite_member(source, member, mutate)
+                    with self.assertRaisesRegex(TemplateImportError, "template import failed"):
+                        import_template(source, workspace / "data")
+
+    def test_slicer_preserves_multiple_sheet_pivot_connections(self):
+        from pp.template.importer import import_template
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            workspace = Path(temp)
+            source = dashboard_fixture(workspace)
+
+            def add_connection(data):
+                root = ET.fromstring(data)
+                parent = root.find(f"{X14}pivotTables")
+                ET.SubElement(parent, f"{X14}pivotTable", {"tabId": "0", "name": "DashboardPivot"})
+                return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+            rewrite_member(source, "xl/slicerCaches/slicerCache1.xml", add_connection)
+            snapshot = import_template(source, workspace / "data")
+            sheet = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))["sheets"][0]
+
+        self.assertEqual(len(sheet["slicers"][0]["pivot_tables"]), 2)
         self.assertEqual(sheet["default_row_height"], 15)
         pivot = sheet["pivots"][0]
         self.assertEqual(pivot["name"], "DashboardPivot")
