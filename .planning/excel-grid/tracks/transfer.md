@@ -36,8 +36,10 @@ Independent planner findings were corrected test-first, including shared/array/n
 
 ## Remaining gate
 
+Resume resource blocker (2026-10-11): RESOURCE_DISK_LOW. Initial `df -g /` reported 3 GB available, below the owner's 4 GB stop threshold. Swap used=9912.44M is the resume baseline. No tests, builds, browser, worker or exact Claude retry ran this session. Initial Git status had no tracked changes; only untracked `.venv` and `web/node_modules`, with HEAD `ae79f33`. No cleanup was attempted after the stop threshold triggered. Previous acceptance remains historical evidence.
+
 Phase C remains unchecked solely for CLAUDE_REVIEW_QUOTA. Exact `claude-opus-5-5` returned is_error=true, a weekly-limit error with reported reset7:30pm Asia/Calcutta, and empty modelUsage. It is not an identity or review receipt. No substitute is authorized. Review input/retry instructions are prepared under ignored `results-private/transfer/`. Resolve CRITICAL/HIGH findings and verify returned identity before DONE. Existing Ruff141 baseline findings remain a disclosed concern.
 
 ## Resumption
 
-Read STATE and this track; inspect prepared review instructions. Retry the exact reviewer after quota reset. Preserve the approved scope, private-workbook prohibition, separate feature commits and source receipts. If review requires edits, use focused red/green corrections and rerun checks affected by those edits before updating acceptance. No push/merge/deploy authorization.
+Read STATE and this track; confirm at least 4 GB free disk and check swap before execution. Then inspect prepared review instructions and retry the exact reviewer after quota reset. Preserve the approved scope, private-workbook prohibition, separate feature commits and source receipts. If review requires edits, use focused red/green corrections and rerun checks affected by those edits before updating acceptance. No push/merge/deploy authorization.
