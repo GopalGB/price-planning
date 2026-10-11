@@ -80,6 +80,41 @@ class TraceBudget:
 
 
 @dataclass(frozen=True)
+class VisibleBlocks:
+    """The row ranges clients currently hold, one entry per sheet."""
+
+    rows: tuple[tuple[int, int, int], ...] = ()
+
+    @classmethod
+    def of(cls, *ranges: tuple[int, int, int]) -> VisibleBlocks:
+        return cls(tuple(_ordered(*item) for item in ranges))
+
+    @classmethod
+    def of_rows(cls, coordinates) -> VisibleBlocks:
+        """Group cells into the smallest set of visible row blocks."""
+        grouped: dict[int, list[int]] = {}
+        for sheet, row, _col in coordinates:
+            grouped.setdefault(sheet, []).append(row)
+        return cls(tuple(_ordered(sheet, min(rows), max(rows))
+                         for sheet, rows in grouped.items() if rows))
+
+    def covers(self, coordinate: tuple[int, int, int]) -> bool:
+        sheet, row, _col = coordinate
+        return any(block[0] == sheet and block[1] <= row <= block[2] for block in self.rows)
+
+
+def _ordered(sheet: int, first: int, last: int) -> tuple[int, int, int]:
+    return (sheet, first, last) if first <= last else (sheet, last, first)
+
+
+class _NoBlocks(VisibleBlocks):
+    """An empty view hides nothing, so every affected cell is evaluated."""
+
+    def covers(self, coordinate):
+        return True
+
+
+@dataclass(frozen=True)
 class FormulaBounds:
     sheet: int
     names: list[str]
@@ -488,6 +523,9 @@ class FormualizerEngine:
     overlay_upserts: dict[tuple[int, int, int], object]
     overlay_removals: set[tuple[int, int, int]]
     trace_budget: TraceBudget
+    visible: VisibleBlocks = _NoBlocks()
+    stale: frozenset[tuple[int, int, int]] = frozenset()
+    evaluated: frozenset[tuple[int, int, int]] = frozenset()
 
     @classmethod
     def load(cls, template_path: str | Path,
@@ -556,11 +594,52 @@ class FormualizerEngine:
             for sheet, row, col, value in changes:
                 self.workbook.set_value(self.workbook.sheet_names[sheet], row + 1, col + 1,
                                         _native_value(value))
-            return self.evaluate_dirty(self._dependent_targets(self._calculation_roots(edited)))
+            affected = self._dependent_targets(self._calculation_roots(edited))
+            visible = {target for target in affected if self.visible.covers(target)}
+            published = self._evaluate_clearing(visible)
+            self._mark_stale(affected)
+            return published
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("template calculation engine failed to apply changes") from exc
+
+    def set_visible_blocks(self, blocks: VisibleBlocks) -> None:
+        """Restrict eager recalculation to the blocks clients currently hold."""
+        self.visible = blocks if blocks.rows else _NoBlocks()
+
+    @property
+    def stale_cells(self) -> frozenset[tuple[int, int, int]]:
+        """Cells downstream of an edit whose value the engine has not produced."""
+        return self.stale
+
+    def recalculate_stale(self) -> list[tuple[int, int, int, object]]:
+        """Calculate the stale cells that are now visible and publish them."""
+        pending = {target for target in self.stale if self.visible.covers(target)}
+        if not pending:
+            return []
+        self._reset_overlay_delta()
+        published = self._evaluate_clearing(pending)
+        self._mark_stale(pending)
+        return published
+
+    def _evaluate_clearing(self, targets):
+        """Evaluate cells that are still marked stale, keeping them stale on failure.
+
+        The marks are cleared first so the publish path captures the pre-edit
+        value instead of resolving each cell on demand and reporting no change.
+        """
+        self.stale = self.stale - set(targets)
+        try:
+            return self.evaluate_dirty(targets)
+        except BaseException:
+            self.stale = self.stale | set(targets)
+            raise
+
+    def _mark_stale(self, affected) -> None:
+        """Keep every affected cell that was not evaluated in this round."""
+        pending = {target for target in affected if target not in self.evaluated}
+        self.stale = frozenset((self.stale | pending) - self.evaluated)
 
     def _dependent_targets(self, roots, include_dynamic=True):
         node_budget = max(self.trace_budget.nodes + len(roots), 1)
@@ -595,7 +674,9 @@ class FormualizerEngine:
 
     def evaluate_dirty(self, targets) -> list[tuple[int, int, int, object]]:
         pending = {target for target in targets if target in self.formula_anchors}
+        evaluated = set()
         if not pending:
+            self.evaluated = frozenset()
             return []
         previous, touched = {}, set()
         for _ in range(max(len(self.formula_anchors) + 1, 1)):
@@ -605,10 +686,12 @@ class FormualizerEngine:
             self._capture_previous(before, previous)
             touched.update(before)
             self._evaluate_targets(pending)
+            evaluated.update(before)
             changed_spills = self._refresh_spills(pending, old_spills)
             current = set(pending)
             current.update(*(self.spill_cells.get(anchor, frozenset()) for anchor in pending))
             touched.update(current)
+            evaluated.update(current)
             if not changed_spills:
                 break
             next_targets = self._dependent_targets(changed_spills, include_dynamic=False)
@@ -617,6 +700,7 @@ class FormualizerEngine:
             pending = next_targets
         else:
             raise EngineError("spill dependency closure did not converge")
+        self.evaluated = frozenset(evaluated)
         return self._publish_changes(previous, touched)
 
     def _capture_previous(self, coordinates, previous) -> None:
@@ -752,14 +836,36 @@ class FormualizerEngine:
         return upserts, sorted(self.overlay_removals)
 
     def get(self, sheet: int, row: int, col: int):
+        coordinate = (sheet, row, col)
+        if coordinate in self.stale:
+            self._resolve_stale(coordinate)
         try:
-            coordinate = (sheet, row, col)
             if coordinate in self.cached_values:
                 return _json_value(self.cached_values[coordinate], self.date1904)
             value = self.workbook.get_value(self.workbook.sheet_names[sheet], row + 1, col + 1)
             return _json_value(value, self.date1904)
         except Exception as exc:
             raise EngineError("template calculation engine failed to read a cell") from exc
+
+    def _resolve_stale(self, coordinate):
+        """Calculate a cell the last edit left stale before answering for it.
+
+        Excel's stored cache still describes the pre-edit state, so the engine
+        must produce the value rather than read the old one back. The mark is
+        cleared first so the publish path can read the cell it is capturing.
+        """
+        self.stale = self.stale - {coordinate}
+        try:
+            return self.evaluate_dirty({coordinate})
+        except BaseException:
+            self.stale = self.stale | {coordinate}
+            raise
+
+    def _engine_value(self, coordinate):
+        sheet, row, col = coordinate
+        return _json_value(
+            self.workbook.get_value(self.workbook.sheet_names[sheet], row + 1, col + 1),
+            self.date1904)
 
     def dependents(self, sheet: int, row: int, col: int) -> list[str]:
         try:
