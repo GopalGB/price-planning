@@ -22,13 +22,14 @@ BLOCK_ROWS = 256
 MAX_VALUE_BLOCKS = 2
 FORMULA_BATCH_SIZE = 256
 MAX_FORMULA_CELLS = 10_000
-MAX_FORMULA_TARGETS = 10_000
 MAX_DUPLICATE_SCAN_CELLS = 100_000
 MAX_OVERRIDE_RECORDS = 100_000
+MAX_FORMULA_TARGETS = MAX_OVERRIDE_RECORDS
 MAX_WARNINGS = 32
 MAX_EXCEL_ROWS = 1_048_576
 MAX_EXCEL_COLS = 16_384
 WARNING_MESSAGE = "Some conditional formatting could not be applied."
+ALIASABLE_FUNCTIONS = frozenset({"EXACT", "FALSE", "TRUE"})
 _MISSING = object()
 OPERATORS = {
     "equal": "=", "notEqual": "<>", "greaterThan": ">", "lessThan": "<",
@@ -55,6 +56,11 @@ class FormulaTask:
     rule_key: int
     coordinate: tuple[int, int]
     formula: str
+    aliases: tuple[tuple[int, int], ...] = ()
+
+    @property
+    def coordinates(self):
+        return (self.coordinate, *self.aliases)
 
 
 @dataclass
@@ -263,7 +269,9 @@ class PublicFormulaEvaluator:
             evaluated.results.pop(tasks[0].rule_key, None)
             return
         for task, value in zip(tasks, values):
-            evaluated.results.setdefault(task.rule_key, []).append((task.coordinate, value))
+            evaluated.results.setdefault(task.rule_key, []).extend(
+                (coordinate, value) for coordinate in task.coordinates
+            )
 
     def _evaluate_batch(self, tasks) -> list:
         book = _helper_book(self.snapshot)
@@ -430,11 +438,31 @@ def _formula_tasks(rule_key, rule, coordinates):
         translators = [Translator("=" + value.lstrip("="), origin=origin) for value in formulas]
         if not translators:
             raise ValueError("conditional rule is missing a formula")
-        return [FormulaTask(rule_key, coordinate,
-                            _translated_formula(rule, translators, *coordinate))
-                for coordinate in coordinates]
+        grouped, aliasable = OrderedDict(), {}
+        for coordinate in coordinates:
+            formula = _translated_formula(rule, translators, *coordinate)
+            if formula not in aliasable:
+                aliasable[formula] = _formula_aliasable(formula)
+            key = formula, None if aliasable[formula] else coordinate
+            grouped.setdefault(key, []).append(coordinate)
+        return [FormulaTask(rule_key, targets[0], key[0], tuple(targets[1:]))
+                for key, targets in grouped.items()]
     except (TokenizerError, TranslatorError, ValueError, IndexError) as exc:
         raise ConditionalFormatError("formula_invalid", str(exc)) from exc
+
+
+def _formula_aliasable(formula):
+    for token in Tokenizer(formula).items:
+        if token.type == "FUNC" and token.subtype == "OPEN":
+            name = token.value[:-1].upper().rsplit(".", 1)[-1]
+            if name not in ALIASABLE_FUNCTIONS:
+                return False
+        if token.type == "OPERAND" and token.subtype == "RANGE":
+            try:
+                range_to_tuple(token.value) if "!" in token.value else range_boundaries(token.value)
+            except ValueError:
+                return False
+    return True
 
 
 def _translated_formula(rule, translators, row, col):

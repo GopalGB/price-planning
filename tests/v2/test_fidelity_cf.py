@@ -10,10 +10,19 @@ from pathlib import Path
 from types import SimpleNamespace
 import xml.etree.ElementTree as ET
 
-from ops.fixtures import make_conditional_formatting
+from ops.fixtures import (
+    make_broad_conditional_formatting,
+    make_conditional_formatting,
+    make_volatile_conditional_formatting,
+)
 from pp.calc_service import CalculationPublication, CalculationService
-from pp.engine.formualizer import FormualizerEngine
-from pp.fidelity.conditional_formatting import CurrentCopyValues, conditional_style_overrides
+from pp.engine.formualizer import EngineError, FormualizerEngine
+from pp.fidelity.conditional_formatting import (
+    MAX_FORMULA_TARGETS,
+    MAX_OVERRIDE_RECORDS,
+    CurrentCopyValues,
+    conditional_style_overrides,
+)
 from pp.template.importer import CF_BORDER_STYLES, NS, _dxf_style, import_template
 from pp.workbook_service import WorkbookService
 from tests.v2.api_support import APIFixture
@@ -329,6 +338,7 @@ class ConditionalFormattingRowsTest(unittest.TestCase):
         snapshot = SimpleNamespace(
             implicit_cells=lambda *_args: {},
             block=lambda *_args: {},
+            note_block=lambda *_args: {},
             cell=lambda *_args: {"v": None, "s": 0, "k": "c"},
         )
         render = SimpleNamespace(
@@ -341,3 +351,114 @@ class ConditionalFormattingRowsTest(unittest.TestCase):
         self.assertEqual((rows["0"]["0"]["style_override"], rows["1"]["1"]["style_override"]),
                          ({"bold": True}, {"bold": True}))
         self.assertEqual(styles.passes, 1)
+
+
+class BroadConditionalFormattingRowsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = APIFixture(make_broad_conditional_formatting)
+        self.client, self.csrf, _ = self.fixture.signup("broad-cf@example.test")
+        _, copy = self.fixture.make_copy(self.client, self.csrf)
+        self.copy_id = copy["id"]
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def request_rows(self, count):
+        return self.client.get(
+            f"/api/copies/{self.copy_id}/sheets/0/rows?start=0&count={count}",
+        )
+
+    def test_real_api_styles_normal_wide_blocks_with_one_public_engine_load(self) -> None:
+        self.assertEqual(MAX_FORMULA_TARGETS, MAX_OVERRIDE_RECORDS)
+        original = FormualizerEngine.load
+        with patch(
+            "pp.fidelity.conditional_formatting.FormualizerEngine.load",
+            side_effect=original,
+        ) as load:
+            first = self.request_rows(50)
+            full = self.request_rows(256)
+
+        self.assertEqual((first.status_code, full.status_code), (200, 200))
+        self.assertEqual(load.call_count, 2)
+        for body, count in ((first.json(), 50), (full.json(), 256)):
+            styled = sum(
+                "style_override" in cell
+                for row in body["rows"].values()
+                for cell in row.values()
+            )
+            self.assertEqual(styled, count * 312)
+            self.assertEqual(body["conditional_format_warnings"], [])
+            self.assertEqual(body["rows"]["0"]["0"]["style_override"], {
+                "fill": "#112233",
+            })
+            self.assertEqual(body["rows"][str(count - 1)]["311"]["style_override"], {
+                "fill": "#112233",
+            })
+
+    def test_failed_alias_evaluation_warns_without_partial_styles(self) -> None:
+        with patch(
+            "pp.fidelity.conditional_formatting.FormualizerEngine.load",
+            side_effect=EngineError("synthetic public-engine failure"),
+        ) as load:
+            response = self.request_rows(50)
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(body["rows"], {
+            "0": {"0": {"k": "c", "s": 0, "v": 1}},
+        })
+        self.assertEqual(
+            [warning["code"] for warning in body["conditional_format_warnings"]],
+            ["formula_engine"],
+        )
+
+
+class VolatileConditionalFormattingRowsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = APIFixture(make_volatile_conditional_formatting)
+        self.client, self.csrf, _ = self.fixture.signup("volatile-cf@example.test")
+        _, copy = self.fixture.make_copy(self.client, self.csrf)
+        self.copy_id = copy["id"]
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def test_volatile_and_named_targets_are_distinct_but_quoted_words_alias(self) -> None:
+        class ContrastingEngine:
+            def __init__(self):
+                self.calls = []
+                self.results = iter((True, False, True, True, False, True))
+
+            def get(self, sheet, row, col):
+                self.calls.append((sheet, row, col))
+                return next(self.results)
+
+        engine = ContrastingEngine()
+        with patch(
+            "pp.fidelity.conditional_formatting.FormualizerEngine.load",
+            return_value=engine,
+        ) as load:
+            response = self.client.get(
+                f"/api/copies/{self.copy_id}/sheets/0/rows?start=0&count=2",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["conditional_format_warnings"], [])
+        self.assertEqual(body["rows"]["0"]["0"]["style_override"], {
+            "fill": "#112233",
+        })
+        self.assertNotIn("style_override", body["rows"]["1"]["0"])
+        self.assertEqual(body["rows"]["0"]["1"]["style_override"], {"bold": True})
+        self.assertEqual(body["rows"]["1"]["1"]["style_override"], {"bold": True})
+        self.assertEqual(body["rows"]["0"]["2"]["style_override"], {
+            "fill": "#445566",
+        })
+        self.assertNotIn("style_override", body["rows"]["1"]["2"])
+        self.assertEqual(body["rows"]["0"]["3"]["style_override"], {"bold": True})
+        self.assertEqual(body["rows"]["1"]["3"]["style_override"], {"bold": True})
+        self.assertEqual(load.call_count, 1)
+        self.assertEqual(len(engine.calls), 6)
+        self.assertTrue(all(len(call) == 3 and all(isinstance(value, int) for value in call)
+                            for call in engine.calls))

@@ -4,7 +4,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 import base64
 from openpyxl import Workbook
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Font, PatternFill, Protection
+from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
 
 CF_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -240,6 +242,64 @@ def make_conditional_formatting(path):
     calc.defined_names.add(DefinedName("Threshold", attr_text="'Calc'!$B$2"))
     book.save(path)
     _inject_conditional_formats(path)
+
+
+def make_broad_conditional_formatting(path):
+    """Create a sparse normal-width sheet with a full-block literal CF rule."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Broad"
+    sheet.cell(1, 1, 1)
+    sheet.cell(256, 312, "extent")
+    sheet.conditional_formatting.add(
+        f"A1:{get_column_letter(312)}256",
+        FormulaRule(
+            formula=["TRUE()"],
+            fill=PatternFill(patternType="solid", fgColor="112233"),
+        ),
+    )
+    book.save(path)
+
+
+def make_volatile_conditional_formatting(path):
+    """Create volatile and quoted-function CF expressions over two targets."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Volatile"
+    sheet["A1"], sheet["A2"] = 1, 1
+    sheet["B1"], sheet["B2"] = "RAND()", "RAND()"
+    sheet["C1"], sheet["C2"] = 1, 1
+    sheet["D1"], sheet["D2"] = "VolatileName", "VolatileName"
+    book.defined_names.add(DefinedName("VolatileName", attr_text="RAND()"))
+    sheet.conditional_formatting.add(
+        "A1:A2",
+        FormulaRule(
+            formula=["RAND()>0.5"],
+            fill=PatternFill(patternType="solid", fgColor="112233"),
+        ),
+    )
+    sheet.conditional_formatting.add(
+        "B1:B2",
+        FormulaRule(
+            formula=['EXACT("RAND()","RAND()")'],
+            font=Font(bold=True),
+        ),
+    )
+    sheet.conditional_formatting.add(
+        "C1:C2",
+        FormulaRule(
+            formula=["VolatileName>0.5"],
+            fill=PatternFill(patternType="solid", fgColor="445566"),
+        ),
+    )
+    sheet.conditional_formatting.add(
+        "D1:D2",
+        FormulaRule(
+            formula=['"VolatileName"="VolatileName"'],
+            font=Font(bold=True),
+        ),
+    )
+    book.save(path)
 
 
 def _inject_conditional_formats(path):

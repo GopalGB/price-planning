@@ -6,6 +6,8 @@
 Synthetic fixtures only. No private workbook access. pp/engine and calculation pipeline remain read-only.
 
 ## Progress
+Wide CF block correction is green: scoped Python30/30, CF11/11; 50x312 and256x312 emit15600 and79872 expected styles without warnings, using one public engine load for TRUE(). Per-target volatile/named evaluation is preserved. Table work resumes next.
+
 Notes Phase3 implementation passes scoped Python27/27 and final popup web23/23. Drawings are committed082fea3; table styles/filtering are next. All features remain unaccepted pending Opus and final whole-track checks.
 
 CF locally committed f764aaa; drawing feature implementation passes relevant Python 32/32 and web 26/26. Final acceptance remains unaccepted pending exact Opus review and whole-track gates. Notes are next. Earlier checkpoints below are historical.
@@ -32,7 +34,7 @@ Implement conditional formatting first, then drawings, notes, tables/filters and
 
 `conditional_style_overrides(snapshot, values, query)` returns `ConditionalFormatResult(styles, warnings)`. `/rows` streams `style_override` per cell and generic `conditional_format_warnings` per block; a failing rule rolls back its own styles without hiding ordinary values or healthy styles. Workbook sheet metadata includes `has_conditional_formats`. Calc refresh touches loaded CF blocks only and coalesces concurrent events.
 
-Bounds: 10000 formula targets/request, 256 formulas and 10000 referenced cells/public-engine load, 100000 duplicate-scan cells/rule, 100000 override records/request, 31 warnings plus a truncation marker. Two cached value/template blocks. Skipped formatting is visibly warned; extended x14 CF and external/structured formula references remain unsupported. No real template fidelity is claimed.
+Bounds: 100000 formula targets/request, 256 formulas and 10000 referenced cells/public-engine load, 100000 duplicate-scan cells/rule, 100000 override records/request, 31 warnings plus a truncation marker. Two cached value/template blocks. Skipped formatting is visibly warned; extended x14 CF and external/structured formula references remain unsupported. No real template fidelity is claimed.
 
 ## Drawings contract
 
@@ -41,3 +43,7 @@ Internal PNG/JPEG/GIF assets only, with authenticated copy access. Macro identif
 ## Notes contract
 
 Legacy notes are imported into row-block snapshots and returned as optional cell.note with author/text. Red markers and safe DOM hover/focus tooltips use live merged-cell/freeze/scroll/zoom geometry. Eviction and sheet switches remove markers; focused overlay controls do not execute destructive grid shortcuts. Limits: 10000 notes and 64 KiB UTF-8 per note/author. Notes are read only; threaded comments are not supported.
+
+## Wide CF regression
+
+Controller reproduction initially showed0 of15600 styles for a bounded50x312 TRUE() range. The target guard is now100000, with existing reference/batch/override limits intact. Identical proven-pure translated formulas share an evaluation and preserve aliases; named references, unknown functions and known volatile/context-dependent functions remain per-target. API tests assert literal first/last styles, complete counts and no warnings for79872 targets, plus atomic alias-failure rollback.
