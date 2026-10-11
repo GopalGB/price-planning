@@ -39,6 +39,7 @@ BODY_LIMIT = 2 * 1024 * 1024
 MAX_PREPARED_DOWNLOADS = 32
 MAX_PREPARED_DOWNLOAD_BYTES = 512 * 1024 * 1024
 MAX_ACTIVE_TRANSFERS = 2
+MAX_PENDING_TRANSFERS = 4
 PREPARED_DOWNLOAD_SECONDS = 2 * 60
 
 
@@ -91,6 +92,7 @@ class Services:
         self.writes = WriteLimiter()
         self.downloads = PreparedDownloadStore()
         self.transfer_limiter = threading.BoundedSemaphore(MAX_ACTIVE_TRANSFERS)
+        self.transfer_admission = threading.BoundedSemaphore(MAX_PENDING_TRANSFERS)
 
     def close(self):
         self.downloads.close()
@@ -338,36 +340,48 @@ async def _calculate_baseline(services, copy, user_id):
 
 async def _export(request: Request):
     services, user = _read_auth(request)
-    copy_id = request.path_params["copy_id"]
-    snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
-    selected = _selected_sheets(request.query_params, snapshot["sheets"])
-    _require_export_ready(snapshot, selected)
-    if request.query_params.get("check") == "1":
-        return Response(status_code=204)
-    fmt = "xlsx" if request.url.path.endswith(".xlsx") else "xlsm"
-    path = _export_path(services, fmt, False)
-    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path), services.transfer_limiter)
-    return DisposableFileResponse(
-        path, media_type=_export_media(fmt), filename=f"price-plan.{fmt}",
-    )
+    admission = _admit_transfer(services)
+    try:
+        copy_id = request.path_params["copy_id"]
+        snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+        selected = _selected_sheets(request.query_params, snapshot["sheets"])
+        _require_export_ready(snapshot, selected)
+        if request.query_params.get("check") == "1":
+            return Response(status_code=204)
+        fmt = "xlsx" if request.url.path.endswith(".xlsx") else "xlsm"
+        path = _export_path(services, fmt, False)
+        await _build_export(ExportJob(
+            snapshot, copy_id, fmt, selected, path,
+        ), services.transfer_limiter)
+        return DisposableFileResponse(
+            path, media_type=_export_media(fmt), filename=f"price-plan.{fmt}",
+        )
+    finally:
+        admission.release()
 
 
 async def _prepare_download(request: Request):
     services, user, _ = _write_auth(request)
-    payload = await _body(request)
-    fmt = _download_format(payload.get("format"))
-    copy_id = request.path_params["copy_id"]
-    snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
-    selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
-    _require_export_ready(snapshot, selected)
-    path = _export_path(services, fmt, True)
-    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path), services.transfer_limiter)
-    artifact = PreparedArtifact(
-        path, user["id"], token_hash(request.cookies.get("pp_session", "")),
-        copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
-    )
-    token = services.downloads.add(artifact)
-    return JSONResponse({"download_url": f"/api/downloads/{token}"}, status_code=201)
+    admission = _admit_transfer(services)
+    try:
+        payload = await _body(request)
+        fmt = _download_format(payload.get("format"))
+        copy_id = request.path_params["copy_id"]
+        snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+        selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
+        _require_export_ready(snapshot, selected)
+        path = _export_path(services, fmt, True)
+        await _build_export(ExportJob(
+            snapshot, copy_id, fmt, selected, path,
+        ), services.transfer_limiter)
+        artifact = PreparedArtifact(
+            path, user["id"], token_hash(request.cookies.get("pp_session", "")),
+            copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
+        )
+        token = services.downloads.add(artifact)
+        return JSONResponse({"download_url": f"/api/downloads/{token}"}, status_code=201)
+    finally:
+        admission.release()
 
 
 async def _prepared_download(request: Request):
@@ -476,6 +490,14 @@ def _export_media(fmt):
 
 async def _upload_preview(request: Request):
     services, user, _ = _write_auth(request)
+    admission = _admit_transfer(services)
+    try:
+        return await _admitted_upload_preview(request, services, user)
+    finally:
+        admission.release()
+
+
+async def _admitted_upload_preview(request, services, user):
     limit = getattr(services.config, "upload_max_mb", 100) * 1024 * 1024
     length = int(request.headers.get("content-length", "0") or 0)
     if length > limit:
@@ -507,6 +529,12 @@ async def _upload_preview(request: Request):
         return JSONResponse(body)
     finally:
         path.unlink(missing_ok=True)
+
+
+def _admit_transfer(services):
+    if not services.transfer_admission.acquire(blocking=False):
+        raise AppError(503, "transfer_busy", "Workbook transfers are busy; try again shortly")
+    return services.transfer_admission
 
 
 async def _upload_confirm(request: Request):

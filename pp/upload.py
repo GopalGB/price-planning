@@ -42,6 +42,7 @@ MAX_RATIO = 200
 RATIO_MIN_BYTES = 1024 * 1024
 MAX_TREE_XML = 8 * 1024 * 1024
 MAX_RELATIONSHIP_XML = 4 * 1024 * 1024
+MAX_RELATIONSHIP_XML_TOTAL = 16 * 1024 * 1024
 MAX_CUSTOM_PROPERTIES_XML = 1024 * 1024
 MAX_STYLES_XML = 16 * 1024 * 1024
 MAX_SHARED_STRINGS_XML = 64 * 1024 * 1024
@@ -440,7 +441,7 @@ def _validate_archive(path):
 
 def _validate_xml_members(archive):
     xml_members = _xml_members(archive)
-    total = 0
+    total, relationship_total = 0, 0
     for info in archive.infolist():
         parser = _xml_parser() if info.filename in xml_members else None
         tree_limit = _tree_xml_limit(info.filename)
@@ -449,6 +450,12 @@ def _validate_xml_members(archive):
             while chunk := stream.read(1 << 20):
                 expanded += len(chunk)
                 total += len(chunk)
+                if info.filename.endswith(".rels"):
+                    relationship_total += len(chunk)
+                    if relationship_total > MAX_RELATIONSHIP_XML_TOTAL:
+                        raise AppError(
+                            413, "archive_bomb", "Workbook relationships exceed the safe limit",
+                        )
                 if expanded > MAX_UNCOMPRESSED or total > MAX_UNCOMPRESSED:
                     raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
                 if tree_limit is not None and expanded > tree_limit:
@@ -627,10 +634,7 @@ def _read_workbook(path, provenance=True, snapshot=None):
             )) for item in sheets
         }
         cells = {name: data.cells for name, data in scanned.items()}
-        structures = {
-            item["name"]: _sheet_structure(archive, item["part"], item["hidden"])
-            for item in sheets
-        }
+        structures = _workbook_structures(archive, sheets)
         fingerprint = _fingerprint(names, {
             name: data.formulas for name, data in scanned.items()
         })
@@ -641,6 +645,20 @@ def _read_workbook(path, provenance=True, snapshot=None):
             for name, data in scanned.items() if data.ignored_count
         )
     return WorkbookModel(names, cells, structures, fingerprint, props, ignored)
+
+
+def _workbook_structures(archive, sheets):
+    structures, usage = {}, [0, 0]
+    for item in sheets:
+        structure = _sheet_structure(archive, item["part"], item["hidden"])
+        structures[item["name"]] = structure
+        _, merges, rows, columns, protection = structure
+        for values in (merges, rows, columns):
+            for value in values:
+                _bounded_structure(("aggregate", value), usage)
+        if protection is not None:
+            _bounded_structure(("aggregate", protection), usage)
+    return structures
 
 
 def _structure_record(element):

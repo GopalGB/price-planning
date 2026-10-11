@@ -12,7 +12,7 @@ import warnings
 import zipfile
 import xml.etree.ElementTree as ET
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 import pp.upload as upload_module
 from pp.errors import AppError
@@ -414,6 +414,41 @@ class UploadAPITests(unittest.TestCase):
                 self.assertEqual((raised.exception.status, raised.exception.code),
                                  (413, "archive_bomb"))
 
+    def test_worksheet_structure_budget_is_shared_across_sheets(self):
+        from pp.upload import _read_workbook
+
+        candidate = self.fixture.root / "aggregate-structure.xlsx"
+        workbook = Workbook()
+        workbook.active.row_dimensions[1].height = 20
+        workbook.create_sheet("Second").row_dimensions[1].height = 20
+        workbook.save(candidate)
+        workbook.close()
+
+        with mock.patch("pp.upload.MAX_STRUCTURE_RECORDS", 1):
+            with self.assertRaises(AppError) as raised:
+                _read_workbook(candidate, provenance=False)
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "archive_bomb"))
+
+    def test_relationship_budget_is_shared_before_graph_materialization(self):
+        from pp.upload import _validate_archive
+
+        candidate = self.fixture.root / "aggregate-relationships.xlsx"
+        candidate.write_bytes(self.exported)
+        with zipfile.ZipFile(candidate) as archive:
+            sizes = [item.file_size for item in archive.infolist()
+                     if item.filename.endswith(".rels")]
+        self.assertGreater(len(sizes), 1)
+        self.assertGreater(sum(sizes), max(sizes))
+
+        with mock.patch("pp.upload.MAX_RELATIONSHIP_XML_TOTAL", max(sizes), create=True), \
+                mock.patch("pp.upload._relationship_graph",
+                           side_effect=AssertionError("graph parser reached")):
+            with self.assertRaises(AppError) as raised:
+                _validate_archive(candidate)
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "archive_bomb"))
+
     def test_row_spans_are_not_treated_as_structural_changes(self):
         def add_spans(name, content):
             if name == "xl/worksheets/sheet1.xml":
@@ -606,6 +641,19 @@ class UploadAPITests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 413, response.body)
         self.assertEqual(response.json()["error"], "too_large")
+
+    def test_busy_transfer_does_not_stage_upload_body(self):
+        services = self.fixture.app.state.services
+        admission = mock.Mock()
+        admission.acquire.return_value = False
+        with mock.patch.object(services, "transfer_admission", admission, create=True), \
+                mock.patch("pp.server.tempfile.NamedTemporaryFile") as staged, \
+                mock.patch.object(services.uploads, "preview") as preview:
+            response = self.preview(self.owner, self.owner_csrf, self.exported)
+        self.assertEqual(response.status_code, 503, response.body)
+        self.assertEqual(response.json()["error"], "transfer_busy")
+        staged.assert_not_called()
+        preview.assert_not_called()
 
     def test_preview_temporary_file_is_removed_after_parser_failure(self):
         paths = []

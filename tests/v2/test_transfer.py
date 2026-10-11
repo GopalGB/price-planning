@@ -386,6 +386,19 @@ class DownloadRouteSelectionTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 422, rejected.body)
         exporter.assert_not_called()
 
+    def test_busy_transfer_does_not_materialize_export_snapshot(self):
+        services = self.fixture.app.state.services
+        admission = mock.Mock()
+        admission.acquire.return_value = False
+        with mock.patch.object(services, "transfer_admission", admission, create=True), \
+                mock.patch.object(services.workbooks, "export_snapshot") as snapshot:
+            response = self.client.get(
+                f"/api/copies/{self.copy['id']}/export.xlsx?sheets=Visible"
+            )
+        self.assertEqual(response.status_code, 503, response.body)
+        self.assertEqual(response.json()["error"], "transfer_busy")
+        snapshot.assert_not_called()
+
     def test_prepared_download_survives_a_later_revision_and_generates_once(self):
         with mock.patch("pp.server.export_transfer", wraps=export_transfer) as exporter:
             prepared = self.prepare()
