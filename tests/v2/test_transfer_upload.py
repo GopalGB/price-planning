@@ -13,6 +13,7 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Protection
 
 import pp.upload as upload_module
 from pp.errors import AppError
@@ -34,6 +35,60 @@ def _workbook_bytes(data, root, edits=(), locked_edit=False, new_sheet=False):
     workbook.save(output)
     workbook.close()
     return output.read_bytes()
+
+
+def _shifted_rows(data, root, operation):
+    source, output = root / "shift-source.xlsx", root / "shift-upload.xlsx"
+    source.write_bytes(data)
+    workbook = load_workbook(source, keep_vba=False, data_only=False)
+    if operation == "insert":
+        workbook["Inputs"].insert_rows(2)
+        workbook["Inputs"]["B3"] = 12
+    elif operation == "same_extent":
+        workbook["Inputs"].insert_rows(2)
+        workbook["Inputs"].delete_rows(7)
+        workbook["Inputs"]["B3"] = 12
+    else:
+        workbook["Inputs"].delete_rows(2)
+    workbook.save(output)
+    workbook.close()
+    return output.read_bytes()
+
+
+def _shifted_columns(data, root, operation):
+    source, output = root / "column-source.xlsx", root / "column-upload.xlsx"
+    source.write_bytes(data)
+    workbook = load_workbook(source, keep_vba=False, data_only=False)
+    if operation == "insert":
+        workbook["Inputs"].insert_cols(2)
+        workbook["Inputs"]["C2"] = 12
+    else:
+        workbook["Inputs"].delete_cols(2)
+    workbook.save(output)
+    workbook.close()
+    return output.read_bytes()
+
+
+def _input_only_fixture(path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Inputs"
+    sheet.protection.sheet = True
+    for reference, value in (("B2", 10), ("B5", 20)):
+        sheet[reference] = value
+        sheet[reference].protection = Protection(locked=False)
+    workbook.save(path)
+
+
+def _formula_input_fixture(path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Inputs"
+    sheet.protection.sheet = True
+    sheet["B2"] = 10
+    sheet["B2"].protection = Protection(locked=False)
+    sheet["C2"], sheet["C3"] = "=B2*2", "=B2*3"
+    workbook.save(path)
 
 
 def _rewrite_zip(data, root, transform=None, additions=()):
@@ -588,6 +643,137 @@ class UploadAPITests(unittest.TestCase):
         self.assertFalse(any(item["cell"] == "B2" for item in response.json()["changes"]))
         self.assertTrue(any(item["cell"] == "B2" and "formula" in item["reason"]
                             for item in response.json()["ignored"]))
+
+    def test_inserted_or_deleted_rows_skip_affected_sheet_inputs(self):
+        for operation in ("insert", "delete", "same_extent"):
+            with self.subTest(operation=operation):
+                upload = _shifted_rows(self.exported, self.fixture.root, operation)
+
+                response = self.preview(self.owner, self.owner_csrf, upload)
+
+                self.assertEqual(response.status_code, 200, response.body)
+                self.assertFalse(any(
+                    item["sheet"] == "Inputs" for item in response.json()["changes"]
+                ))
+                self.assertTrue(any(
+                    item["sheet"] == "Inputs" and "may have moved"
+                    in item["reason"] for item in response.json()["ignored"]
+                ))
+
+    def test_inserted_or_deleted_columns_skip_affected_sheet_inputs(self):
+        for operation in ("insert", "delete"):
+            with self.subTest(operation=operation):
+                upload = _shifted_columns(self.exported, self.fixture.root, operation)
+
+                response = self.preview(self.owner, self.owner_csrf, upload)
+
+                self.assertEqual(response.status_code, 200, response.body)
+                self.assertFalse(any(
+                    item["sheet"] == "Inputs" for item in response.json()["changes"]
+                ))
+                self.assertTrue(any(
+                    item["sheet"] == "Inputs" and "may have moved"
+                    in item["reason"] for item in response.json()["ignored"]
+                ))
+
+    def test_input_only_sheet_shift_is_skipped_without_locked_anchors(self):
+        fixture = APIFixture(_input_only_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("input-only@example.test", "Input Only")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        upload = _shifted_columns(exported, fixture.root, "insert")
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", upload,
+            {"x-csrf-token": csrf, "x-upload-filename": "shifted.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertEqual(response.json()["changes"], [])
+        self.assertTrue(any(
+            item["sheet"] == "Inputs" and "may have moved"
+            in item["reason"] for item in response.json()["ignored"]
+        ))
+
+    def test_changed_locked_layout_skips_sheet_safely(self):
+        upload = _workbook_bytes(
+            self.exported, self.fixture.root,
+            (("Inputs", "A2", "changed one"), ("Inputs", "A3", "changed two"),
+             ("Inputs", "B2", 12)),
+        )
+
+        response = self.preview(self.owner, self.owner_csrf, upload)
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertFalse(any(item["sheet"] == "Inputs" for item in response.json()["changes"]))
+        self.assertTrue(any(
+            item["sheet"] == "Inputs" and "may have moved"
+            in item["reason"] for item in response.json()["ignored"]
+        ))
+
+    def test_single_changed_locked_label_marks_layout_ambiguous(self):
+        upload = _workbook_bytes(
+            self.exported, self.fixture.root,
+            (("Inputs", "A2", "changed locked label"), ("Inputs", "B2", 12)),
+        )
+
+        response = self.preview(self.owner, self.owner_csrf, upload)
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertFalse(any(item["sheet"] == "Inputs" for item in response.json()["changes"]))
+        self.assertTrue(any(
+            item["sheet"] == "Inputs" and "may have moved"
+            in item["reason"] for item in response.json()["ignored"]
+        ))
+
+    def test_frozen_formulas_do_not_exhaust_displacement_candidates(self):
+        fixture = APIFixture(_formula_input_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("frozen-formulas@example.test", "Frozen Formulas")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx")
+        self.assertEqual(exported.status_code, 200, exported.body)
+        upload = _workbook_bytes(
+            exported.body, fixture.root,
+            (("Inputs", "B2", 12), ("Inputs", "C2", 20), ("Inputs", "C3", 30)),
+        )
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", upload,
+            {"x-csrf-token": csrf, "x-upload-filename": "frozen.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertEqual(
+            [(item["cell"], item["new"]) for item in response.json()["changes"]],
+            [("B2", 12)],
+        )
+        self.assertTrue(any("formula" in item["reason"] for item in response.json()["ignored"]))
+
+    def test_same_address_formula_edit_does_not_hide_valid_input_change(self):
+        upload = _workbook_bytes(
+            self.exported, self.fixture.root,
+            (("Inputs", "B2", 12), ("Calc", "B2", "=Inputs!B2*3")),
+        )
+
+        response = self.preview(self.owner, self.owner_csrf, upload)
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertEqual(
+            [(item["sheet"], item["cell"], item["new"]) for item in response.json()["changes"]],
+            [("Inputs", "B2", 12)],
+        )
+        self.assertTrue(any(
+            item["sheet"] == "Calc" and "formula" in item["reason"]
+            for item in response.json()["ignored"]
+        ))
+        self.assertFalse(any(
+            "may have moved" in item["reason"]
+            for item in response.json()["ignored"]
+        ))
 
     def test_worksheet_structure_and_sheet_order_changes_are_reported_as_ignored(self):
         source = self.fixture.root / "structure-source.xlsx"

@@ -69,6 +69,7 @@ class WorkbookModel:
     fingerprint: str
     provenance: dict | None
     ignored: tuple[dict, ...]
+    displaced: frozenset[str]
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,35 @@ class SheetData:
     cells: dict
     formulas: dict
     ignored_count: int
+    displaced: bool
+
+
+@dataclass
+class DisplacementDetector:
+    snapshot: object
+    sheet: int | None
+    rows: int = 0
+    cols: int = 0
+    locked_layout_changed: bool = False
+
+    def observe(self, record):
+        self.rows = max(self.rows, record["row"] + 1)
+        self.cols = max(self.cols, record["col"] + 1)
+        if self.snapshot is None or self.sheet is None:
+            return
+        coordinate = self.sheet, record["row"], record["col"]
+        expected = self.snapshot.cell(*coordinate)
+        if (record["formula"] is not None or expected.get("formula") is not None
+                or self.snapshot.is_input(*coordinate)):
+            return
+        self.locked_layout_changed |= _locked_cell_changed(record, expected)
+
+    def detected(self):
+        if self.snapshot is None or self.sheet is None:
+            return False
+        info = self.snapshot.sheets[self.sheet]
+        extent_changed = (self.rows, self.cols) != (info["rows"], info["cols"])
+        return extent_changed or self.locked_layout_changed
 
 
 class PreviewStore:
@@ -639,7 +669,8 @@ def _read_workbook(path, provenance=True, snapshot=None):
              "reason": "formula or locked cells are ignored"}
             for name, data in scanned.items() if data.ignored_count
         )
-    return WorkbookModel(names, cells, structures, fingerprint, props, ignored)
+        displaced = frozenset(name for name, data in scanned.items() if data.displaced)
+    return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced)
 
 
 def _workbook_structures(archive, sheets):
@@ -758,6 +789,7 @@ def _shared_strings(archive, part):
 
 def _sheet_cells(request):
     cells, formulas, shared, ignored = {}, {}, {}, 0
+    detector = DisplacementDetector(request.snapshot, request.index)
     with request.archive.open(request.part) as stream:
         for cell in _iter_cells(stream):
             reference = (cell.get("r") or "").replace("$", "").upper()
@@ -780,6 +812,7 @@ def _sheet_cells(request):
                 "row": row, "col": col, "value": _cell_value(cell, request.strings),
                 "formula": formula_value,
             }
+            detector.observe(record)
             if expected_formula and formula_value is not None:
                 formulas[reference] = record
             if request.snapshot is None:
@@ -790,7 +823,7 @@ def _sheet_cells(request):
                 cells[reference] = record
             elif _locked_cell_changed(record, expected):
                 ignored += 1
-    return SheetData(cells, formulas, ignored)
+    return SheetData(cells, formulas, ignored, detector.detected())
 
 
 def _locked_cell_changed(uploaded, expected):
@@ -925,6 +958,12 @@ def _preview_details(context):
                 "sheet": sheet_name, "cell": None,
                 "reason": "row, column, merge, protection, or visibility changes are ignored",
             })
+        if sheet_name in model.displaced:
+            ignored.append({
+                "sheet": sheet_name, "cell": None,
+                "reason": "Input changes are ignored because rows, columns, or locked cells may have moved",
+            })
+            continue
         sheet_context = SheetContext(snapshot, index, sheet_name, overrides, ignored)
         found, seen = _inspect_sheet(model.cells[sheet_name], sheet_context)
         _add_missing_inputs(found, seen, sheet_context)
