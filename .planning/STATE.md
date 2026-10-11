@@ -1,77 +1,80 @@
 # STATE
 
 ## Current phase
-P6 engine viability work is in progress on `feat/v2-integration`, approved 2026-10-11.
-Array compatibility is committed as `2ec0493`; deterministic scale fixtures are
-committed as `9dce2ba`, cached startup and sparse publication as `0e2e386`.
-Benchmark runner guard repair, scale evidence, and independent review remain pending.
 
-v2 integration is feature-complete and verified on the Mac with synthetic fixtures, branch `feat/v2-integration`, HEAD after this handoff. Round 5 (eight review defects) plus two controller fixes are committed. Not pushed. Office Windows/Excel/LAN/load, real-workbook parity and paid Strix acceptance remain unverified; this is not a P5 release claim.
+P6 implementation is committed on `feat/v2-integration`; large-scale engine viability
+remains BLOCKED (`P6_LARGE_SCALE_STARTUP`). Latest code commit: `afc320a`. Final
+handoff commit follows. Approved GO-TOKEN: 2026-10-11. No push or deployment.
+
+Single-cell array compatibility/export preservation, template-map ISFORMULA, typed
+XML cache startup, dirty dependency recalculation and sparse revision-checked
+publication are implemented. Engine remains `formualizer==0.11.1`. IMPORT_VERSION 7
+rejects stale cached snapshot formats with a named reimport error. Multi-cell arrays
+and dataTable remain rejected; unsupported structured/external/named-colon references
+fail closed rather than silently returning stale native values.
+
+Prior v2 integration remains feature-complete on synthetic Mac tests. Office
+Windows/Excel/LAN acceptance, real-workbook parity and paid Strix acceptance remain
+unverified. Synthetic P6 results do not advance P1/P5 release gates.
 
 ## Last handoff
 
-2026-10-11 20:08 IST checkpoint: review repairs committed65c190a/8b5a076;
-batch registration c1b06fc; unsupported structured/external and named-range
-operators fail closed in final source. Focused77/77 PASS twice and planner
-gpt-5.6-sol verdict NO BLOCKING DEFECTS. Exact Opus followup SHIP with verified
-claude-opus-5-5 identity; final narrow batch/reference/runner review running.
-Initial benchmark:5% correct(load455.1497s,first edit0.5580s,broad5.7170s,
-75k deltas,peakRSS605929472bytes);20%load timeout600s;50%skipped. Saved aggregate
-commitd66923d and raw prior report results-private/p6-unbatched-scale.json.
-New batch benchmark is running with unchanged8875.31MiB baseline; final unchanged
-Python/web repetitions and result/host recommendation remain. No push.
+2026-10-11 20:27 IST final resume handoff: previous run was interrupted by a runner timeout. Read STATE/status,
+ran 112 focused tests successfully and committed retained work in focused items.
+Array compatibility `2ec0493`; generator `9dce2ba`; cache/delta engine `0e2e386`;
+bounded runner `63e4391`; named dependency/cache-format repair `65c190a`; runner
+cleanup repair `8b5a076`; batch registration `c1b06fc`; unsafe reference rejection
+`181e267`; whole-range regressions `802e0f5`; short-name fix `fccb177`; ISFORMULA
+validation-order fix `afc320a`.
 
+Scale aggregate: `.planning/excel-grid/results/engine-scale-2026-10-11.json`.
+Plan/results/recommended path: `.planning/excel-grid/PLAN-P6-real-template.md`.
+Batched 5%: 260000 cells/75000 formulas, load 258.7317 s, first edit 0.4232 s
+(1 correct delta), broad edit 4.7513 s (75000 correct deltas), child peak RSS
+708395008 bytes (675.6 MiB). At 20%: 1040000 cells/300000 formulas, load incomplete
+at 600 s attempt timeout; edits unmeasured. At 50%: skipped after 20% timeout.
+Prior unbatched 5% load: 455.15 s; 20% also timed out. Fixtures were deleted after
+each attempt; only small owned progress/log files remain. Benchmark source:
+`c1b06fc`; later correctness guards were not included in those timings.
 
-2026-10-11 19:49 IST: exact review returned verified modelUsage
-claude-opus-5-5 and FIX-FIRST. HIGH outdated runner limits and LOW fixture
-cleanup already resolved by 63e4391. Named-range trace budget, import baseline
-versioning, bootstrap error wrapping and repeated process-group cleanup are under
-review/repair. Cached volatile-on-open finding is being checked against explicit
-cached-startup scope and the inventoried function list. Review log:
-results-private/p6-resume-review.json. Scale 5% remains in load; no timing accepted.
+Resource baseline: 8875.31 MiB swap; stop at growth above 1536 MiB or free disk
+below 2500 MiB. Latest scale run minimum disk: 6922.94 MiB; swap never exceeded
+baseline. No resource guard fired. Initial resume disk: 5054 MiB. Host pressure
+varied, so timing comparisons are not isolated. No real workbook/private directory
+was read. No forbidden port was bound.
 
+Exact returned `modelUsage` identity `claude-opus-5-5` verified throughout reviews.
+Repairs closed with SHIP in `p6-tax-review.json` and `p6-isformula-review.json`.
+Planner `gpt-5.6-sol` verdict: NO BLOCKING DEFECTS after final repair. Initial final
+Python run passed 386/387: ISFORMULA named-argument rejection was bypassed by name
+expansion. Existing test reproduced it; validation now precedes expansion. Focused
+83/83 twice and adapter/cache 48/48 twice pass. Final unchanged full Python runs:
+387/387 PASS twice (85.657 s and 71.249 s). Second run emitted an ignored ZipFile
+destructor cleanup warning during a passing export-route test; recorded in the plan.
 
-2026-10-11 19:44 IST resume checkpoint: focused tests 112/112 PASS; primary full
-Python run 1 368/368 PASS; web 101/101 PASS twice. Python run 2 is running.
-Scoped ruff (pp, tests/v2, new scale tools) clean; broad legacy scan has 141
-pre-existing findings in older ops/tests. Content guard exit 0. Staged gitleaks
-clean for both new commits. pip-audit requirements.lock found no known vulnerabilities.
-Semgrep found 0 findings with one rule timeout; rerun in progress. Exact
-claude-opus-5-5 review is running and remains a gate, not a completion claim.
-Resume swap baseline 8875.31 MiB and minimum free disk 2500 MiB; stop at growth
-over 1536 MiB. No real workbook/private path was read, no push or server launch.
+Web: 101/101 twice PASS. Scoped Ruff clean; content guard exit 0; staged gitleaks
+clean. Semgrep: 151 rules/41 Python files, 0 findings/no timeout; final adapter patch
+rescanned with 151 rules/1 file, 0 findings. pip-audit requirements.lock: no known
+vulnerabilities. Broad Ruff reports 141 existing legacy ops/tests findings, not
+repaired. Raw logs: `results-private/p6-final-*`, `p6-resume-*`, `p6-isformula-*`.
 
-2026-10-11 19:33 IST resume: stopped at the owner's disk guard before focused tests,
-review, benchmarks, or commits. `df -g /` reported 3 GB available (below the 4 GB
-floor); `sysctl vm.swapusage` reported 9896.44 MB used, 11264.00 MB total. This is
-the observed resume swap baseline, not evidence of growth during this run. Branch
-is still `feat/v2-integration`; all prior tracked and untracked work remains in
-place. No real workbook or private workbook directory was read. Free disk capacity
-first, then resume focused verification and exact `claude-opus-5-5` review.
-
-2026-10-11 P6 cache-repair checkpoint: uncommitted engine changes replace direct/regex
-dependency targeting with bounded native transitive tracing, invalidate affected XML
-caches, avoid empty-batch spill scans, and recalculate clear-rebuild closures. New
-cache tests cover a cached chain, cross-sheet range, dynamic downstream, typed cache,
-potential spill input masking, clear rebuild, and truncation. Cache plus adjacent
-engine suites are green (52 tests), ruff and content guard are green. Full discovery
-completed 310 tests with three environment errors only: this sandbox denies the
-loopback binds in test_runtime, v2.test_http_transport, and v2.test_run_v2. Raw logs:
-results-private/p6-cache-terra-*.log. Exact `claude-opus-5-5` review remains pending;
-no commit or push was made.
-
-2026-10-11 06:40 IST, controller (claude-opus-5-5). Commits after Round 5: `0079f66` refuse to start when another program holds the port (found live: a first start bound 0.0.0.0:8000 beside a loopback listener on 8000); `0ff02dd` literal dropdown members take the type Excel enters on pick, IMPORT_VERSION 6 (independent review finding N1).
-
-Checks run by the controller: Python 294/294 twice, web 101/101 twice, content guard 0, ruff clean. Browser acceptance in Ego TaskSpace 38 over the LAN URL on port 8765: signup, first category, copy, Inputs!B3=24, Calc!B3 shows 0.583333 on a default-width column, download read with openpyxl (Inputs!B3=24, formulas intact, no calcChain, fullCalcOnLoad). After the IMPORT_VERSION bump the template re-imported at restart and the existing copy reopened at rev 1 with the same values.
-
-Independent Claude review of fbd67a1..4903d79: all seven original defects CLOSED, General width CLOSED; each new regression test fails on the old code. Open, not blocking: N2 General precision depends on the browser's fallback font (display only); N3 one stale template row makes backup fail closed; backups made before Round 5 restore without template relocation; copy retry limit (3) under heavy edit churn untested; refreshing the page returns to the copies list instead of the open copy.
-
-Codex usage limit reached; Astra/Sol unavailable until 2026-10-14 09:03 IST.
+Prior controller checkpoint: `0079f66` prevents startup on an occupied port;
+`0ff02dd` corrects dropdown value types. Prior Round 5 review defects were closed.
+Known minor limits include font-dependent General precision, stale-template backup
+fail-closed, legacy restore relocation, unmeasured retry churn, and refresh returning
+to the copy list.
 
 ## Next task
-Finish exact Opus review, commit bounded runner with current resource guards and
-per-scale fixture cleanup, finish second Python run, then run scales sequentially
-with one retained 8875.31 MiB swap baseline. Write aggregate report and host
-recommendation. Never claim 20%/50% complete if a guard or timeout stops 5%.
 
-Owner actions: push `feat/v2-integration` from Terminal.app (pre-push gate needs `y`) and open the PR; office test (pull, put the .xlsm in `template/`, run `run_v2.bat`, open from a second PC; if port 8000 is taken the launcher now says so, set "port" in settings.json). After Codex resets: one Astra pass over `4903d79..HEAD`, then the low items above. Strix paid run stays gated on the owner's OK and a per-scan budget key.
+Profile 20% synthetic startup on the office server using the same seed and pinned
+engine. Separate eager native import, expanded formula registration and dependency
+trace construction before choosing a narrow adapter repair or requesting a
+dependency change. Do not call the full-size engine path viable from this evidence.
+
+Recommended initial office host: 32 GiB RAM, one engine worker; 64 GiB planning
+allowance for multiple warm copies. Unverified linear extrapolation of the 5% child
+peak alone is 13.2 GiB per full-scale engine; native load CPU cost remains a blocker.
+The 8 GiB Mac is for small-fixture development. Estimate limits are in the P6 plan.
+
+Owner: push branch/open PR only after reviewing this blocker and green CI. Office
+acceptance and paid Strix actions remain owner-controlled. No push was performed. Final disk: 6917 MiB available; swap: 4669.25 MiB.
