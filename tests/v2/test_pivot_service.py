@@ -45,6 +45,35 @@ class PivotServiceTests(unittest.TestCase):
     def test_pivot_service_module_exists(self):
         self.assertIsNotNone(importlib.util.find_spec("pp.pivot"), "pp.pivot service is missing")
 
+    def test_repeated_column_display_entries_do_not_duplicate_measures(self):
+        self.pivot["column_items"] *= 2
+        result = self.refresh(options_all(self.pivot, self.slicers))
+        self.assertEqual(len(result["columns"]), len(self.pivot["data_fields"]))
+
+    def test_manual_order_uses_field_items_not_row_display_positions(self):
+        field = self.pivot["fields"][0]
+        field["sort"]["type"] = "manual"
+        field["items"].reverse()
+        result = self.refresh(options_all(self.pivot, self.slicers))
+        self.assertEqual(result["rows"][0]["caption"], "Region 10")
+
+    def test_measure_that_is_also_an_axis_rebuilds_old_and_new_groups(self):
+        self.pivot["row_fields"] = [9]
+        options = options_all(self.pivot, self.slicers)
+        service = self.service()
+        service.refresh(self.query(options))
+        with self.fixture.database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO pp_results(copy_id,sheet,row,col,value_json,calculated_revision) "
+                "VALUES(?,?,?,?,?,?)", ("copy-a", 1, 1, 9, "999", 1),
+            )
+            connection.execute(
+                "UPDATE pp_copies SET input_revision=1,calculated_revision=1 WHERE id='copy-a'"
+            )
+        updated = service.refresh(self.query(options))
+        expected = self.service().refresh(self.query(options))
+        self.assertEqual(updated, expected)
+
     def test_read_requires_access_and_current_calculation_revision(self):
         from pp.errors import AppError
 
@@ -299,6 +328,7 @@ class PivotServiceTests(unittest.TestCase):
         self.assertIsNone(dynamic["cache_index"])
         self.assertEqual(dynamic["selector"], {"kind": "string", "value": "Region 99"})
         self.assertTrue(dynamic["available"])
+        self.assertTrue(dynamic["selected"])
 
         selector = dynamic["selector"]
         options["slicers"][0]["items"] = [selector]

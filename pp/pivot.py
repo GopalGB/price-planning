@@ -74,7 +74,7 @@ class PivotService:
             overlays = _overlays(connection, query.copy_id, copy, source)
             latest_key = _latest_key(snapshot, query, options)
             previous = self._cache_get(self._latest, latest_key)
-            result = _incremental(pivot, source, overlays, options, previous, copy)
+            result = _incremental(pivot, source, overlays, options, previous, copy, slicers)
             if result is None:
                 result = _refresh(pivot, slicers, source, overlays, options, copy, query.sheet)
             else:
@@ -472,7 +472,7 @@ def _latest_key(snapshot, query, options):
     return snapshot.hash, query.copy_id, query.sheet, query.name, encoded
 
 
-def _incremental(pivot, source, overlays, options, previous, copy):
+def _incremental(pivot, source, overlays, options, previous, copy, slicers):
     if previous is None:
         return None
     old_overlays = previous["overlays"]
@@ -484,6 +484,8 @@ def _incremental(pivot, source, overlays, options, previous, copy):
     data_fields = {item["field"] for item in pivot["data_fields"]}
     sort_fields = {field["sort"]["rank_by"] for field in pivot["fields"]
                    if field["sort"]["data_source"]}
+    sort_fields.update(pivot["row_fields"] + pivot["column_fields"])
+    sort_fields.update(item["field"] for item in pivot["page_fields"] + slicers)
     if any(coordinate[1] - source.first_col not in data_fields - sort_fields
            for coordinate in changed):
         return None
@@ -762,6 +764,7 @@ def _data_order(pivot):
     result = [item["data_index"] for item in pivot["column_items"]
               if item["data_index"] is not None
               and 0 <= item["data_index"] < len(pivot["data_fields"])]
+    result = list(dict.fromkeys(result))
     result.extend(index for index in range(len(pivot["data_fields"])) if index not in result)
     return result
 
@@ -828,30 +831,25 @@ def _row_record(kind, level, field, item, caption, collapsible, collapsed, key):
 def _sort_items(pivot, cube, prefix, level, values):
     field = pivot["fields"][pivot["row_fields"][level]]
     sort = field["sort"]
+    blanks = [value for value in values if _is_blank(field, value)]
+    data = [value for value in values if not _is_blank(field, value)]
+    if sort["type"] == "manual":
+        rank = _manual_rank(field)
+        return sorted(data, key=lambda value: (rank.get(value, len(rank)),
+                                               _label_key(_caption(field, value)))) + blanks
     if sort["data_source"] and sort["rank_by"] is not None:
         measure = next((index for index, item in enumerate(pivot["data_fields"])
                         if item["field"] == sort["rank_by"]), None)
         if measure is not None:
             return _data_sorted(values, pivot, cube, prefix, measure, sort["type"])
-    if sort["type"] == "manual":
-        rank = _manual_rank(pivot, field, level)
-        return sorted(values, key=lambda value: (rank.get(value, len(rank)),
-                                                  _label_key(_caption(field, value))))
-    ordered = sorted(values, key=lambda value: _label_key(_caption(field, value)))
-    blanks = [value for value in ordered if _is_blank(field, value)]
-    data = [value for value in ordered if not _is_blank(field, value)]
+    ordered = sorted(data, key=lambda value: _label_key(_caption(field, value)))
     if sort["type"] == "descending":
-        data.reverse()
-    return data + blanks
+        ordered.reverse()
+    return ordered + blanks
 
 
-def _manual_rank(pivot, field, level):
-    order = []
-    if level == 0:
-        order.extend(item["indexes"][0] for item in pivot["row_items"]
-                     if item["type"] == "data" and item["indexes"])
-    order.extend(item["cache_index"] for item in field["items"]
-                 if item["kind"] == "data" and item["cache_index"] not in order)
+def _manual_rank(field):
+    order = [item["cache_index"] for item in field["items"] if item["kind"] == "data"]
     return {value: index for index, value in enumerate(order)}
 
 
@@ -1004,7 +1002,7 @@ def _slicer_states(pivot, slicers, rows, options, counts):
             available = key in available_keys
             items.append({"cache_index": key if isinstance(key, int) else None,
                           "selector": _selector(field, key), "caption": _caption(field, key),
-                          "selected": key in selected, "available": available,
+                          "selected": selected is None or key in selected, "available": available,
                           "no_data": source_item["no_data"] or not available})
         output.append({"name": slicer["name"], "field": slicer["field"],
                        "caption": slicer["caption"], "style": slicer["style"],
@@ -1040,8 +1038,6 @@ def _slicer_selection(slicer, field, options):
     matching = [item["items"] for item in options["slicers"]
                 if item.get("name") == slicer["name"]]
     selected = _intersection(matching, field)
-    if selected is None:
-        return {item["cache_index"] for item in slicer["items"]}
     return selected
 
 

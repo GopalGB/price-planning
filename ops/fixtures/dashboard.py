@@ -211,7 +211,7 @@ def _pivot_field(index):
     if index == 0:
         items = "".join(
             f'<item x="{item}"{" h=" + chr(34) + "1" + chr(34) if item == 3 else ""}/>'
-            for item in range(11)
+            for item in (2, 0, 1, *range(3, 11))
         ) + '<item t="default"/>'
         return (f'<pivotField axis="axisRow" name="Region" showAll="0" outline="1" '
                 f'subtotalTop="1" defaultSubtotal="0" sumSubtotal="1" sortType="descending" '
