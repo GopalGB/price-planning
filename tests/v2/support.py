@@ -121,3 +121,6 @@ class BackendFixture:
     def close(self):
         self.database.close()
         self._temporary.cleanup()
+
+# synthetic test credential, not a secret
+SYNTHETIC_LOGIN = "correct-horse-battery"

@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 from ops.fixtures import make_semantic
 from tests.v2.asgi_client import ASGIClient
-from tests.v2.support import BackendFixture
+from tests.v2.support import SYNTHETIC_LOGIN, BackendFixture
+
 
 
 class APIFixture(BackendFixture):
@@ -21,7 +22,7 @@ class APIFixture(BackendFixture):
     def client(self):
         return ASGIClient(self.app)
 
-    def signup(self, email, name="Test User", password="correct-horse-battery"):
+    def signup(self, email, name="Test User", password=SYNTHETIC_LOGIN):
         client = self.client()
         response = client.post("/api/auth/signup", {"email": email, "name": name, "password": password})
         if response.status_code != 201:

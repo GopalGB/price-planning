@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
-from tests.v2.support import TMP
+from tests.v2.support import SYNTHETIC_LOGIN, TMP
 
 
 def legacy_schema():
@@ -168,7 +168,7 @@ class DatabaseContractTests(unittest.TestCase):
         TMP.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
             path = Path(temp) / "planning.db"
-            password = "correct-horse-battery"
+            password = SYNTHETIC_LOGIN
             encoded = legacy_password(password)
             with sqlite3.connect(path) as connection:
                 connection.executescript(legacy_schema())

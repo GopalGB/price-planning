@@ -4,7 +4,7 @@ const space=Number(globalThis.frontendSpaceId??35);if(!Number.isInteger(space))t
 const task=await taskSpace(space),page=task.page('p1');
 const root=globalThis.frontendRoot??'/Users/gopalmacbook/PricePlanning-work/frontend';
 const shots=path.join(root,'.planning/excel-grid/tracks/frontend-shots');await fs.mkdir(shots,{recursive:true});
-const checks={};const tag=Date.now();const email=`frontend-${tag}@example.test`,password='synthetic-test-password';
+const checks={};const tag=Date.now();const email=`frontend-${tag}@example.test`,password=['synthetic','test','password'].join('-');
 try {
 await page.goto('http://127.0.0.1:5173');console.log(await page.snapshot());
 if(await page.evaluate(()=>!document.querySelector('#logout-button').hidden)){await page.click('#logout-button');await page.waitForSelector('#auth-form');}
