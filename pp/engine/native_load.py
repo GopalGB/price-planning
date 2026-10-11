@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import re
+import xml.etree.ElementTree as ET
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -24,6 +26,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape, unescape
 
 from openpyxl.formula.translate import Translator
+from openpyxl.utils.cell import get_column_letter, range_boundaries
 
 
 CHUNK_BYTES = 1 << 20
@@ -35,6 +38,15 @@ CELL_START = re.compile(rb"<c\b")
 CELL_REFERENCE = re.compile(rb'\br\s*=\s*"([^"]*)"')
 SHARED_TYPE = re.compile(rb'\bt\s*=\s*"shared"')
 SHARED_INDEX = re.compile(rb'\bsi\s*=\s*"([^"]*)"')
+DEFINED_NAME = re.compile(rb"(<definedName\b[^>]*>)(.*?)(</definedName>)", re.DOTALL)
+# Bump when the prepared package changes shape, so stale cached copies are not reused.
+PREPARE_VERSION = 2
+MAIN_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+RID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+OOXML_ESCAPE = re.compile(r"_x([0-9A-Fa-f]{4})_")
+NAME_START = re.compile(r"[A-Za-z_\\]")
+NAME_CHARS = re.compile(r"[A-Za-z0-9_.\\]*")
 
 
 class SharedFormulaError(RuntimeError):
@@ -60,6 +72,161 @@ class _Family:
     members: list = field(default_factory=list)
 
 
+@dataclass
+class Table:
+    """An Excel table: its sheet, full range, header and totals rows, column names."""
+    sheet: str
+    ref: str
+    headers: int
+    totals: int
+    columns: list
+
+
+def rewrite_structured(text: str, tables: dict) -> str:
+    """Replace ``Table[...]`` references with the absolute range they denote.
+
+    Strings and quoted sheet names are copied untouched; table names match
+    case-insensitively like Excel. Forms that depend on the calling row
+    (``[@Col]``, ``[#This Row]``) have no static range and raise.
+    """
+    if not tables:
+        return text
+    out, i, n = [], 0, len(text)
+    while i < n:
+        char = text[i]
+        if char in "\"'":
+            end = i + 1
+            while end < n and not (text[end] == char and text[end + 1:end + 2] != char):
+                end += 2 if text[end] == char else 1
+            out.append(text[i:end + 1])
+            i = end + 1
+        elif NAME_START.match(char):
+            end = NAME_CHARS.match(text, i + 1).end()
+            table = tables.get(text[i:end].casefold())
+            following = text[end:end + 1]
+            if table is None or following in ("!", "("):
+                out.append(text[i:end])
+                i = end
+            elif following == "[":
+                close = _bracket_end(text, end)
+                out.append(_resolve(table, text[end + 1:close]))
+                i = close + 1
+            else:
+                out.append(_resolve(table, ""))
+                i = end
+        else:
+            out.append(char)
+            i += 1
+    return "".join(out)
+
+
+def _bracket_end(text, start):
+    depth, i = 0, start
+    while i < len(text):
+        char = text[i]
+        if char == "'":
+            i += 2
+            continue
+        depth += {"[": 1, "]": -1}.get(char, 0)
+        if depth == 0:
+            return i
+        i += 1
+    raise SharedFormulaError("unterminated structured reference")
+
+
+def _items(content):
+    """Split the inside of ``Table[...]`` into specifiers, column names and ':'."""
+    if not content.startswith("["):
+        return [content] if content else []
+    items, i = [], 0
+    while i < len(content):
+        char = content[i]
+        if char == "[":
+            close = _bracket_end(content, i)
+            items.append(content[i + 1:close])
+            i = close + 1
+        elif char == ":":
+            items.append(":")
+            i += 1
+        elif char in ", ":
+            i += 1
+        else:
+            raise SharedFormulaError("malformed structured reference")
+    return items
+
+
+def _unescape_item(item):
+    return re.sub(r"'(.)", r"\1", item)
+
+
+def _resolve(table, content):
+    items = _items(content)
+    sections = {item.casefold() for item in items if item.startswith("#")}
+    names = [item if item == ":" else _unescape_item(item)
+             for item in items if not item.startswith("#")]
+    if any(name.startswith("@") for name in names) or "#this row" in sections:
+        raise SharedFormulaError("row-relative structured reference")
+    first_col, top, last_col, bottom = range_boundaries(table.ref)
+    spans = {"#all": (top, bottom), "#data": (top + table.headers, bottom - table.totals),
+             "#headers": (top, top + table.headers - 1) if table.headers else None,
+             "#totals": (bottom - table.totals + 1, bottom) if table.totals else None}
+    rows = [spans.get(section, False) for section in sections or {"#data"}]
+    if any(span is None or span is False for span in rows):
+        raise SharedFormulaError("unsupported structured reference section")
+    row_from, row_to = min(span[0] for span in rows), max(span[1] for span in rows)
+    if names in ([], [":"]):
+        col_from, col_to = first_col, last_col
+    else:
+        picked = [_column(table, name) + first_col for name in names if name != ":"]
+        if len(picked) > 2 or (len(picked) == 2 and ":" not in names):
+            raise SharedFormulaError("unsupported structured column list")
+        col_from, col_to = min(picked), max(picked)
+    corner = f"${get_column_letter(col_from)}${row_from}"
+    other = f"${get_column_letter(col_to)}${row_to}"
+    sheet = "'" + table.sheet.replace("'", "''") + "'"
+    return f"{sheet}!{corner}" if corner == other else f"{sheet}!{corner}:{other}"
+
+
+def _column(table, name):
+    wanted = name.strip().casefold()
+    for index, column in enumerate(table.columns):
+        if column.casefold() == wanted:
+            return index
+    raise SharedFormulaError("structured reference names an unknown table column")
+
+
+def read_tables(archive) -> dict:
+    """Map each table's display name (casefolded) to its sheet and layout."""
+    names = archive.namelist()
+    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    targets = {item.get("Id"): item.get("Target") for item in rels}
+    tables = {}
+    for sheet in workbook.iter(f"{MAIN_NS}sheet"):
+        part = _part("xl", targets.get(sheet.get(RID), ""))
+        sheet_rels = posixpath.join(posixpath.dirname(part), "_rels",
+                                    posixpath.basename(part) + ".rels")
+        if sheet_rels not in names:
+            continue
+        for rel in ET.fromstring(archive.read(sheet_rels)).iter(f"{REL_NS}Relationship"):
+            if not rel.get("Type", "").endswith("/table"):
+                continue
+            table_part = _part(posixpath.dirname(part), rel.get("Target", ""))
+            node = ET.fromstring(archive.read(table_part))
+            columns = [OOXML_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), column.get("name", ""))
+                       for column in node.iter(f"{MAIN_NS}tableColumn")]
+            tables[node.get("displayName", node.get("name", "")).casefold()] = Table(
+                sheet.get("name", ""), node.get("ref", ""),
+                int(node.get("headerRowCount", "1")), int(node.get("totalsRowCount", "0")), columns)
+    return tables
+
+
+def _part(base, target):
+    if target.startswith("/"):
+        return target.lstrip("/")
+    return posixpath.normpath(posixpath.join(base, target))
+
+
 def translate_shared(master_text: str, origin: str, target: str) -> str:
     """Translate a shared master formula from its master cell onto a follower.
 
@@ -78,13 +245,18 @@ def expand_shared_formulas(source, destination) -> ExpansionStats:
         names = archive.namelist()
         if "xl/workbook.xml" not in names:
             raise SharedFormulaError("package has no xl/workbook.xml")
+        tables = read_tables(archive)
         with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as output:
             for info in archive.infolist():
                 stats.parts += 1
                 entry = _entry(info)
                 if info.filename.startswith(WORKSHEET_PREFIX):
                     with archive.open(info) as reader, output.open(entry, "w") as writer:
-                        _expand_sheet(reader, writer, stats)
+                        _expand_sheet(reader, writer, stats, tables)
+                elif info.filename == "xl/workbook.xml" and tables:
+                    output.writestr(entry, DEFINED_NAME.sub(
+                        lambda m: m.group(1) + _rewrite_body(m.group(2), tables) + m.group(3),
+                        archive.read(info.filename)))
                 else:
                     output.writestr(entry, archive.read(info.filename))
     return stats
@@ -103,7 +275,7 @@ def prepared_template(source, cache_dir=None) -> Path:
         raise SharedFormulaError(f"template is unreadable: {exc}") from exc
     directory = Path(cache_dir) if cache_dir is not None else default_cache_dir()
     directory.mkdir(parents=True, exist_ok=True)
-    identity = f"{source.resolve()}|{status.st_size}|{status.st_mtime_ns}"
+    identity = f"{PREPARE_VERSION}|{source.resolve()}|{status.st_size}|{status.st_mtime_ns}"
     digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
     target = directory / f"{source.stem}.shared-{digest}{source.suffix}"
     if target.exists():
@@ -135,7 +307,7 @@ def _entry(info):
     return entry
 
 
-def _expand_sheet(reader, writer, stats):
+def _expand_sheet(reader, writer, stats, tables=None):
     """Stream one worksheet, replacing shared formulas as they are read.
 
     Cells are visited in document order, so a shared master is always seen
@@ -157,7 +329,7 @@ def _expand_sheet(reader, writer, stats):
             if match is None:
                 break
             writer.write(buffer[position:match.start()])
-            writer.write(_expand_cell(match.group(0), families, stats))
+            writer.write(_expand_cell(match.group(0), families, stats, tables))
             position = match.end()
         if finished:
             writer.write(buffer[position:])
@@ -173,13 +345,22 @@ def _expand_sheet(reader, writer, stats):
         buffer = buffer[stop:]
 
 
-def _expand_cell(cell, families, stats):
+def _rewrite_body(body, tables):
+    text = unescape(body.decode("utf-8"))
+    rewritten = rewrite_structured(text, tables)
+    return body if rewritten == text else escape(rewritten).encode("utf-8")
+
+
+def _expand_cell(cell, families, stats, tables=None):
     if b"<f" not in cell:
         return cell
     start = cell.index(b"<f")
     attributes, body, end = _split_formula(cell, start)
     if not SHARED_TYPE.search(attributes):
-        return cell
+        if not body or not tables:
+            return cell
+        rewritten = _rewrite_body(body, tables)
+        return cell if rewritten is body else cell[:start] + attributes + rewritten + b"</f>" + cell[end:]
     index = SHARED_INDEX.search(attributes)
     if index is None:
         raise SharedFormulaError("shared formula has no si index")
@@ -191,9 +372,10 @@ def _expand_cell(cell, families, stats):
     if body:
         # XML parsers turn raw CR/CRLF (Alt+Enter in Excel) into LF; openpyxl's tokenizer only accepts LF.
         text = unescape(body.decode("utf-8")).replace("\r\n", "\n").replace("\r", "\n")
+        text = rewrite_structured(text, tables or {})
         families[key] = _Family(address, text)
         stats.masters += 1
-        return cell[:start] + b"<f>" + body + b"</f>" + cell[end:]
+        return cell[:start] + b"<f>" + escape(text).encode("utf-8") + b"</f>" + cell[end:]
     family = families.get(key)
     if family is None:
         raise SharedFormulaError(f"shared formula si={key.decode()} has no master in this sheet")
