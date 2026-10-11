@@ -12,6 +12,7 @@ import re
 import shutil
 import tempfile
 from pathlib import Path
+from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 from xml.parsers import expat
 from xml.sax.saxutils import escape
@@ -35,7 +36,11 @@ REL_ATTRIBUTE_NAMESPACES = {
     "http://purl.oclc.org/ooxml/officeDocument/relationships",
 }
 SHEET_TAG = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?sheet\b[^>]*(?:/>|>.*?</(?P=prefix)sheet\s*>)", re.S)
-NAME_TAG = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?definedName\b[^>]*>.*?</(?:[A-Za-z_][\w.-]*:)?definedName\s*>", re.S)
+NAME_TAG = re.compile(
+    rb"<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)definedName\b[^>]*?"
+    rb"(?:/\s*>|>.*?</(?P=prefix)definedName\s*>)",
+    re.S,
+)
 CELL_START = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?c\b[^>]*>")
 INDIRECT_LITERAL = re.compile(
     r'(?i)(?<![\w.])(?:_xlfn\.)?INDIRECT\s*\(\s*"((?:""|[^"])*)"'
@@ -232,10 +237,18 @@ def _relationship_source(name):
 
 
 def _relationship_target(source, target):
-    if target.startswith("/"):
-        resolved = posixpath.normpath(target).lstrip("/")
+    if re.search(r"%(?![0-9A-Fa-f]{2})", target):
+        raise ValueError(f"unsafe OOXML relationship target: {target}")
+    try:
+        decoded = unquote(target, errors="strict")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"unsafe OOXML relationship target: {target}") from exc
+    if "\\" in decoded or any(ord(character) < 32 for character in decoded):
+        raise ValueError(f"unsafe OOXML relationship target: {target}")
+    if decoded.startswith("/"):
+        resolved = posixpath.normpath(decoded).lstrip("/")
     else:
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), target))
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(source), decoded))
     if resolved in {"", ".", ".."} or resolved.startswith("../"):
         raise ValueError(f"unsafe OOXML relationship target: {target}")
     return resolved
@@ -768,7 +781,12 @@ def _value_xml(value):
             raise ValueError("current calculation result is non-finite")
         return None, repr(value).encode("utf-8")
     if isinstance(value, str):
-        return "str", escape(value.replace("\r", "_x000D_")).encode("utf-8")
+        text = re.sub(
+            r"\r|_(?=x[0-9A-Fa-f]{4}(?:_|\r))",
+            lambda match: "_x000D_" if match.group() == "\r" else "_x005F_",
+            value,
+        )
+        return "str", escape(text).encode("utf-8")
     raise ValueError("current calculation result has an unsupported type")
 
 
@@ -1113,11 +1131,14 @@ def _rewrite_content_types(data, removed, fmt):
         lambda match: b"" if (_attribute(match.group(), "PartName") or "").lstrip("/") in removed else match.group(),
         data,
     )
-    if fmt == "xlsx":
-        data = re.sub(
-            rb'(<(?:[A-Za-z_][\w.-]*:)?Override\b(?=[^>]*\bPartName="/xl/workbook\.xml")[^>]*\bContentType=")[^"]*',
-            rb'\1application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml', data,
-        )
+    main_type = (
+        b"application/vnd.ms-excel.sheet.macroEnabled.main+xml" if fmt == "xlsm"
+        else b"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    )
+    data = re.sub(
+        rb'(<(?:[A-Za-z_][\w.-]*:)?Override\b(?=[^>]*\bPartName="/xl/workbook\.xml")[^>]*\bContentType=")[^"]*',
+        lambda match: match.group(1) + main_type, data,
+    )
     if b'PartName="/docProps/custom.xml"' not in data:
         root = re.search(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?Types\b[^>]*>", data)
         if root is None:
@@ -1355,9 +1376,10 @@ def validate_package(path, require_provenance=False):
 
 def _validation_state(archive):
     infos = archive.infolist()
-    names = {info.filename for info in infos}
+    listed = [info.filename for info in infos]
+    names = {info.filename for info in infos if not info.is_dir()}
     required = {"[Content_Types].xml", "_rels/.rels", "xl/workbook.xml"}
-    if len(names) != len(infos) or required - names:
+    if len(set(listed)) != len(listed) or required - names:
         raise ValueError("invalid OOXML package structure")
     defaults, overrides = _content_types(archive)
     dangling = set(overrides) - names
@@ -1372,6 +1394,8 @@ def _validation_state(archive):
 
 
 def _validate_package_member(archive, info, state):
+    if info.is_dir():
+        return
     name, references = info.filename, set()
     if name.endswith(".xml"):
         with archive.open(info) as stream:

@@ -240,6 +240,57 @@ class IndirectReferenceTests(unittest.TestCase):
         self.assertEqual(loaded["Keep"]["C1"].value, '=INDIRECT("Keep!D1")')
 
 
+class FormulaSerializationTests(unittest.TestCase):
+    def test_literal_ooxml_escape_prefix_and_carriage_return_stay_distinct(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        workbook = Workbook()
+        keep = workbook.active
+        keep.title = "Keep"
+        keep["A1"] = "=Drop!A1"
+        workbook.create_sheet("Drop")
+        workbook.save(source)
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0, selected={"Keep"},
+            results={(0, 0, 0): "literal_x000D_text\rnext"},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml")
+        self.assertIn(b"literal_x005F_x000D_text_x000D_next", sheet)
+
+
+class DefinedNameSerializationTests(unittest.TestCase):
+    def test_self_closing_name_does_not_absorb_the_next_definition(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        workbook = Workbook()
+        workbook.active.title = "Keep"
+        workbook.create_sheet("Drop")
+        workbook.defined_names.add(DefinedName("Gone", attr_text="'Drop'!$A$1"))
+        workbook.defined_names.add(DefinedName("KeepName", attr_text="'Keep'!$A$1"))
+        workbook.save(source)
+        with zipfile.ZipFile(source) as archive:
+            xml = archive.read("xl/workbook.xml")
+        xml = xml.replace(b"<definedNames>", b'<definedNames><definedName name="Empty"/>')
+        _rewrite(source, {"xl/workbook.xml": xml})
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0, selected={"Keep"}, results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            names = archive.read("xl/workbook.xml")
+        self.assertIn(b'<definedName name="Empty"/>', names)
+        self.assertNotIn(b'name="Gone"', names)
+        self.assertIn(b'name="KeepName"', names)
+
+
 def _worksheet_reference_fixture(path):
     workbook = Workbook()
     workbook.active.title = "Keep"
@@ -833,6 +884,18 @@ class MacroTransferTests(unittest.TestCase):
                 workbook.close()
                 package.close()
 
+    def test_xlsm_from_xlsx_uses_macro_enabled_workbook_content_type(self):
+        source, output = self.root / "plain.xlsx", self.root / "plain.xlsm"
+        _simple_fixture(source)
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0, fmt="xlsm", results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            content_types = archive.read("[Content_Types].xml")
+        self.assertIn(b"application/vnd.ms-excel.sheet.macroEnabled.main+xml", content_types)
+
 
 class PackageValidationTests(unittest.TestCase):
     def setUp(self):
@@ -844,6 +907,17 @@ class PackageValidationTests(unittest.TestCase):
         path = self.root / name
         _simple_fixture(path)
         return path
+
+    def add_root_relationship(self, path, target, additions=()):
+        with zipfile.ZipFile(path) as archive:
+            relationships = archive.read("_rels/.rels")
+        addition = (
+            b'<Relationship Id="rIdSynthetic" Type="urn:synthetic" Target="'
+            + target.encode() + b'"/>'
+        )
+        _rewrite(path, {"_rels/.rels": relationships.replace(
+            b"</Relationships>", addition + b"</Relationships>",
+        )}, additions)
 
     def test_in_part_relationship_reference_requires_a_matching_relationship(self):
         path = self.package("missing-ref.xlsx")
@@ -886,6 +960,28 @@ class PackageValidationTests(unittest.TestCase):
         )})
         with self.assertRaisesRegex(ValueError, "duplicate relationship id"):
             validate_package(path)
+
+    def test_percent_encoded_internal_relationship_target_is_resolved(self):
+        path = self.package("percent-target.xlsx")
+        self.add_root_relationship(
+            path, "customXml/My%20Item.xml",
+            (("customXml/My Item.xml", b'<item xmlns="urn:synthetic"/>'),),
+        )
+
+        validate_package(path)
+
+    def test_percent_encoded_traversal_is_rejected_after_decoding(self):
+        path = self.package("encoded-traversal.xlsx")
+        self.add_root_relationship(path, "%2e%2e/%2e%2e/escape.xml")
+
+        with self.assertRaisesRegex(ValueError, "unsafe OOXML relationship target"):
+            validate_package(path)
+
+    def test_zip_directory_entries_do_not_require_content_types(self):
+        path = self.package("directory-entry.xlsx")
+        _rewrite(path, {}, (("xl/worksheets/", b""),))
+
+        validate_package(path)
 
 
 def _api_formula_fixture(path):
