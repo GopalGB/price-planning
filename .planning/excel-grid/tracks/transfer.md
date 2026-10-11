@@ -24,7 +24,7 @@ Transfer owns download/upload package helpers, routes/config strictly needed for
 
 ## Evidence and current checkpoint
 
-Latest corrections: `e6c8a89` fixes H1 self-closing cells (red, regression green twice, controller export18/18). `baceaa6` fixes H3 stale upload merging (red, final regressions4/4 twice, controller upload33/33) and preserves the existing change/revert conflict contract. Both passed changed-file Ruff, staged secret scans and commit content guards. H2 and medium/low disposition remain in progress. All earlier full-suite, browser and build evidence below is historical until refreshed against corrected source.
+Latest corrections: `e6c8a89` fixes H1 self-closing cells (red, regression green twice, controller export18/18). `baceaa6` fixes H3 stale upload merging (red, final regressions4/4 twice, controller upload33/33) and preserves the existing change/revert conflict contract. `3c16953` bounds upload metadata and detaches XML nodes (controller upload39/39). `348f0a8` bounds worker concurrency/XML nesting/tokens/prepared bytes and removes cancelled/startup artifacts (controller upload/routes/resource55/55). All new boundaries have red evidence and focused greens twice. Changed-file Ruff, staged secret scans and commit content guards passed. Medium/low disposition and exact clean re-review remain in progress. All earlier full-suite, browser and build evidence below is historical until refreshed against corrected source.
 
 Local feature commits: `d4dddd4` download, `2ead2d7` upload. Both have matching built assets and passed staged secret/content guards without bypassing hooks. Full source remains identical to the final acceptance hash receipt. No dependency changes or outbound publication.
 
