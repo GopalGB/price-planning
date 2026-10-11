@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import unittest
 
 from tests.v2.api_support import APIFixture
@@ -44,6 +46,46 @@ class WorkbookAPIContractTests(unittest.TestCase):
         outsider, _, _ = self.fixture.signup("outsider@example.test", "Outsider")
         response = outsider.get(f"/api/copies/{self.copy['id']}/workbook")
         self.assertEqual((response.status_code, response.json()["error"]), (404, "not_found"))
+
+    def test_rows_handler_keeps_event_loop_responsive(self):
+        services = self.fixture.app.state.services
+        original = services.workbooks.rows
+        entered = threading.Event()
+        heartbeat = threading.Event()
+        release = threading.Event()
+        order = []
+
+        def blocking_rows(_query):
+            entered.set()
+            self.assertTrue(release.wait(1))
+            order.append("rows")
+            return {"rows": {}, "input_revision": 0, "calculated_revision": 0}
+
+        def unblock():
+            entered.wait(1)
+            heartbeat.wait(0.2)
+            release.set()
+
+        async def request_with_heartbeat():
+            path = f"/api/copies/{self.copy['id']}/sheets/0/rows?start=0&count=1"
+            request = asyncio.create_task(self.client._request("GET", path, None, {}))
+            await asyncio.sleep(0)
+            order.append("heartbeat")
+            heartbeat.set()
+            return await request
+
+        services.workbooks.rows = blocking_rows
+        thread = threading.Thread(target=unblock)
+        thread.start()
+        try:
+            response = asyncio.run(request_with_heartbeat())
+        finally:
+            release.set()
+            thread.join()
+            services.workbooks.rows = original
+        self.assertTrue(entered.is_set())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(order, ["heartbeat", "rows"])
 
     def test_rows_use_one_snapshot_when_calculation_publishes_between_queries(self):
         """Reading results after newer metadata must not mislabel a mixed SQLite snapshot."""

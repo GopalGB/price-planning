@@ -221,7 +221,7 @@ async def _rows(request: Request):
     count = _integer(request.query_params.get("count"), "count")
     query = RowQuery(request.path_params["copy_id"], user["id"],
                      request.path_params["sheet"], start, count)
-    body = services.workbooks.rows(query)
+    body = await asyncio.to_thread(services.workbooks.rows, query)
     return JSONResponse(body)
 
 
