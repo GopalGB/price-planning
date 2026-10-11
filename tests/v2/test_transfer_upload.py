@@ -91,6 +91,43 @@ def _formula_input_fixture(path):
     workbook.save(path)
 
 
+def _forge_declared_compressed_sizes(data):
+    """Rewrite every central-directory compress_size to match its file_size.
+
+    zipfile trusts these declared values when it reports member sizes, so a
+    forged archive looks perfectly compressed to any check that reads them.
+    """
+    forged = bytearray(data)
+    start = forged.find(b"PK\x05\x06")
+    if start < 0:
+        raise AssertionError("no end of central directory record")
+    count = int.from_bytes(forged[start + 10:start + 12], "little")
+    offset = int.from_bytes(forged[start + 16:start + 20], "little")
+    for _ in range(count):
+        if forged[offset:offset + 4] != b"PK\x01\x02":
+            raise AssertionError("no central directory header")
+        file_size = int.from_bytes(forged[offset + 24:offset + 28], "little")
+        forged[offset + 20:offset + 24] = file_size.to_bytes(4, "little")
+        name_length = int.from_bytes(forged[offset + 28:offset + 30], "little")
+        extra_length = int.from_bytes(forged[offset + 30:offset + 32], "little")
+        comment_length = int.from_bytes(forged[offset + 32:offset + 34], "little")
+        offset += 46 + name_length + extra_length + comment_length
+    return bytes(forged)
+
+
+def _real_stored_ratio(path):
+    """Highest expanded/stored ratio measured from real member footprints."""
+    with zipfile.ZipFile(path) as archive:
+        members = sorted(archive.infolist(), key=lambda item: item.header_offset)
+        total = path.stat().st_size
+        worst = 0.0
+        for index, info in enumerate(members):
+            end = members[index + 1].header_offset if index + 1 < len(members) else total
+            stored = max(end - info.header_offset - 30 - len(info.filename), 1)
+            worst = max(worst, info.file_size / stored)
+    return worst
+
+
 def _rewrite_zip(data, root, transform=None, additions=()):
     source, output = root / "zip-source.xlsx", root / "zip-output.xlsx"
     source.write_bytes(data)
@@ -376,6 +413,30 @@ class UploadAPITests(unittest.TestCase):
                 with self.assertRaises(AppError) as raised:
                     _validate_archive(candidate)
                 self.assertEqual((raised.exception.status, raised.exception.code), (413, "archive_bomb"))
+
+    def test_forged_compressed_sizes_cannot_hide_an_expansion_ratio(self):
+        from pp.upload import _validate_archive
+
+        candidate = self.fixture.root / "forged-ratio.xlsx"
+        candidate.write_bytes(_forge_declared_compressed_sizes(self.exported))
+        true_ratio = _real_stored_ratio(candidate)
+        self.assertGreater(true_ratio, 1.5, "fixture must actually be compressed")
+        with zipfile.ZipFile(candidate) as archive:
+            declared = max(
+                item.file_size / max(item.compress_size, 1) for item in archive.infolist()
+            )
+        self.assertLessEqual(declared, 1.5, "declared sizes must look uncompressed")
+
+        for threshold in (2.0, (true_ratio + 1.5) / 2):
+            with self.subTest(threshold=threshold), \
+                    mock.patch.multiple(
+                        "pp.upload", RATIO_MIN_BYTES=0, MAX_RATIO=threshold,
+                    ):
+                with self.assertRaises(AppError) as raised:
+                    _validate_archive(candidate)
+                self.assertEqual(
+                    (raised.exception.status, raised.exception.code), (413, "archive_bomb"),
+                )
 
     def test_styles_theme_and_renamed_shared_strings_have_tree_limits(self):
         from pp.upload import _validate_archive

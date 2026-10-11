@@ -429,7 +429,24 @@ def _filename(value):
     return name
 
 
-def _safe_member(info):
+def _stored_sizes(infos, total_bytes):
+    """Measure each member's real on-disk footprint from its header offsets.
+
+    The compress_size in the zip directory is attacker controlled, so the
+    expansion ratio is only trustworthy against measured bytes. A forged
+    offset still has to point at a readable header, so this cannot be spoofed
+    without breaking the archive read itself.
+    """
+    ordered = sorted(infos, key=lambda item: item.header_offset)
+    stored = {}
+    for index, info in enumerate(ordered):
+        end = ordered[index + 1].header_offset if index + 1 < len(ordered) else total_bytes
+        overhead = 30 + len(info.filename.encode("utf-8")) + len(info.extra)
+        stored[info.filename] = max(end - info.header_offset - overhead, 1)
+    return stored
+
+
+def _safe_member(info, stored=1):
     name = info.filename
     path = PurePosixPath(name)
     if (not name or "\\" in name or name.startswith("/") or ".." in path.parts
@@ -437,7 +454,7 @@ def _safe_member(info):
         raise AppError(422, "invalid_workbook", "Workbook archive contains an unsafe member")
     if info.file_size > MAX_UNCOMPRESSED:
         raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
-    if info.file_size > RATIO_MIN_BYTES and info.file_size / max(info.compress_size, 1) > MAX_RATIO:
+    if info.file_size > RATIO_MIN_BYTES and info.file_size / stored > MAX_RATIO:
         raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
 
 
@@ -448,11 +465,12 @@ def _validate_archive(path):
             names = [item.filename for item in infos]
             if len(infos) > MAX_MEMBERS or len(names) != len(set(names)):
                 raise AppError(422, "invalid_workbook", "Workbook archive structure is invalid")
+            stored = _stored_sizes(infos, path.stat().st_size)
             for info in infos:
-                _safe_member(info)
+                _safe_member(info, stored[info.filename])
             if sum(item.file_size for item in infos) > MAX_UNCOMPRESSED:
                 raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
-            graph = _validate_xml_members(archive)
+            graph = _validate_xml_members(archive, stored)
             _validate_workbook_content_type(archive)
             for _ in _iter_shared_strings(
                     archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")):
@@ -464,7 +482,7 @@ def _validate_archive(path):
         raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
 
 
-def _validate_xml_members(archive):
+def _validate_xml_members(archive, stored):
     xml_members = _xml_members(archive)
     total, relationship_total = 0, 0
     for info in archive.infolist():
@@ -488,7 +506,7 @@ def _validate_xml_members(archive):
                 if parser is not None:
                     parser.Parse(chunk, False)
                     _check_xml_token(parser, expanded)
-        if expanded > RATIO_MIN_BYTES and expanded / max(info.compress_size, 1) > MAX_RATIO:
+        if expanded > RATIO_MIN_BYTES and expanded / stored[info.filename] > MAX_RATIO:
             raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
         if parser is not None:
             parser.Parse(b"", True)
