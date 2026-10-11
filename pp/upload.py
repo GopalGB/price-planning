@@ -50,6 +50,8 @@ MAX_SHARED_STRING_COUNT = 500_000
 MAX_SHARED_STRING_BYTES = 32 * 1024 * 1024
 MAX_STRUCTURE_RECORDS = 100_000
 MAX_STRUCTURE_BYTES = 16 * 1024 * 1024
+MAX_XML_DEPTH = 256
+MAX_XML_TOKEN_BYTES = 8 * 1024 * 1024
 PREVIEW_SECONDS = 15 * 60
 MAX_ACTIVE_PREVIEWS = 128
 MAX_PREVIEW_CACHE_BYTES = 2 * MAX_UNCOMPRESSED
@@ -453,6 +455,7 @@ def _validate_xml_members(archive):
                     raise AppError(413, "archive_bomb", "Workbook XML metadata is too large")
                 if parser is not None:
                     parser.Parse(chunk, False)
+                    _check_xml_token(parser, expanded)
         if expanded > RATIO_MIN_BYTES and expanded / max(info.compress_size, 1) > MAX_RATIO:
             raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
         if parser is not None:
@@ -495,6 +498,7 @@ def _screen_xml(archive, info, limit):
             if expanded > limit:
                 raise AppError(413, "archive_bomb", "Workbook XML metadata is too large")
             parser.Parse(chunk, False)
+            _check_xml_token(parser, expanded)
     parser.Parse(b"", True)
 
 
@@ -514,8 +518,43 @@ def _tree_xml_limit(name):
     return None
 
 
+class _XMLGuard:
+    def __init__(self):
+        self.depth = 0
+        self.text_bytes = 0
+
+    def start(self, name, attributes):
+        self.depth += 1
+        self.text_bytes = 0
+        if self.depth > MAX_XML_DEPTH:
+            raise AppError(413, "archive_bomb", "Workbook XML nesting exceeds the safe limit")
+        size = len(name.encode("utf-8")) + sum(
+            len(item.encode("utf-8")) for pair in attributes.items() for item in pair
+        )
+        if size > MAX_XML_TOKEN_BYTES:
+            raise AppError(413, "archive_bomb", "Workbook XML token exceeds the safe limit")
+
+    def end(self, *_args):
+        self.depth -= 1
+        self.text_bytes = 0
+
+    def characters(self, value):
+        self.text_bytes += len(value.encode("utf-8"))
+        if self.text_bytes > MAX_XML_TOKEN_BYTES:
+            raise AppError(413, "archive_bomb", "Workbook XML token exceeds the safe limit")
+
+
+def _check_xml_token(parser, consumed):
+    if consumed - parser.CurrentByteIndex > MAX_XML_TOKEN_BYTES:
+        raise AppError(413, "archive_bomb", "Workbook XML token exceeds the safe limit")
+
+
 def _xml_parser():
-    parser = expat.ParserCreate()
+    parser, guard = expat.ParserCreate(), _XMLGuard()
+
+    parser.StartElementHandler = guard.start
+    parser.EndElementHandler = guard.end
+    parser.CharacterDataHandler = guard.characters
     parser.StartDoctypeDeclHandler = _unsafe_xml
     parser.EntityDeclHandler = _unsafe_xml
     parser.UnparsedEntityDeclHandler = _unsafe_xml

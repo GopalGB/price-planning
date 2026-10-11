@@ -445,6 +445,51 @@ class UploadAPITests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422, response.body)
                 self.assertEqual(response.json()["error"], "unsafe_xml")
 
+    def test_xml_depth_is_bounded_before_package_parsing(self):
+        from pp.upload import _validate_archive
+
+        data = _rewrite_zip(
+            self.exported, self.fixture.root,
+            additions=(("customXml/deep.xml", b"<one><two><three/></two></one>"),),
+        )
+        candidate = self.fixture.root / "deep-xml.xlsx"
+        candidate.write_bytes(data)
+        with mock.patch("pp.upload.MAX_XML_DEPTH", 2, create=True), \
+                mock.patch("pp.upload.validate_package",
+                           side_effect=AssertionError("package parser reached")):
+            with self.assertRaises(AppError) as raised:
+                _validate_archive(candidate)
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "archive_bomb"))
+
+    def test_xml_attributes_and_text_nodes_have_token_limits(self):
+        from pp.upload import _check_xml_token, _screen_xml, _xml_parser
+
+        cases = (
+            ("attribute", b'<one value="abcd"/>'),
+            ("text", b"<one>abcd</one>"),
+        )
+        for name, xml in cases:
+            stream = io.BytesIO()
+            with zipfile.ZipFile(stream, "w") as archive:
+                archive.writestr(f"customXml/{name}.xml", xml)
+            with self.subTest(name=name), \
+                    zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive, \
+                    mock.patch("pp.upload.MAX_XML_TOKEN_BYTES", 3, create=True):
+                with self.assertRaises(AppError) as raised:
+                    _screen_xml(archive, archive.getinfo(f"customXml/{name}.xml"), 1024)
+                self.assertEqual((raised.exception.status, raised.exception.code),
+                                 (413, "archive_bomb"))
+
+        parser = _xml_parser()
+        unfinished = b'<one value="'
+        with mock.patch("pp.upload.MAX_XML_TOKEN_BYTES", 3), \
+                self.assertRaises(AppError) as raised:
+            parser.Parse(unfinished, False)
+            _check_xml_token(parser, len(unfinished))
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "archive_bomb"))
+
     def test_relationship_targeted_xml_is_screened_even_without_xml_suffix(self):
         main = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
         worksheet = (

@@ -1,9 +1,11 @@
 """Synthetic contract tests for safe workbook download transforms."""
 
+import asyncio
 import io
 import os
 from pathlib import Path
 import shutil
+import threading
 import time
 import unittest
 from unittest import mock
@@ -13,6 +15,7 @@ import xml.etree.ElementTree as ET
 from openpyxl import Workbook, load_workbook
 from openpyxl.workbook.defined_name import DefinedName
 
+from pp.errors import AppError
 from pp.export.transfer import TransferRequest, export_transfer
 from tests.v2.api_support import APIFixture
 from tests.v2.support import SYNTHETIC_LOGIN
@@ -441,6 +444,32 @@ class DownloadRouteSelectionTests(unittest.TestCase):
         self.assertFalse(pending_path.exists())
         self.assertEqual(self.client.get(pending.json()["download_url"]).status_code, 404)
 
+    def test_services_startup_sweeps_stale_transfer_files_only(self):
+        from pp.server import ServiceContext, Services
+
+        data = self.fixture.config.data_dir
+        stale = (
+            data / "exports" / "price-plan-old.xlsx",
+            data / "exports" / "prepared" / "price-plan-old.xlsm",
+            data / "exports" / "abandoned.part",
+            data / "uploads" / "preview-old.xlsx",
+            data / "uploads" / "previews" / "old.json",
+        )
+        for path in stale:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"stale")
+        retained = data / "uploads" / "keep.txt"
+        retained.write_text("keep", encoding="utf-8")
+
+        services = Services(ServiceContext(
+            self.fixture.database, self.fixture.snapshot,
+            self.fixture.config, self.fixture.pool,
+        ))
+        self.addCleanup(services.close)
+
+        self.assertFalse(any(path.exists() for path in stale))
+        self.assertTrue(retained.exists())
+
     def test_preparation_error_does_not_create_artifact_or_generate(self):
         exports = self.fixture.config.data_dir / "exports"
         before = {item for item in exports.glob("**/*") if item.is_file()}
@@ -455,6 +484,123 @@ class DownloadRouteSelectionTests(unittest.TestCase):
             failed = self.prepare()
         self.assertEqual(failed.status_code, 500, failed.body)
         self.assertEqual({item for item in exports.glob("**/*") if item.is_file()}, before)
+
+
+class TransferResourceSafetyTests(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.id().replace(".", "-"))
+        self.root.mkdir()
+        self.addCleanup(lambda: shutil.rmtree(self.root, ignore_errors=True))
+
+    def test_transfer_workers_are_concurrency_bounded(self):
+        from pp.server import _run_bounded
+
+        active = 0
+        maximum = 0
+        lock = threading.Lock()
+
+        def work(value):
+            nonlocal active, maximum
+            with lock:
+                active += 1
+                maximum = max(maximum, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return value
+
+        async def exercise():
+            limiter = threading.BoundedSemaphore(1)
+            return await asyncio.gather(
+                _run_bounded(limiter, work, 1),
+                _run_bounded(limiter, work, 2),
+            )
+
+        self.assertEqual(asyncio.run(exercise()), [1, 2])
+        self.assertEqual(maximum, 1)
+
+    def test_cancelled_export_cleans_output_after_worker_finishes(self):
+        from pp.server import ExportJob, _build_export
+
+        path = self.root / "late.xlsx"
+        started, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+        def delayed_export(_job):
+            started.set()
+            release.wait(2)
+            path.write_bytes(b"late")
+            finished.set()
+
+        async def exercise():
+            with mock.patch("pp.server._write_export", side_effect=delayed_export):
+                task = asyncio.create_task(_build_export(ExportJob({}, "copy", "xlsx", None, path)))
+                await asyncio.to_thread(started.wait, 2)
+                task.cancel()
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                await asyncio.to_thread(finished.wait, 2)
+
+        asyncio.run(exercise())
+        self.assertFalse(path.exists())
+
+    def test_repeated_export_cancellation_cannot_leave_late_output(self):
+        from pp.server import ExportJob, _build_export
+
+        path = self.root / "late-twice.xlsx"
+        started, release = threading.Event(), threading.Event()
+        limiter = threading.BoundedSemaphore(1)
+
+        def delayed_export(_job):
+            started.set()
+            release.wait(2)
+            path.write_bytes(b"late")
+
+        async def exercise():
+            with mock.patch("pp.server._write_export", side_effect=delayed_export):
+                task = asyncio.create_task(_build_export(
+                    ExportJob({}, "copy", "xlsx", None, path), limiter,
+                ))
+                await asyncio.to_thread(started.wait, 2)
+                task.cancel()
+                await asyncio.sleep(0)
+                task.cancel()
+                release.set()
+                with self.assertRaises(asyncio.CancelledError):
+                    await task
+                acquired = await asyncio.to_thread(limiter.acquire, True, 2)
+                self.assertTrue(acquired)
+                limiter.release()
+
+        asyncio.run(exercise())
+        self.assertFalse(path.exists())
+
+    def test_prepared_store_has_an_aggregate_byte_bound(self):
+        from pp.server import PreparedArtifact, PreparedDownloadStore
+
+        store = PreparedDownloadStore()
+        self.addCleanup(store.close)
+
+        def artifact(name, content):
+            path = self.root / name
+            path.write_bytes(content)
+            return PreparedArtifact(path, "user", "session", "copy", name, time.monotonic() + 60)
+
+        first = artifact("first.xlsx", b"1234")
+        second = artifact("second.xlsx", b"5678")
+        with mock.patch("pp.server.MAX_PREPARED_DOWNLOAD_BYTES", 6, create=True):
+            store.add(first)
+            store.add(second)
+        self.assertFalse(first.path.exists())
+        self.assertTrue(second.path.exists())
+
+        oversized = artifact("oversized.xlsx", b"1234567")
+        with mock.patch("pp.server.MAX_PREPARED_DOWNLOAD_BYTES", 6, create=True), \
+                self.assertRaises(AppError) as raised:
+            store.add(oversized)
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "download_too_large"))
+        self.assertFalse(oversized.path.exists())
 
 
 class DownloadStreamingBenchmarkTests(unittest.TestCase):

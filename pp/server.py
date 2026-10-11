@@ -37,6 +37,8 @@ from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog
 LOGGER = logging.getLogger(__name__)
 BODY_LIMIT = 2 * 1024 * 1024
 MAX_PREPARED_DOWNLOADS = 32
+MAX_PREPARED_DOWNLOAD_BYTES = 512 * 1024 * 1024
+MAX_ACTIVE_TRANSFERS = 2
 PREPARED_DOWNLOAD_SECONDS = 2 * 60
 
 
@@ -72,6 +74,7 @@ class Services:
         self.database = context.database
         self.snapshot = context.snapshot
         self.config = context.config
+        _sweep_transfer_files(context.config.data_dir)
         templates = TemplateCatalog(context.database, context.snapshot)
         self.auth = AuthService(context.database, context.config)
         self.categories = CategoryService(context.database)
@@ -87,6 +90,7 @@ class Services:
         self.hub = LiveHub(context.database, context.config.replay_window)
         self.writes = WriteLimiter()
         self.downloads = PreparedDownloadStore()
+        self.transfer_limiter = threading.BoundedSemaphore(MAX_ACTIVE_TRANSFERS)
 
     def close(self):
         self.downloads.close()
@@ -342,7 +346,7 @@ async def _export(request: Request):
         return Response(status_code=204)
     fmt = "xlsx" if request.url.path.endswith(".xlsx") else "xlsm"
     path = _export_path(services, fmt, False)
-    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path))
+    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path), services.transfer_limiter)
     return DisposableFileResponse(
         path, media_type=_export_media(fmt), filename=f"price-plan.{fmt}",
     )
@@ -357,7 +361,7 @@ async def _prepare_download(request: Request):
     selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
     _require_export_ready(snapshot, selected)
     path = _export_path(services, fmt, True)
-    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path))
+    await _build_export(ExportJob(snapshot, copy_id, fmt, selected, path), services.transfer_limiter)
     artifact = PreparedArtifact(
         path, user["id"], token_hash(request.cookies.get("pp_session", "")),
         copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
@@ -388,15 +392,19 @@ async def _prepared_download(request: Request):
         raise
 
 
-async def _build_export(job):
+async def _build_export(job, limiter=None):
+    cancelled = threading.Event()
     try:
-        await asyncio.to_thread(_write_export, job)
+        await _run_bounded(
+            limiter or threading.BoundedSemaphore(1), _write_export_job, (job, cancelled),
+        )
     except ValueError as exc:
         job.path.unlink(missing_ok=True)
         if str(exc).startswith("current calculation result"):
             raise AppError(409, "calculation_required", str(exc)) from exc
         raise
     except BaseException:
+        cancelled.set()
         job.path.unlink(missing_ok=True)
         raise
 
@@ -410,6 +418,32 @@ def _write_export(job):
         input_revision=job.snapshot["input_revision"], fmt=job.fmt,
         selected=job.selected, results=job.snapshot["results"],
     ))
+
+
+def _write_export_job(payload):
+    job, cancelled = payload
+    try:
+        _write_export(job)
+    finally:
+        if cancelled.is_set():
+            job.path.unlink(missing_ok=True)
+
+
+def _call_bounded(limiter, function, value):
+    with limiter:
+        return function(value)
+
+
+async def _run_bounded(limiter, function, value):
+    worker = asyncio.create_task(asyncio.to_thread(_call_bounded, limiter, function, value))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await worker
+        except BaseException:
+            pass
+        raise
 
 
 def _require_export_ready(snapshot, selected):
@@ -469,7 +503,7 @@ async def _upload_preview(request: Request):
                             or request.query_params.get("copy_id")),
             category_id=request.query_params.get("category_id"),
         )
-        body = await asyncio.to_thread(services.uploads.preview, preview)
+        body = await _run_bounded(services.transfer_limiter, services.uploads.preview, preview)
         return JSONResponse(body)
     finally:
         path.unlink(missing_ok=True)
@@ -650,6 +684,20 @@ async def _static(request):
     raise AppError(404, "not_found", "File not found")
 
 
+def _sweep_transfer_files(data_dir):
+    root = Path(data_dir)
+    for directory in (root / "exports", root / "uploads" / "previews"):
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+    uploads = root / "uploads"
+    if uploads.is_dir():
+        for path in uploads.glob("preview-*.xlsx"):
+            path.unlink(missing_ok=True)
+
+
 class WriteLimiter:
     def __init__(self, limit=240):
         self.limit = limit
@@ -674,9 +722,15 @@ class PreparedDownloadStore:
     def add(self, artifact):
         token = uuid4().hex
         try:
+            size = artifact.path.stat().st_size
+            if size > MAX_PREPARED_DOWNLOAD_BYTES:
+                raise AppError(
+                    413, "download_too_large", "Prepared download exceeds the safe disk limit"
+                )
             with self._lock:
                 self._purge()
-                while len(self._items) >= MAX_PREPARED_DOWNLOADS:
+                while (len(self._items) >= MAX_PREPARED_DOWNLOADS
+                       or self._stored_bytes() + size > MAX_PREPARED_DOWNLOAD_BYTES):
                     removed = self._items.pop(next(iter(self._items)))
                     removed.path.unlink(missing_ok=True)
                 self._items[token] = artifact
@@ -715,6 +769,9 @@ class PreparedDownloadStore:
             if artifact.expires <= now:
                 del self._items[token]
                 artifact.path.unlink(missing_ok=True)
+
+    def _stored_bytes(self):
+        return sum(artifact.path.stat().st_size for artifact in self._items.values())
 
 
 class DisposableFileResponse(FileResponse):
