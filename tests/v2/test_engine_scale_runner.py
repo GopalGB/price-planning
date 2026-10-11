@@ -1,4 +1,5 @@
 import io
+import itertools
 import json
 import os
 import signal
@@ -21,6 +22,7 @@ from ops.bench_engine_scale import (
     _parent_signal_handlers,
     _resource_check,
     _run_edits,
+    _stop_owned,
     _stop_reason,
     _write_report,
     collect_child_result,
@@ -94,7 +96,7 @@ def _monitor(timeout, baseline, swap_reader, disk_reader=lambda _: 4096.0, clock
         swap_reader=swap_reader,
         disk_reader=disk_reader,
         sleep=lambda _: None,
-        clock=clock or iter([0.0, 0.5]).__next__,
+        clock=clock or itertools.count(0.0, 0.5).__next__,
     )
 
 
@@ -145,6 +147,21 @@ class EngineScaleRunnerTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["failure_stage"], "swap_watchdog")
         self.assertEqual(result["latest_progress"]["stage"], "load")
+        self.assertEqual(result["attempt_elapsed_seconds"], 1.0)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process-group behavior")
+    def test_repeated_stop_does_not_resignal_a_reused_process_group(self):
+        child = _FakeChild(0)
+        child.pid = 4321
+        child._engine_scale_pgid = 4321
+
+        with mock.patch("ops.bench_engine_scale.os.getpgid") as getpgid, \
+                mock.patch("ops.bench_engine_scale.os.killpg") as killpg:
+            _stop_owned(child)
+            _stop_owned(child)
+
+        killpg.assert_called_once_with(4321, signal.SIGKILL)
+        getpgid.assert_not_called()
 
     @unittest.skipIf(os.name == "nt", "POSIX process-group behavior")
     def test_watchdog_kills_real_child_and_preserves_all_resource_extrema(self):
@@ -158,7 +175,7 @@ class EngineScaleRunnerTests(unittest.TestCase):
             context = MonitorContext(
                 timeout_seconds=600, swap_baseline_mib=100.0,
                 swap_reader=lambda: next(swaps), disk_reader=lambda _: next(disks),
-                sleep=lambda _: None, clock=iter([0.0, 0.5]).__next__,
+                sleep=lambda _: None, clock=itertools.count(0.0, 0.5).__next__,
                 rss_reader=lambda _: next(rss),
             )
 
@@ -317,6 +334,29 @@ class EngineScaleRunnerTests(unittest.TestCase):
         self.assertEqual(result["cached_baseline"]["native_match_count"], 150)
         self.assertEqual(result["correctness"]["ordinary"]["actual_changed"], 1)
         self.assertEqual(result["correctness"]["broad"]["actual_changed"], 150)
+
+    def test_load_failure_preserves_generated_manifest_summary(self):
+        manifest = build_manifest(0.0001, 20261011)
+        manifest.pop("formula_encoding_plan")
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp)
+            progress = workspace / "progress.json"
+            with mock.patch("ops.bench_engine_scale.generate", return_value=manifest), \
+                    mock.patch(
+                        "pp.engine.formualizer.FormualizerAdapter.load",
+                        side_effect=RuntimeError("load failed"),
+                    ):
+                code = run_child(ChildContext(0.0001, 20261011, workspace, progress))
+            result = collect_child_result(code, progress)
+
+        self.assertEqual(result["failure_stage"], "load")
+        self.assertEqual(result["actual_totals"]["cells"], manifest["cell_count"])
+        self.assertEqual(result["actual_totals"]["formulas"], manifest["formula_count"])
+        self.assertEqual(
+            result["actual_totals"]["formula_encodings"],
+            manifest["formula_encoding_counts"],
+        )
+        self.assertEqual(result["actual_totals"]["sheets"], manifest["sheets"])
 
     def test_disk_guard_failure_is_fail_closed_and_preserves_progress(self):
         with tempfile.TemporaryDirectory() as tmp:

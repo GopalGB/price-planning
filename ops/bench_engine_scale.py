@@ -217,6 +217,7 @@ def run_child(context):
         started = time.perf_counter()
         manifest = generate(context.workspace / "fixture.xlsx", context.scale, context.seed)
         metrics["generation_seconds"] = time.perf_counter() - started
+        metrics["actual_totals"] = _manifest_summary(manifest)
         _write_progress(context.progress_path, metrics)
         _stage(metrics, context.progress_path, "load")
         from pp.engine.formualizer import FormualizerAdapter
@@ -250,12 +251,16 @@ def _child_summary(manifest, correct):
         "child_peak_rss_bytes": _rss_bytes(), "report_date": _today(),
         "engine_version": importlib.metadata.version("formualizer"),
         "physical_ram_bytes": physical_ram_bytes(),
-        "actual_totals": {
-            "cells": manifest["cell_count"], "formulas": manifest["formula_count"],
-            "formula_encodings": manifest["formula_encoding_counts"],
-            "function_uses": manifest["function_use_counts"],
-            "sheets": manifest["sheets"],
-        },
+        "actual_totals": _manifest_summary(manifest),
+    }
+
+
+def _manifest_summary(manifest):
+    return {
+        "cells": manifest["cell_count"], "formulas": manifest["formula_count"],
+        "formula_encodings": manifest["formula_encoding_counts"],
+        "function_uses": manifest["function_use_counts"],
+        "sheets": manifest["sheets"],
     }
 
 
@@ -327,6 +332,7 @@ def _signal_owned(process, force=False):
 
 def _sweep_owned_group(process):
     pgid = getattr(process, "_engine_scale_pgid", None)
+    process._engine_scale_pgid = None
     if not pgid or os.name == "nt":
         return
     try:
@@ -336,8 +342,8 @@ def _sweep_owned_group(process):
 
 
 def _stop_owned(process):
-    _owned_pgid(process)
     if process.poll() is None:
+        _owned_pgid(process)
         try:
             _signal_owned(process)
         except ProcessLookupError:
@@ -404,16 +410,22 @@ def monitor_owned_child(process, progress_path, context):
         while process.poll() is None:
             reading = _monitor_reading(process, progress_path, context)
             _update_maxima(maxima, reading)
+            elapsed = max(context.clock() - started, 0.0)
             if "failure_stage" in reading:
                 reading.update(maxima)
-                return _monitor_failure(process, progress_path, reading)
-            if context.clock() - started > context.timeout_seconds:
+                result = _monitor_failure(process, progress_path, reading)
+                result["attempt_elapsed_seconds"] = elapsed
+                return result
+            if elapsed > context.timeout_seconds:
                 reading.update(maxima)
                 reading["failure_stage"] = "timeout"
-                return _monitor_failure(process, progress_path, reading)
+                result = _monitor_failure(process, progress_path, reading)
+                result["attempt_elapsed_seconds"] = elapsed
+                return result
             context.sleep(POLL_SECONDS)
         result = collect_child_result(process.wait(), progress_path)
         result.update(maxima)
+        result["attempt_elapsed_seconds"] = max(context.clock() - started, 0.0)
         return result
     finally:
         _stop_owned(process)
