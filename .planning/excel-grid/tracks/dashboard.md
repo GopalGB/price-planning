@@ -55,3 +55,11 @@ Current Step 3 service 100k benchmark now passes again: cold prepared result 0.6
 ## Next task
 
 Step 3 focused commit: `0670be1`, `feat: render in-grid pivot controls`, hooks/staged gitleaks clean. Step 4 explicit/debounced refresh is verified for its focused commit. Then refresh, category totals and team overview. Final 100k performance must be resolved along with the full acceptance gates. Original Step 2 target: current-source pivot service and coherent, authorized copy reads, filtering/layout and 100k-record cold/warm benchmark. Category totals will retain existing per-copy access unless the owner answers the pending clarification. No Microsoft Excel app or Calibri/Aptos font was found locally; local screenshots cannot independently establish Excel pixel parity.
+
+## Resume resource stop, 2026-10-11 19:33 IST
+
+Owner's explicit stop condition met immediately: `df -g /` Available 3 GB, below 4 GB. Swap baseline used 9840.44 MB. Branch `feat/v2-dashboard`; nine modified tracked implementation/test files plus untracked `tests/v2/test_category_pivot_api.py` remain intact. No tests, commit, Claude review, browser check or generated fixture ran after this resume. Review quota reset does not waive the resource stop. Next: establish at least 4 GB available, rerun focused tests for current refresh/category work, commit green items separately, then continue Steps 5-6 and final acceptance including exact `claude-opus-5-5`.
+
+## Active resume, 2026-10-11
+
+Current owner stop rule: Available below 2500 MB, or swap above 6814.62 MB (baseline 5278.62 MB). Initial Available 6071 MB. This supersedes the previous 4 GB stop note. Actual branch log already includes refresh `a131b5b`; the old prose saying it was uncommitted was stale. Focused current Python 30/30 twice after three observed category boundary reds were fixed, web 125/125 twice, ruff/pinned Prettier/content guard/staged gitleaks clean. Category totals committed `395ca30`: authorized current-source union, duplicate-safe Copy selectors, personal category view, same-grid read-only toggle and source-revision polling. Exact Opus 5.5 review running; final acceptance pending. Team overview assigned to one takeover worker; existing TaskSpace 43 resumed, no new TaskSpace or current server started.
