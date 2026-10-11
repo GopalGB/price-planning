@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from functools import lru_cache
 import json
 from pathlib import Path
@@ -36,7 +37,22 @@ class TemplateSnapshot:
         return {"v": None, "s": style, "k": kind}
 
     def is_input(self, sheet: int, row: int, col: int) -> bool:
+        if self._pivot_output(sheet, row, col):
+            return False
         return f"{sheet}:{row}:{col}" in self.input_mask or self.cell(sheet, row, col)["k"] == "i"
+
+    def _pivot_output(self, sheet: int, row: int, col: int) -> bool:
+        if not 0 <= sheet < len(self.sheets):
+            return False
+        for pivot in self.sheets[sheet].get("pivots", []):
+            first_row, first_col, last_row, last_col = pivot["location"]["bounds"]
+            if first_row <= row <= last_row and first_col <= col <= last_col:
+                return True
+            page_count = len(pivot.get("page_fields", []))
+            page_row = max(0, first_row - page_count - 1)
+            if page_row <= row < page_row + page_count and first_col <= col <= first_col + 1:
+                return True
+        return False
 
     def implicit_cells(self, sheet: int, row: int) -> dict:
         if not 0 <= sheet < len(self.sheets) or not 0 <= row < self.sheets[sheet]["rows"]:
@@ -141,13 +157,15 @@ class WorkbookService:
             snapshot = self.templates.get(connection, copy["template_id"])
             extents = _result_extents(connection, copy_id)
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
-                   "rows": max(item["rows"], extents.get(item["index"], (0, 0))[0]),
-                   "cols": max(item["cols"], extents.get(item["index"], (0, 0))[1]),
+                   "rows": _visible_extent(item, extents, 0),
+                   "cols": _visible_extent(item, extents, 1),
                    "freeze": item["freeze"],
+                   "default_row_height": _default_row_height(item),
                    "col_widths": {key: round(value * 7 + 5) for key, value in item["col_widths"].items()},
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
-                   "merges": item["merges"]} for item in snapshot.sheets]
+                   "merges": item["merges"], "pivots": deepcopy(item.get("pivots", [])),
+                   "slicers": deepcopy(item.get("slicers", []))} for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": copy["calculated_revision"],
                 "sheets": sheets, "styles": snapshot.styles}
@@ -336,6 +354,22 @@ def _result_extents(connection, copy_id):
         "WHERE copy_id=? GROUP BY sheet", (copy_id,),
     ).fetchall()
     return {row["sheet"]: (row["rows"], row["cols"]) for row in rows}
+
+
+def _visible_extent(sheet, result_extents, axis):
+    key, bound = (("rows", 2), ("cols", 3))[axis]
+    marker = ("row", "column")[axis]
+    values = [sheet[key], result_extents.get(sheet["index"], (0, 0))[axis]]
+    values.extend(pivot["location"]["bounds"][bound] + 1
+                  for pivot in sheet.get("pivots", []))
+    for slicer in sheet.get("slicers", []):
+        values.extend(slicer["anchor"][point][marker] + 1 for point in ("from", "to"))
+    return max(values)
+
+
+def _default_row_height(sheet):
+    height = sheet.get("default_row_height")
+    return round(height * 96 / 72) if height is not None else 28
 
 
 def _input_record(connection, override):

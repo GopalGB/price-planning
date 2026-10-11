@@ -54,6 +54,7 @@ def _source_row(index):
 def _write_base(path, row_count):
     workbook = Workbook(write_only=True)
     dashboard = workbook.create_sheet("Dashboard")
+    dashboard.sheet_format.defaultRowHeight = 15
     dashboard.protection.sheet = True
     multiplier = WriteOnlyCell(dashboard, value=2)
     multiplier.protection = Protection(locked=False)

@@ -37,6 +37,14 @@ test("snapshot uses the shared 64px width when no column width is configured", (
   );
 });
 
+test("snapshot uses the imported default row height with a legacy fallback", () => {
+  const imported = makeSnapshot(metadata({ default_row_height: 20 }), 0);
+  const legacy = makeSnapshot(metadata(), 0);
+
+  assert.equal(imported.sheets.s0.defaultRowHeight, 20);
+  assert.equal(legacy.sheets.s0.defaultRowHeight, 28);
+});
+
 test("PlanningGrid live paint uses the same default width", (t) => {
   const previousDocument = globalThis.document;
   const element = { textContent: "", classList: { toggle() {} } };

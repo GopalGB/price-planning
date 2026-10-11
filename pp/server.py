@@ -19,6 +19,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 
 from .auth import AuthService, require_csrf, require_origin
+from .dashboard_views import DashboardViewQuery, DashboardViewService
 from .categories import CategoryService, MembershipChange
 from .calc_service import CalculationPublication, CalculationService
 from .copies import CopyService, ShareChange
@@ -54,6 +55,7 @@ class Services:
         self.categories = CategoryService(context.database)
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
+        self.dashboard_views = DashboardViewService(context.database, templates)
         self.pivots = PivotService(context.database, context.snapshot)
         self.operations = OperationService(context.database, templates)
         self.calculations = CalculationService(context.database, templates)
@@ -83,6 +85,8 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/cell", _cell, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/refresh",
               _pivot_refresh, methods=["POST"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/view",
+              _dashboard_view, methods=["GET", "PUT"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
@@ -228,6 +232,21 @@ async def _pivot_refresh(request: Request):
                        request.path_params["sheet"], request.path_params["name"],
                        await _body(request))
     body = await asyncio.to_thread(services.pivots.refresh, query)
+    return JSONResponse(body)
+
+
+async def _dashboard_view(request: Request):
+    if request.method == "GET":
+        services, user = _read_auth(request)
+    else:
+        services, user, _ = _write_auth(request)
+    query = DashboardViewQuery(request.path_params["copy_id"], user["id"],
+                               request.path_params["sheet"], request.path_params["name"])
+    if request.method == "GET":
+        return JSONResponse(services.dashboard_views.get(query))
+    body = services.dashboard_views.update(
+        query, await _body(request), _session_check(request, services)
+    )
     return JSONResponse(body)
 
 

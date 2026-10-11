@@ -73,12 +73,13 @@ class PivotService:
             overlays = _overlays(connection, query.copy_id, copy, source)
             latest_key = _latest_key(snapshot, query, options)
             previous = self._cache_get(self._latest, latest_key)
-        result = _incremental(pivot, source, overlays, options, previous, copy)
-        if result is None:
-            result = _refresh(pivot, slicers, source, overlays, options, copy, query.sheet)
-        else:
-            with self._lock:
-                self._incremental_refreshes += 1
+            result = _incremental(pivot, source, overlays, options, previous, copy)
+            if result is None:
+                result = _refresh(pivot, slicers, source, overlays, options, copy, query.sheet)
+            else:
+                with self._lock:
+                    self._incremental_refreshes += 1
+            _ensure_output_safe(connection, snapshot, pivot, query.sheet, copy, result)
         self._cache_put(self._results, key, result, RESULT_CACHE_LIMIT)
         latest = {"overlays": overlays, "result": result}
         self._cache_put(self._latest, latest_key, latest, RESULT_CACHE_LIMIT)
@@ -144,6 +145,44 @@ def _metadata(snapshot, sheet, name):
     slicers = [item for item in snapshot.sheets[sheet].get("slicers", [])
                if item["pivot_cache_id"] == pivot["cache_id"]]
     return pivot, slicers
+
+
+def _ensure_output_safe(connection, snapshot, pivot, sheet, copy, result):
+    reserved = _reserved_output(pivot)
+    output = {(item["r"], item["c"]) for item in result["cells"]
+              if (item["r"], item["c"]) not in reserved}
+    conflicts = {coordinate for coordinate in output
+                 if _occupied(snapshot, sheet, *coordinate)}
+    if output:
+        rows, columns = zip(*output)
+        query = ("SELECT row,col FROM pp_results WHERE copy_id=? AND sheet=? "
+                 "AND calculated_revision=? AND row BETWEEN ? AND ? AND col BETWEEN ? AND ?")
+        values = (copy["id"], sheet, copy["calculated_revision"], min(rows), max(rows),
+                  min(columns), max(columns))
+        conflicts.update((item["row"], item["col"]) for item in connection.execute(query, values)
+                         if (item["row"], item["col"]) in output)
+    if conflicts:
+        cells = [{"sheet": sheet, "r": row, "c": col}
+                 for row, col in sorted(conflicts)[:10]]
+        raise AppError(409, "pivot_overlap", ErrorPayload(
+            "Pivot output overlaps workbook cells", {"cells": cells}
+        ))
+
+
+def _reserved_output(pivot):
+    first_row, first_col, last_row, last_col = pivot["location"]["bounds"]
+    cells = {(row, col) for row in range(first_row, last_row + 1)
+             for col in range(first_col, last_col + 1)}
+    page_count = len(pivot.get("page_fields", []))
+    page_row = max(0, first_row - page_count - 1)
+    cells.update((row, col) for row in range(page_row, page_row + page_count)
+                 for col in range(first_col, first_col + 2))
+    return cells
+
+
+def _occupied(snapshot, sheet, row, col):
+    cell = snapshot.cell(sheet, row, col)
+    return snapshot.is_input(sheet, row, col) or cell.get("v") is not None or cell.get("k") == "f"
 
 
 def _used_fields(pivot, slicers):
@@ -219,8 +258,13 @@ def _overlays(connection, copy_id, copy, source):
 def _options(pivot, slicers, raw):
     if not isinstance(raw, dict) or set(raw) - {"page", "slicers", "collapsed"}:
         raise AppError(422, "invalid", "Pivot options are invalid")
-    page = _filter_options(raw.get("page"), _default_page(pivot), pivot, "page")
-    slicer = _filter_options(raw.get("slicers"), _default_slicers(slicers), pivot, "slicers")
+    page = _filter_options(raw.get("page"), _default_page(pivot), pivot, "page", {
+        item["field"] for item in pivot["page_fields"]
+    })
+    slicer_map = {item["name"]: item["field"] for item in slicers}
+    slicer = _filter_options(
+        raw.get("slicers"), _default_slicers(slicers), pivot, "slicers", slicer_map
+    )
     collapsed = _collapsed_options(raw.get("collapsed", []), pivot)
     return {"page": page, "slicers": slicer, "collapsed": collapsed}
 
@@ -236,23 +280,31 @@ def _default_slicers(slicers):
             for item in slicers]
 
 
-def _filter_options(raw, defaults, pivot, label):
+def _filter_options(raw, defaults, pivot, label, allowed):
     if raw is None:
         return defaults
     if not isinstance(raw, list):
         raise AppError(422, "invalid", f"Pivot {label} filters are invalid")
-    explicit_fields = {item.get("field") for item in raw if isinstance(item, dict)}
-    result = [item for item in defaults if item["field"] not in explicit_fields]
-    for item in raw:
-        result.append(_one_filter(item, pivot, label))
-    return result
+    explicit = [_one_filter(item, pivot, label, allowed) for item in raw]
+    identity = "name" if label == "slicers" else "field"
+    selected = {item[identity] for item in explicit}
+    if len(selected) != len(explicit):
+        raise AppError(422, "invalid", f"Pivot {label} filter appears more than once")
+    return [item for item in defaults if item[identity] not in selected] + explicit
 
 
-def _one_filter(item, pivot, label):
-    if not isinstance(item, dict) or not isinstance(item.get("field"), int):
+def _one_filter(item, pivot, label, allowed):
+    keys = {"field", "items"} | ({"name"} if label == "slicers" else set())
+    if not isinstance(item, dict) or set(item) != keys:
         raise AppError(422, "invalid", f"Pivot {label} filter is invalid")
     field_index = item["field"]
-    if not 0 <= field_index < len(pivot["fields"]):
+    if isinstance(field_index, bool) or not isinstance(field_index, int):
+        raise AppError(422, "invalid", f"Pivot {label} field is invalid")
+    name = item.get("name")
+    valid = field_index in allowed if label == "page" else (
+        isinstance(name, str) and allowed.get(name) == field_index
+    )
+    if not valid:
         raise AppError(422, "invalid", f"Pivot {label} field is invalid")
     selected = item.get("items")
     count = len(pivot["fields"][field_index]["shared_items"])
@@ -261,7 +313,7 @@ def _one_filter(item, pivot, label):
         raise AppError(422, "invalid", f"Pivot {label} items are invalid")
     output = {"field": field_index, "items": selected}
     if label == "slicers":
-        output["name"] = str(item.get("name", ""))
+        output["name"] = name
     return output
 
 
@@ -271,13 +323,20 @@ def _valid_selection(value, count):
     if not isinstance(value, dict) or set(value) != {"kind", "value"}:
         return False
     kind, item = value["kind"], value["value"]
+    if not isinstance(kind, str):
+        return False
     if kind == "blank":
         return item is None
     if kind == "boolean":
         return isinstance(item, bool)
     if kind == "number":
-        return isinstance(item, (int, float)) and not isinstance(item, bool) and math.isfinite(item)
-    return kind in {"string", "date", "error"} and isinstance(item, str)
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return False
+        try:
+            return math.isfinite(item)
+        except OverflowError:
+            return False
+    return kind in {"string", "date", "error"} and isinstance(item, str) and len(item) <= 32767
 
 
 def _collapsed_options(raw, pivot):
@@ -286,13 +345,17 @@ def _collapsed_options(raw, pivot):
     valid_fields = set(pivot["row_fields"][:-1])
     output = []
     for item in raw:
-        if not isinstance(item, dict) or item.get("field") not in valid_fields:
+        if not isinstance(item, dict) or set(item) != {"field", "item"}:
             raise AppError(422, "invalid", "Pivot collapsed group is invalid")
-        field = pivot["fields"][item["field"]]
+        field_index = item["field"]
+        if (isinstance(field_index, bool) or not isinstance(field_index, int)
+                or field_index not in valid_fields):
+            raise AppError(422, "invalid", "Pivot collapsed group is invalid")
+        field = pivot["fields"][field_index]
         value = item.get("item")
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < len(field["shared_items"]):
             raise AppError(422, "invalid", "Pivot collapsed item is invalid")
-        output.append({"field": item["field"], "item": value})
+        output.append({"field": field_index, "item": value})
     return output
 
 

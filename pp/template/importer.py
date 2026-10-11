@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 7
+IMPORT_VERSION = 8
 
 
 class TemplateImportError(Exception):
@@ -447,6 +447,10 @@ def _sheet_metadata(element, metadata, protected):
         metadata["cols"] = max(metadata["cols"], col2 + 1)
     elif element.tag == f"{NS}sheetProtection":
         protected = element.get("sheet") in {"1", "true"}
+    elif element.tag == f"{NS}sheetFormatPr" and element.get("defaultRowHeight"):
+        metadata["default_row_height"] = _positive_height(
+            element.get("defaultRowHeight")
+        )
     elif element.tag == f"{NS}pane" and element.get("state") == "frozen":
         metadata["freeze"] = {"rows": int(float(element.get("ySplit", "0"))),
                               "cols": int(float(element.get("xSplit", "0")))}
@@ -457,6 +461,16 @@ def _sheet_metadata(element, metadata, protected):
     elif element.tag == f"{NS}dataValidation":
         metadata["validations"].append(_validation(element))
     return protected
+
+
+def _positive_height(raw):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise TemplateImportError("default row height is invalid") from error
+    if not math.isfinite(value) or value <= 0:
+        raise TemplateImportError("default row height is invalid")
+    return value
 
 
 def _column_metadata(element, metadata):

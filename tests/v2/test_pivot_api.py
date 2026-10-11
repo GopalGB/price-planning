@@ -51,6 +51,50 @@ class PivotAPIContractTests(unittest.TestCase):
             "input_revision": 1, "calculated_revision": 0,
         })
 
+    def test_refresh_reports_a_named_conflict_before_overwriting_an_input(self):
+        pivot = self.fixture.snapshot.sheets[0]["pivots"][0]
+        slicers = self.fixture.snapshot.sheets[0]["slicers"]
+        block = self.fixture.snapshot.block(0, 0)
+        block.setdefault("15", {})["0"] = {"v": "Keep me", "s": 0, "k": "i"}
+        self.fixture.snapshot.input_mask = frozenset(
+            {*self.fixture.snapshot.input_mask, "0:15:0"}
+        )
+        options = {
+            "page": [{"field": item["field"], "items": None}
+                     for item in pivot["page_fields"]],
+            "slicers": [{"name": item["name"], "field": item["field"], "items": None}
+                        for item in slicers],
+            "collapsed": [],
+        }
+
+        response = self.client.post(self.path, options)
+
+        self.assertEqual(response.status_code, 409, response.body)
+        self.assertEqual(response.json()["error"], "pivot_overlap")
+        self.assertEqual(response.json()["cells"], [{"sheet": 0, "r": 15, "c": 0}])
+
+    def test_refresh_rejects_malformed_and_unimported_filter_shapes(self):
+        malformed = [
+            {"page": [{"field": [], "items": None}]},
+            {"page": [{"field": True, "items": None}]},
+            {"page": [{"field": 5, "items": None}]},
+            {"page": [{"field": 1, "items": [
+                {"kind": [], "value": "x"}
+            ]}]},
+            {"page": [{"field": 1, "items": [
+                {"kind": "number", "value": 10**400}
+            ]}]},
+            {"slicers": [{"name": [], "field": 0, "items": None}]},
+            {"slicers": [{"name": "Unknown", "field": 0, "items": None}]},
+            {"collapsed": [{"field": {}, "item": 0}]},
+        ]
+
+        for index, body in enumerate(malformed):
+            with self.subTest(index=index):
+                response = self.client.post(self.path, body)
+                self.assertEqual(response.status_code, 422, response.body)
+                self.assertEqual(response.json()["error"], "invalid")
+
     def test_real_input_edit_changes_formula_backed_pivot_source_value(self):
         before = self.client.post(self.path, {}).json()
         before_price = next(cell["v"] for cell in before["cells"]

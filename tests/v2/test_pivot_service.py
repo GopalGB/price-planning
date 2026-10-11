@@ -74,18 +74,34 @@ class PivotServiceTests(unittest.TestCase):
 
     def test_same_field_filters_intersect_and_hidden_items_stay_hidden(self):
         options = options_all(self.pivot, self.slicers)
-        options["slicers"] = [
-            {"name": "Slicer_Region", "field": 0, "items": [0, 1]},
-            {"name": "second-region-view", "field": 0, "items": [1, 3]},
-            *options["slicers"][1:],
-        ]
+        next(item for item in options["page"] if item["field"] == 1)["items"] = [0, 1]
+        next(item for item in options["slicers"]
+             if item["name"] == "Slicer_Department")["items"] = [1, 3]
+        next(item for item in options["slicers"]
+             if item["name"] == "Slicer_Region")["items"] = [0, 1, 3]
 
         result = self.refresh(options)
-        item_rows = [row for row in result["rows"] if row["kind"] == "item"]
+        expected_options = options_all(self.pivot, self.slicers)
+        next(item for item in expected_options["page"] if item["field"] == 1)["items"] = [1]
+        next(item for item in expected_options["slicers"]
+             if item["name"] == "Slicer_Region")["items"] = [0, 1, 3]
+        expected = self.refresh(expected_options)
 
-        self.assertEqual([row["caption"] for row in item_rows], ["Region 02"])
+        self.assertEqual(result["rows"], expected["rows"])
+        self.assertEqual(
+            [cell for cell in result["cells"] if cell["row_kind"] != "page"],
+            [cell for cell in expected["cells"] if cell["row_kind"] != "page"],
+        )
         self.assertNotIn("Region 04", [row["caption"] for row in result["rows"]])
-        self.assertEqual(result["filters"]["slicers"][0]["items"], [0, 1])
+        self.assertEqual(
+            next(item for item in result["filters"]["page"] if item["field"] == 1)["items"],
+            [0, 1],
+        )
+        self.assertEqual(
+            next(item for item in result["filters"]["slicers"]
+                 if item["name"] == "Slicer_Department")["items"],
+            [1, 3],
+        )
 
     def test_manual_and_data_sort_preserve_excel_order_rules(self):
         field = self.pivot["fields"][0]
@@ -159,6 +175,26 @@ class PivotServiceTests(unittest.TestCase):
         self.assertTrue(all(column["path"] for column in class_columns))
         self.assertEqual(sum(by_column[column["c"]] for column in class_columns),
                          by_column[grand_column["c"]])
+
+    def test_refresh_rejects_growth_over_an_unrelated_input(self):
+        from pp.errors import AppError
+
+        block = self.fixture.snapshot.block(0, 0)
+        block.setdefault("15", {})["0"] = {
+            "v": "Keep me", "s": 0, "k": "i"
+        }
+        self.fixture.snapshot.input_mask = frozenset(
+            {*self.fixture.snapshot.input_mask, "0:15:0"}
+        )
+
+        with self.assertRaises(AppError) as overlap:
+            self.refresh(options_all(self.pivot, self.slicers))
+
+        self.assertEqual((overlap.exception.status, overlap.exception.code),
+                         (409, "pivot_overlap"))
+        self.assertEqual(overlap.exception.extra, {
+            "cells": [{"sheet": 0, "r": 15, "c": 0}]
+        })
 
     def test_revision_change_invalidates_result_cache_and_reads_current_result(self):
         options = options_all(self.pivot, self.slicers)

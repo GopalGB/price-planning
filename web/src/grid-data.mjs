@@ -154,7 +154,7 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
         name: sheet.name,
         rowCount: sheet.rows,
         columnCount: sheet.cols,
-        defaultRowHeight: 28,
+        defaultRowHeight: sheet.default_row_height ?? 28,
         defaultColumnWidth: GRID_DEFAULT_COLUMN_WIDTH,
         cellData,
         rowData,

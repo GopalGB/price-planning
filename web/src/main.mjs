@@ -1,4 +1,5 @@
 import "./style.css";
+import "./dashboard.css";
 import "@univerjs/preset-sheets-core/lib/index.css";
 import { ApiClient } from "./client.mjs";
 import {

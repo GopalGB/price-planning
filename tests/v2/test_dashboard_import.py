@@ -45,6 +45,7 @@ class DashboardFixtureTests(unittest.TestCase):
                 pivot = ET.fromstring(archive.read("xl/pivotTables/pivotTable1.xml"))
                 cache = ET.fromstring(archive.read("xl/pivotCache/pivotCacheDefinition1.xml"))
                 drawing = ET.fromstring(archive.read("xl/drawings/drawing1.xml"))
+                dashboard_sheet = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
                 source_sheet = ET.fromstring(archive.read("xl/worksheets/sheet2.xml"))
                 slicer_caches = [
                     ET.fromstring(archive.read(f"xl/slicerCaches/slicerCache{index}.xml"))
@@ -53,6 +54,10 @@ class DashboardFixtureTests(unittest.TestCase):
                 self.assertNotIn("xl/pivotCache/pivotCacheRecords1.xml", archive.namelist())
 
             self.assertEqual(pivot.find(f"{MAIN}location").get("ref"), "A5:F14")
+            self.assertEqual(
+                dashboard_sheet.find(f"{MAIN}sheetFormatPr").get("defaultRowHeight"),
+                "15",
+            )
             self.assertEqual(len(pivot.findall(f"{MAIN}pageFields/{MAIN}pageField")), 3)
             self.assertEqual([node.get("x") for node in pivot.findall(f"{MAIN}colFields/{MAIN}field")], ["-2"])
             self.assertEqual(len(pivot.findall(f"{MAIN}dataFields/{MAIN}dataField")), 5)
@@ -105,6 +110,7 @@ class DashboardImportTests(unittest.TestCase):
             sheet = self.import_dashboard(Path(temp))
 
         self.assertEqual(len(sheet.get("pivots", [])), 1)
+        self.assertEqual(sheet["default_row_height"], 15)
         pivot = sheet["pivots"][0]
         self.assertEqual(pivot["name"], "DashboardPivot")
         self.assertEqual(pivot["source"], {"sheet": "SourceData", "ref": "A1:S33"})

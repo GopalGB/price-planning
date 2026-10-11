@@ -23,7 +23,10 @@ class WorkbookAPIContractTests(unittest.TestCase):
         self.assertEqual(set(body), {"template", "input_revision", "calculated_revision", "sheets", "styles"})
         self.assertEqual([sheet["name"] for sheet in body["sheets"]], ["Inputs", "Lookup", "Calc"])
         self.assertEqual(set(body["sheets"][0]), {"index", "name", "hidden", "rows", "cols", "freeze",
-                                                   "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges"})
+                                                   "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges",
+                                                   "default_row_height", "pivots", "slicers"})
+        self.assertEqual(body["sheets"][0]["default_row_height"], 20)
+        self.assertEqual((body["sheets"][0]["pivots"], body["sheets"][0]["slicers"]), ([], []))
 
         rows = self.client.get(f"/api/copies/{copy_id}/sheets/0/rows?start=1&count=2")
         self.assertEqual(rows.status_code, 200)
