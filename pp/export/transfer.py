@@ -25,6 +25,7 @@ from .xlsm import CHUNK, REL_NS, col_index, export_xlsm
 CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 CUSTOM_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
 VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
+SHEET_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 CUSTOM_REL = f"{REL_NS}/custom-properties"
 MAX_CLEANUP_XML = 64 * 1024 * 1024
 DRAWING_SLICER = "http://schemas.microsoft.com/office/drawing/2010/slicer}slicer"
@@ -36,6 +37,9 @@ REL_ATTRIBUTE_NAMESPACES = {
 SHEET_TAG = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?sheet\b[^>]*(?:/>|>.*?</(?P=prefix)sheet\s*>)", re.S)
 NAME_TAG = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?definedName\b[^>]*>.*?</(?:[A-Za-z_][\w.-]*:)?definedName\s*>", re.S)
 CELL_START = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?c\b[^>]*>")
+INDIRECT_LITERAL = re.compile(
+    r'(?i)(?<![\w.])(?:_xlfn\.)?INDIRECT\s*\(\s*"((?:""|[^"])*)"'
+)
 SHEET_DATA_END = re.compile(
     rb"(?:<(?:[A-Za-z_][\w.-]*:)?sheetData\b[^>]*/\s*>|"
     rb"</(?:[A-Za-z_][\w.-]*:)?sheetData\s*>)",
@@ -104,6 +108,8 @@ class CleanupOptions:
     dropped_ids: set
     worksheet: bool = False
     dropped_names: frozenset = frozenset()
+    formula: FormulaContext | None = None
+    sheet_index: int | None = None
 
 
 @dataclass
@@ -114,6 +120,18 @@ class RelationshipFrame:
     anchor: bool
     direct: bool
     descendant: bool = False
+
+
+@dataclass
+class WorksheetReferenceFrame:
+    namespace: str
+    local: str
+    start: int
+    tag_end: int
+    self_closing: bool
+    affected: bool = False
+    items: int = 0
+    removed: int = 0
 
 
 @dataclass(frozen=True)
@@ -168,6 +186,7 @@ class TransformState:
     controls: set
     rewritten_workbook: bytes
     frozen: dict
+    formula: FormulaContext
 
 
 @dataclass(frozen=True)
@@ -254,6 +273,7 @@ def _sheet_records(workbook_xml, graph):
             "index": index,
             "name": node.get("name"),
             "hidden": node.get("state") in {"hidden", "veryHidden"},
+            "worksheet": relationship["type"].endswith("/worksheet"),
             "relationship": relationship["id"],
             "part": relationship["target"],
         })
@@ -500,27 +520,35 @@ def _formula_code(formula):
     return "".join(output)
 
 
+def _formula_fragments(formula):
+    text = unescape(formula or "")
+    return [_formula_code(text)] + [
+        match.group(1).replace('""', '"') for match in INDIRECT_LITERAL.finditer(text)
+    ]
+
+
 def _sheet_names_in_formula(formula, sheets):
     names, result = [sheet["name"] for sheet in sheets], set()
     indexes = {name.casefold(): index for index, name in enumerate(names)}
     pattern = re.compile(r"(?:'((?:[^']|'')+)'|([\w\\][\w.]*(?::[\w\\][\w.]*)?))!")
-    for match in pattern.finditer(_formula_code(formula)):
-        value = (match.group(1) or match.group(2)).replace("''", "'").casefold()
-        endpoints = value.split(":", 1)
-        if len(endpoints) == 2 and all(item in indexes for item in endpoints):
-            start, end = sorted((indexes[endpoints[0]], indexes[endpoints[1]]))
-            result.update(names[start:end + 1])
-        elif value in indexes:
-            result.add(names[indexes[value]])
+    for fragment in _formula_fragments(formula):
+        for match in pattern.finditer(fragment):
+            value = (match.group(1) or match.group(2)).replace("''", "'").casefold()
+            endpoints = value.split(":", 1)
+            if len(endpoints) == 2 and all(item in indexes for item in endpoints):
+                start, end = sorted((indexes[endpoints[0]], indexes[endpoints[1]]))
+                result.update(names[start:end + 1])
+            elif value in indexes:
+                result.add(names[indexes[value]])
     return result
 
 
 def _definition_references(formula, known):
-    code = _formula_code(formula)
-    candidates = re.findall(
-        r"(?<![\w.])([\w\\][\w.\\]*)(?![\w.(])",
-        code,
-    )
+    candidates = [
+        candidate
+        for fragment in _formula_fragments(formula)
+        for candidate in re.findall(r"(?<![\w.])([\w\\][\w.\\]*)(?![\w.(])", fragment)
+    ]
     return {name.casefold() for name in candidates if name.casefold() in known}
 
 
@@ -897,15 +925,102 @@ class RelationshipRangeParser:
             self.ranges.append((frame.start, end))
 
 
-def _drop_relationship_references(data, options, root=b""):
-    if not options.dropped_ids and not options.dropped_names:
+class WorksheetReferenceRangeParser:
+    ITEM_PARENTS = {
+        "dataValidation": "dataValidations",
+        "cfRule": "conditionalFormatting",
+        "hyperlink": "hyperlinks",
+    }
+    FORMULA_PARENTS = {
+        "formula1": "dataValidation",
+        "formula2": "dataValidation",
+        "formula": "cfRule",
+    }
+
+    def __init__(self, data, options):
+        self.data, self.options = data, options
+        self.parser = expat.ParserCreate(namespace_separator="}")
+        self.stack, self.ranges = [], []
+
+    def parse(self):
+        self.parser.StartElementHandler = self.start
+        self.parser.EndElementHandler = self.end
+        try:
+            self.parser.Parse(self.data, True)
+        except expat.ExpatError as exc:
+            raise ValueError("worksheet XML is malformed") from exc
+        return _merged_ranges(self.ranges)
+
+    def _parent(self, local):
+        return next((frame for frame in reversed(self.stack)
+                     if frame.namespace == SHEET_NS and frame.local == local), None)
+
+    def start(self, name, attributes):
+        namespace, separator, local = name.rpartition("}")
+        start = self.parser.CurrentByteIndex
+        tag_end = _xml_tag_end(self.data, start)
+        frame = WorksheetReferenceFrame(
+            namespace if separator else "", local, start, tag_end,
+            self.data[start:tag_end].rstrip().endswith(b"/>"),
+        )
+        parent_name = self.ITEM_PARENTS.get(local) if frame.namespace == SHEET_NS else None
+        if parent_name and (parent := self._parent(parent_name)):
+            parent.items += 1
+        if (frame.namespace == SHEET_NS and local == "hyperlink"
+                and (location := attributes.get("location"))):
+            frame.affected = _formula_needs_freeze(
+                location.lstrip("#"), self.options.sheet_index, self.options.formula,
+            )
+        self.stack.append(frame)
+
+    def end(self, _name):
+        frame = self.stack.pop()
+        end_start = self.parser.CurrentByteIndex
+        end = frame.tag_end if frame.self_closing else _xml_tag_end(self.data, end_start)
+        formula_parent = self.FORMULA_PARENTS.get(frame.local)
+        if frame.namespace == SHEET_NS and formula_parent:
+            parent = self._parent(formula_parent)
+            text = self.data[frame.tag_end:end_start].decode("utf-8")
+            if parent and _formula_needs_freeze(
+                    text, self.options.sheet_index, self.options.formula):
+                parent.affected = True
+        item_parent = self.ITEM_PARENTS.get(frame.local)
+        if frame.namespace == SHEET_NS and item_parent and frame.affected:
+            parent = self._parent(item_parent)
+            if parent:
+                parent.removed += 1
+            self.ranges.append((frame.start, end))
+        if (frame.namespace == SHEET_NS and frame.local in self.ITEM_PARENTS.values()
+                and frame.removed):
+            if frame.removed == frame.items:
+                self.ranges.append((frame.start, end))
+            elif frame.local == "dataValidations":
+                opening = self.data[frame.start:frame.tag_end]
+                count = re.search(rb'\s+count="[^"]*"', opening)
+                if count:
+                    self.ranges.append((frame.start + count.start(), frame.start + count.end()))
+
+
+def _drop_worksheet_references(data, options, root):
+    if options.formula is None:
         return data
     offset = len(root)
-    ranges = RelationshipRangeParser(root + data, options).parse()
+    ranges = WorksheetReferenceRangeParser(root + data, options).parse()
     for start, end in reversed(ranges):
         if start >= offset:
             data = data[:start - offset] + data[end - offset:]
-    return _remove_empty_containers(data)
+    return data
+
+
+def _drop_relationship_references(data, options, root=b""):
+    if options.dropped_ids or options.dropped_names:
+        offset = len(root)
+        ranges = RelationshipRangeParser(root + data, options).parse()
+        for start, end in reversed(ranges):
+            if start >= offset:
+                data = data[:start - offset] + data[end - offset:]
+        data = _remove_empty_containers(data)
+    return _drop_worksheet_references(data, options, root)
 
 
 def _custom_properties(existing, provenance):
@@ -1135,7 +1250,7 @@ def _transform_state(archive, request):
     frozen = _freeze_targets(archive, kept, formula) if removed_names else {}
     return TransformState(
         parts, graph, workbook_xml, sheets, kept, removed, dropped, named, controls,
-        rewritten, frozen,
+        rewritten, frozen, formula,
     )
 
 
@@ -1168,13 +1283,24 @@ def _transform_replacements(archive, state, request):
 
 def _transform_cleanups(state):
     cleanups = {}
+    worksheet_parts = {sheet["part"] for sheet in state.sheets if sheet["worksheet"]}
     sources = set(state.dropped) | set(state.named)
     for source in sources:
         if (source and source in state.parts and source not in state.removed
                 and source != "xl/workbook.xml" and source.endswith(".xml")):
             cleanups[source] = CleanupOptions(
-                state.dropped[source], source.startswith("xl/worksheets/"),
+                state.dropped[source], source in worksheet_parts,
                 frozenset(state.named[source]),
+            )
+    if state.formula.removed_names:
+        for sheet in state.kept:
+            if not sheet["worksheet"]:
+                continue
+            source = sheet["part"]
+            options = cleanups.get(source, CleanupOptions(set(), True))
+            cleanups[source] = CleanupOptions(
+                options.dropped_ids, True, options.dropped_names,
+                state.formula, sheet["index"],
             )
     if state.controls:
         for source in state.parts:

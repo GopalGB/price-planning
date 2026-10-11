@@ -211,6 +211,124 @@ class FormulaPreservationTests(unittest.TestCase):
         self.assertIsNone(frozen.get("cm"))
 
 
+class IndirectReferenceTests(unittest.TestCase):
+    def test_literal_removed_sheet_and_name_references_are_frozen(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        workbook = Workbook()
+        keep = workbook.active
+        keep.title = "Keep"
+        keep["A1"] = '=INDIRECT("Drop!A1")'
+        keep["B1"] = '=INDIRECT("Gone")'
+        keep["C1"] = '=INDIRECT("Keep!D1")'
+        drop = workbook.create_sheet("Drop")
+        drop["A1"] = 7
+        workbook.defined_names.add(DefinedName("Gone", attr_text="'Drop'!$A$1"))
+        workbook.save(source)
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0,
+            selected={"Keep"}, results={(0, 0, 0): 7, (0, 0, 1): 7},
+        ))
+
+        loaded = load_workbook(output, data_only=False)
+        self.addCleanup(loaded.close)
+        self.assertEqual(loaded["Keep"]["A1"].value, 7)
+        self.assertEqual(loaded["Keep"]["B1"].value, 7)
+        self.assertEqual(loaded["Keep"]["C1"].value, '=INDIRECT("Keep!D1")')
+
+
+def _worksheet_reference_fixture(path):
+    workbook = Workbook()
+    workbook.active.title = "Keep"
+    workbook.create_sheet("Drop")
+    workbook.defined_names.add(DefinedName("Gone", attr_text="'Drop'!$A$1"))
+    workbook.save(path)
+    with zipfile.ZipFile(path) as archive:
+        sheet = archive.read("xl/worksheets/sheet1.xml")
+        styles = archive.read("xl/styles.xml")
+    rules = (
+        b'<conditionalFormatting sqref="A1"><cfRule type="expression" priority="1">'
+        b'<formula>Drop!A1&gt;0</formula></cfRule></conditionalFormatting>'
+        b'<dataValidations count="2"><dataValidation type="list" sqref="B1">'
+        b'<formula1>Drop!$A$1</formula1></dataValidation>'
+        b'<dataValidation type="list" sqref="B2"><formula1>Keep!$A$1</formula1>'
+        b'</dataValidation></dataValidations>'
+        b'<hyperlinks><hyperlink ref="C1" location="Gone"/>'
+        b'<hyperlink ref="C2" location="Keep!A1" display="keep"/></hyperlinks>'
+    )
+    vendor = (
+        b'<extLst><ext uri="urn:vendor"><v:dataValidation xmlns:v="urn:vendor">'
+        b'<v:formula1>Drop!A1</v:formula1></v:dataValidation></ext></extLst>'
+    )
+    sheet = sheet.replace(b"<pageMargins", rules + b"<pageMargins", 1)
+    sheet = sheet.replace(b"</worksheet>", vendor + b"</worksheet>", 1)
+    _rewrite(path, {"xl/worksheets/sheet1.xml": sheet})
+    return styles, vendor
+
+
+def _chartsheet_fixture(path):
+    workbook = Workbook()
+    keep = workbook.active
+    keep.title = "Keep"
+    keep["A1"], keep["A2"] = 1, 2
+    chart = BarChart()
+    chart.add_data(Reference(keep, min_col=1, min_row=1, max_row=2))
+    workbook.create_chartsheet("Chart").add_chart(chart)
+    workbook.create_sheet("Drop")
+    workbook.save(path)
+
+
+class WorksheetReferenceCleanupTests(unittest.TestCase):
+    def test_subset_drops_only_rules_and_links_to_removed_dependencies(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        original_styles, vendor = _worksheet_reference_fixture(source)
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0, selected={"Keep"}, results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            cleaned = archive.read("xl/worksheets/sheet1.xml")
+            self.assertEqual(archive.read("xl/styles.xml"), original_styles)
+        worksheet = ET.fromstring(cleaned)
+        validations = worksheet.findall(f".//{{{MAIN}}}dataValidation")
+        self.assertEqual(len(validations), 1)
+        self.assertEqual(validations[0].findtext(f"{{{MAIN}}}formula1"), "Keep!$A$1")
+        self.assertIsNone(worksheet.find(f"{{{MAIN}}}dataValidations").get("count"))
+        self.assertIsNone(worksheet.find(f"{{{MAIN}}}conditionalFormatting"))
+        hyperlinks = worksheet.findall(f".//{{{MAIN}}}hyperlink")
+        self.assertEqual([(item.get("ref"), item.get("location")) for item in hyperlinks], [
+            ("C2", "Keep!A1"),
+        ])
+        self.assertIn(vendor, cleaned)
+
+    def test_reference_cleanup_does_not_treat_a_chartsheet_as_a_worksheet(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        _chartsheet_fixture(source)
+        with zipfile.ZipFile(source) as archive:
+            chart_sheet = archive.read("xl/chartsheets/sheet1.xml")
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0,
+            selected={"Keep", "Chart"}, results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            self.assertEqual(archive.read("xl/chartsheets/sheet1.xml"), chart_sheet)
+        loaded = load_workbook(output, read_only=True)
+        self.addCleanup(loaded.close)
+        self.assertEqual(loaded.sheetnames, ["Keep", "Chart"])
+
+
 def _pivot_source_fixture(path):
     workbook = Workbook()
     keep = workbook.active
