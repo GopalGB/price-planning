@@ -108,6 +108,14 @@ function result(cells, rows = []) {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 test("pivot mutation clears imported and prior extents while preserving unrelated H1", () => {
   const prior = [[4, 0, 20, 8]];
   const rendered = pivotMutation({
@@ -269,11 +277,21 @@ test("slicer selections are typed, multi-selectable, clearable, and metadata com
 });
 
 test("only collapsible outline rows become controls and stored selectors resolve for refresh", () => {
+  const dynamic = selector("Region 99");
   const options = viewToPivotOptions(
-    { ...baseView, collapsed: [{ field: 0, selector: selector("North") }] },
+    {
+      ...baseView,
+      collapsed: [
+        { field: 0, selector: selector("North") },
+        { field: 0, selector: dynamic },
+      ],
+    },
     pivot,
   );
-  assert.deepEqual(options.collapsed, [{ field: 0, item: 0 }]);
+  assert.deepEqual(options.collapsed, [
+    { field: 0, item: 0 },
+    { field: 0, selector: dynamic },
+  ]);
 
   const rendered = pivotMutation({
     result: result(
@@ -302,6 +320,336 @@ test("only collapsible outline rows become controls and stored selectors resolve
     rendered.outlines.map((item) => item.r),
     [5],
   );
+});
+
+test("view writes serialize and stale refreshes cannot overwrite the latest selection", async () => {
+  const oldRefresh = deferred(),
+    latestRefresh = deferred(),
+    firstPut = deferred(),
+    secondPut = deferred(),
+    putResponses = [firstPut, secondPut],
+    rendered = [],
+    calls = [];
+  let putIndex = 0,
+    refreshIndex = 0;
+  const controller = new DashboardController({
+    api: {
+      request: (path, options) => {
+        calls.push({ path, options });
+        if (options?.method === "PUT") return putResponses[putIndex++].promise;
+        if (options?.method === "POST")
+          return refreshIndex++ === 0
+            ? oldRefresh.promise
+            : latestRefresh.promise;
+        throw new Error("unexpected request");
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: assert.fail,
+  });
+  controller.sheet = { index: 0, pivots: [pivot], slicers: [] };
+  controller.pivot = pivot;
+  controller.view = structuredClone(baseView);
+  controller.render = (value) => rendered.push(value.tag);
+
+  const stale = controller.refresh(),
+    south = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("South"),
+      false,
+    ),
+    first = controller.update(south),
+    west = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("West"),
+      false,
+    ),
+    second = controller.update(west);
+  await Promise.resolve();
+  assert.equal(
+    calls.filter((call) => call.options?.method === "PUT").length,
+    1,
+  );
+
+  firstPut.resolve(south);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    calls.filter((call) => call.options?.method === "PUT").length,
+    2,
+  );
+  assert.equal(refreshIndex, 1);
+
+  secondPut.resolve(west);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refreshIndex, 2);
+  latestRefresh.resolve({ tag: "latest" });
+  await second;
+  oldRefresh.resolve({ tag: "stale" });
+  await Promise.all([stale, first]);
+
+  assert.deepEqual(rendered, ["latest"]);
+  assert.deepEqual(controller.view.slicers[0].items, [selector("West")]);
+});
+
+test("navigation waits for queued view saves before reloading remembered selection", async () => {
+  const firstPut = deferred();
+  let persisted = structuredClone(baseView),
+    puts = 0,
+    gets = 0;
+  const savedView = (body) => ({
+    pivot: "DashboardPivot",
+    ...structuredClone(body),
+    updated_at: "2026-10-11T00:00:00Z",
+  });
+  const controller = new DashboardController({
+    api: {
+      request: async (path, options) => {
+        if (options?.method === "PUT") {
+          puts++;
+          if (puts === 1) await firstPut.promise;
+          persisted = savedView(options.body);
+          return structuredClone(persisted);
+        }
+        if (options?.method === "POST") return result([]);
+        if (path.endsWith("/view")) {
+          gets++;
+          return structuredClone(persisted);
+        }
+        throw new Error("unexpected request");
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: assert.fail,
+  });
+  controller.sheet = { index: 0, pivots: [pivot], slicers: [] };
+  controller.pivot = pivot;
+  controller.view = structuredClone(baseView);
+
+  const south = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("South"),
+      false,
+    ),
+    first = controller.update(south),
+    west = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("West"),
+      false,
+    ),
+    second = controller.update(west);
+  await Promise.resolve();
+  const opening = controller.open({ index: 1, pivots: [pivot], slicers: [] });
+  await Promise.resolve();
+  assert.equal(gets, 0);
+
+  firstPut.resolve();
+  await Promise.all([first, second, opening]);
+  assert.equal(puts, 2);
+  assert.equal(gets, 1);
+  assert.deepEqual(controller.view.slicers[0].items, [selector("West")]);
+});
+
+test("failed rapid view saves restore the last confirmed server view", async () => {
+  const toasts = [];
+  let failPuts = false;
+  const controller = new DashboardController({
+    api: {
+      request: async (path, options) => {
+        if (options?.method === "PUT" && failPuts)
+          throw new Error("View could not be saved");
+        if (options?.method === "POST") return result([]);
+        if (path.endsWith("/view")) return structuredClone(baseView);
+        throw new Error("unexpected request");
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: (message) => toasts.push(message),
+  });
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+  failPuts = true;
+  const south = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("South"),
+      false,
+    ),
+    first = controller.update(south),
+    west = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("West"),
+      false,
+    ),
+    second = controller.update(west);
+
+  await Promise.all([first, second]);
+  assert.deepEqual(controller.view.slicers[0].items, [selector("North")]);
+  assert.ok(toasts.includes("View could not be saved"));
+});
+
+test("latest save failure refreshes the result for the preceding confirmed selection", async () => {
+  const refreshBodies = [],
+    rendered = [];
+  let puts = 0;
+  const savedView = (body) => ({
+    pivot: "DashboardPivot",
+    ...structuredClone(body),
+    updated_at: "2026-10-11T00:00:00Z",
+  });
+  const controller = new DashboardController({
+    api: {
+      request: async (path, options) => {
+        if (options?.method === "PUT") {
+          puts++;
+          if (puts === 2) throw new Error("Latest view could not be saved");
+          return savedView(options.body);
+        }
+        if (options?.method === "POST") {
+          refreshBodies.push(structuredClone(options.body));
+          return {
+            ...result([]),
+            tag: options.body.slicers[0].items[0].value,
+          };
+        }
+        if (path.endsWith("/view")) return structuredClone(baseView);
+        throw new Error("unexpected request");
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: () => {},
+  });
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+  controller.render = (value) => rendered.push(value.tag);
+
+  const south = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("South"),
+      false,
+    ),
+    first = controller.update(south),
+    west = selectSlicer(
+      controller.view,
+      "Slicer_Region",
+      selector("West"),
+      false,
+    ),
+    second = controller.update(west);
+
+  await Promise.all([first, second]);
+  assert.deepEqual(controller.view.slicers[0].items, [selector("South")]);
+  assert.deepEqual(refreshBodies.at(-1).slicers[0].items, [selector("South")]);
+  assert.deepEqual(rendered, ["South"]);
+});
+
+test("pending calculation retries stay bound to the current dashboard lifecycle", async () => {
+  const timers = new Map(),
+    rendered = [],
+    toasts = [];
+  let timerId = 0,
+    requests = 0;
+  const controller = new DashboardController({
+    api: {
+      request: async () => {
+        requests++;
+        if (requests !== 2)
+          throw Object.assign(new Error("Dashboard calculations are pending"), {
+            status: 409,
+            error: "calculation_pending",
+          });
+        return { tag: "current" };
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: (message) => toasts.push(message),
+    setTimer: (callback) => {
+      const id = ++timerId;
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  controller.sheet = { index: 0, pivots: [pivot], slicers: [] };
+  controller.pivot = pivot;
+  controller.view = structuredClone(baseView);
+  controller.render = (value) => rendered.push(value.tag);
+
+  assert.equal(await controller.refresh(), false);
+  assert.equal(timers.size, 1);
+  await [...timers.values()][0]();
+  assert.deepEqual(rendered, ["current"]);
+  assert.deepEqual(toasts, []);
+
+  assert.equal(await controller.refresh(), false);
+  const retry = [...timers.values()][0],
+    beforeDispose = requests;
+  controller.dispose();
+  await retry();
+  assert.equal(requests, beforeDispose);
+});
+
+test("coherent calculation publications debounce one dashboard refresh", async () => {
+  const timers = new Map();
+  let timerId = 0,
+    refreshes = 0;
+  const controller = new DashboardController({
+    api: {
+      request: async () => {
+        refreshes++;
+        return { tag: "current" };
+      },
+    },
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: assert.fail,
+    setTimer: (callback) => {
+      const id = ++timerId;
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  controller.sheet = { index: 0, pivots: [pivot], slicers: [] };
+  controller.pivot = pivot;
+  controller.view = structuredClone(baseView);
+  controller.render = () => {};
+
+  assert.equal(controller.sourceChanged(2, 1), false);
+  assert.equal(timers.size, 0);
+  assert.equal(controller.sourceChanged(2, 2), true);
+  assert.equal(controller.sourceChanged(3, 3), true);
+  assert.equal(timers.size, 1);
+  await [...timers.values()][0]();
+  assert.equal(refreshes, 1);
+  assert.equal(controller.sourceChanged(3, 3), false);
+  assert.equal(timers.size, 0);
 });
 
 test("controller loads personal view, refreshes in grid, and reapplies after row-cache paint", async () => {
@@ -539,6 +887,43 @@ test("report filter checklist persists multi-selection and supports cancel clear
   assert.equal(multiplePanel.hidden, true);
   assert.equal(multiple.dataset.open, "false");
   assert.equal(focused, 1);
+});
+
+test("dashboard renders an in-grid refresh action at the pivot edge", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div");
+  let refreshes = 0;
+  const controller = new DashboardController({
+    api: {},
+    copyId: "copy-a",
+    mutate: () => {},
+    gridElement: root,
+    worksheet: () => null,
+    toast: assert.fail,
+  });
+  Object.assign(controller, {
+    sheet: { index: 0, slicers: [] },
+    pivot,
+    view: structuredClone(baseView),
+    result: result([]),
+    outlines: [],
+    refresh: async () => refreshes++,
+  });
+
+  controller.renderControls();
+  const button = findElement(
+    root.children[0],
+    (item) => item.className === "dashboard-refresh",
+  );
+  assert.equal(button.textContent, "Refresh");
+  assert.deepEqual(button._dashboardAnchor.from, {
+    row: 3,
+    column: 0,
+    row_offset: 0,
+    column_offset: 0,
+  });
+  await button.onclick();
+  assert.equal(refreshes, 1);
 });
 
 test("page filters override global button height and elevate an open menu", () => {

@@ -2,6 +2,8 @@ import { styleData } from "./grid-data.mjs";
 
 const EMU_TO_PX = 96 / 914400;
 const DEFAULT_FONT = "Calibri";
+const SOURCE_REFRESH_DELAY = 200;
+const PENDING_REFRESH_DELAY = 500;
 const DEFAULT_SCROLL = {
   sheetViewStartRow: 0,
   sheetViewStartColumn: 0,
@@ -33,12 +35,14 @@ export function viewToPivotOptions(view, pivot) {
   return {
     page: clone(view.page),
     slicers: clone(view.slicers),
-    collapsed: view.collapsed.flatMap((item) => {
+    collapsed: view.collapsed.map((item) => {
       const field = pivot.fields[item.field];
       const index = field?.shared_items.findIndex((shared) =>
         sameSelector(sharedSelector(shared), item.selector),
       );
-      return index >= 0 ? [{ field: item.field, item: index }] : [];
+      return index >= 0
+        ? { field: item.field, item: index }
+        : { field: item.field, selector: clone(item.selector) };
     }),
   };
 }
@@ -361,6 +365,8 @@ export class DashboardController {
     focusGrid = () => {},
     fontFamily = () => DEFAULT_FONT,
     roleStyles = () => ({}),
+    setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
+    clearTimer = (id) => globalThis.clearTimeout(id),
   }) {
     Object.assign(this, {
       api,
@@ -372,8 +378,17 @@ export class DashboardController {
       focusGrid,
       fontFamily,
       roleStyles,
+      setTimer,
+      clearTimer,
     });
     this.token = 0;
+    this.refreshGeneration = 0;
+    this.viewGeneration = 0;
+    this.viewQueue = Promise.resolve();
+    this.confirmedViews = new Map();
+    this.refreshTimer = null;
+    this.refreshing = false;
+    this.sourceRevision = -1;
     this.ranges = [];
     this.cells = new Map();
     this.multi = new Set();
@@ -383,6 +398,7 @@ export class DashboardController {
   }
 
   async open(sheet) {
+    this.cancelRefresh();
     this.disposeControls();
     const token = ++this.token;
     this.sheet = sheet;
@@ -390,10 +406,17 @@ export class DashboardController {
     this.pivot = sheet.pivots?.[0];
     if (!this.pivot) return false;
     try {
-      this.view = await this.api.request(
-        requestPath(this.copyId, sheet.index, this.pivot.name, "view"),
-      );
+      await this.viewQueue;
       if (token !== this.token) return false;
+      const path = requestPath(
+        this.copyId,
+        sheet.index,
+        this.pivot.name,
+        "view",
+      );
+      this.view = await this.api.request(path);
+      if (token !== this.token) return false;
+      this.confirmedViews.set(path, clone(this.view));
       await this.refresh(token);
       return token === this.token;
     } catch (error) {
@@ -403,43 +426,135 @@ export class DashboardController {
   }
 
   async refresh(token = this.token) {
+    this.cancelRefreshTimer();
+    const generation = ++this.refreshGeneration;
+    this.setRefreshing(true);
+    return this.performRefresh(token, generation);
+  }
+
+  async performRefresh(token, generation) {
+    if (!this.currentRefresh(token, generation)) return false;
     const path = requestPath(
       this.copyId,
       this.sheet.index,
       this.pivot.name,
       "refresh",
     );
-    const result = await this.api.request(path, {
-      method: "POST",
-      body: viewToPivotOptions(this.view, this.pivot),
-    });
-    if (token !== this.token) return false;
-    this.render(result);
-    return true;
+    try {
+      const result = await this.api.request(path, {
+        method: "POST",
+        body: viewToPivotOptions(this.view, this.pivot),
+      });
+      if (!this.currentRefresh(token, generation)) return false;
+      this.setRefreshing(false);
+      this.render(result);
+      return true;
+    } catch (error) {
+      if (!this.currentRefresh(token, generation)) return false;
+      if (error.status === 409 && error.error === "calculation_pending") {
+        this.retryRefresh(token, generation);
+        return false;
+      }
+      this.setRefreshing(false);
+      this.toast(error.message);
+      return false;
+    }
   }
 
   async update(view) {
     const token = this.token,
+      generation = ++this.viewGeneration,
       path = requestPath(
         this.copyId,
         this.sheet.index,
         this.pivot.name,
         "view",
-      );
-    try {
-      this.view = await this.api.request(path, {
-        method: "PUT",
-        body: viewBody(view),
-      });
-      if (token !== this.token) return false;
-      return this.refresh(token);
-    } catch (error) {
-      if (token === this.token) this.toast(error.message);
+      ),
+      body = viewBody(clone(view));
+    this.view = clone(view);
+    this.cancelRefresh();
+    const write = async () => {
+      try {
+        const persisted = await this.api.request(path, {
+          method: "PUT",
+          body,
+        });
+        this.confirmedViews.set(path, clone(persisted));
+        if (token !== this.token || generation !== this.viewGeneration)
+          return false;
+        this.view = persisted;
+        return this.refresh(token);
+      } catch (error) {
+        const current =
+            token === this.token && generation === this.viewGeneration,
+          confirmed = current ? this.confirmedViews.get(path) : null;
+        if (confirmed) this.view = clone(confirmed);
+        this.toast(error.message);
+        if (confirmed) await this.refresh(token);
+        return false;
+      }
+    };
+    this.viewQueue = this.viewQueue.then(write, write);
+    return this.viewQueue;
+  }
+
+  sourceChanged(inputRevision, calculatedRevision) {
+    if (
+      !this.pivot ||
+      !this.view ||
+      calculatedRevision < inputRevision ||
+      calculatedRevision <= this.sourceRevision
+    )
       return false;
-    }
+    this.sourceRevision = calculatedRevision;
+    this.cancelRefreshTimer();
+    const token = this.token,
+      generation = ++this.refreshGeneration;
+    this.setRefreshing(true);
+    this.refreshTimer = this.setTimer(() => {
+      this.refreshTimer = null;
+      return this.performRefresh(token, generation);
+    }, SOURCE_REFRESH_DELAY);
+    return true;
+  }
+
+  currentRefresh(token, generation) {
+    return token === this.token && generation === this.refreshGeneration;
+  }
+
+  retryRefresh(token, generation) {
+    this.cancelRefreshTimer();
+    this.refreshTimer = this.setTimer(() => {
+      this.refreshTimer = null;
+      return this.performRefresh(token, generation);
+    }, PENDING_REFRESH_DELAY);
+  }
+
+  cancelRefreshTimer() {
+    if (this.refreshTimer !== null) this.clearTimer(this.refreshTimer);
+    this.refreshTimer = null;
+  }
+
+  cancelRefresh() {
+    this.cancelRefreshTimer();
+    this.refreshGeneration++;
+    this.setRefreshing(false);
+  }
+
+  setRefreshing(value) {
+    this.refreshing = value;
+    if (!this.refreshButton) return;
+    this.refreshButton.disabled = value;
+    this.refreshButton.textContent = value ? "Refreshing…" : "Refresh";
+    this.refreshButton.setAttribute("aria-busy", String(value));
   }
 
   render(result) {
+    if (Number.isInteger(result.pivot?.calculated_revision))
+      this.sourceRevision = Math.max(
+        this.sourceRevision,
+        result.pivot.calculated_revision,
+      );
     this.growWorksheet(result);
     const rendered = pivotMutation({
       result,
@@ -480,7 +595,9 @@ export class DashboardController {
   }
 
   dispose() {
+    this.cancelRefresh();
     this.token++;
+    this.viewGeneration++;
     this.disposeControls();
     this.matrix = null;
     this.ranges = [];
@@ -491,6 +608,7 @@ export class DashboardController {
     this.layer?.remove();
     this.layer = null;
     this.controls = [];
+    this.refreshButton = null;
   }
 
   renderControls() {
@@ -503,7 +621,18 @@ export class DashboardController {
     this.renderPages();
     this.renderSlicers();
     this.renderOutlines();
+    this.renderRefresh();
     this.position();
+  }
+
+  renderRefresh() {
+    const button = controlButton("Refresh dashboard", "Refresh"),
+      [row, column] = this.pivot.location.bounds;
+    button.className = "dashboard-refresh";
+    button.onclick = () => this.refresh();
+    this.refreshButton = button;
+    this.setRefreshing(this.refreshing);
+    this.addControl(button, cellAnchor(Math.max(0, row - 1), column));
   }
 
   renderPages() {

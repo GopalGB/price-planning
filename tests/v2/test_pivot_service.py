@@ -154,11 +154,41 @@ class PivotServiceTests(unittest.TestCase):
         collapsed_parent = next(row for row in collapsed["rows"] if row["caption"] == parent["caption"])
         self.assertTrue(collapsed_parent["collapsed"])
         self.assertLess(len(collapsed["rows"]), len(expanded["rows"]))
+
+        from pp.errors import AppError
+
+        options["collapsed"] = [{"field": parent["field"],
+                                 "selector": {"kind": "number", "value": float("inf")}}]
+        with self.assertRaises(AppError) as invalid:
+            self.refresh(options)
+        self.assertEqual((invalid.exception.status, invalid.exception.code), (422, "invalid"))
         self.assertEqual(collapsed["rows"][-1]["kind"], "grand_total")
 
         self.pivot["row_fields"] = [0]
         flat = self.service().refresh(self.query(options_all(self.pivot, self.slicers)))
         self.assertFalse(any(row["collapsible"] for row in flat["rows"]))
+
+    def test_dynamic_outline_group_collapses_by_typed_selector(self):
+        with self.fixture.database.transaction() as connection:
+            connection.execute(
+                "INSERT INTO pp_results(copy_id,sheet,row,col,value_json,calculated_revision) "
+                "VALUES(?,?,?,?,?,?)",
+                ("copy-a", 1, 1, 0, json.dumps("Region 99"), 0),
+            )
+        self.pivot["row_fields"] = [0, 1]
+        self.pivot["fields"][1]["axis"] = "row"
+        options = options_all(self.pivot, self.slicers)
+        expanded = self.refresh(options)
+        parent = next(row for row in expanded["rows"]
+                      if row.get("selector") == {"kind": "string", "value": "Region 99"})
+
+        options["collapsed"] = [{"field": parent["field"], "selector": parent["selector"]}]
+        collapsed = self.refresh(options)
+        collapsed_parent = next(row for row in collapsed["rows"]
+                                if row.get("selector") == parent["selector"])
+
+        self.assertTrue(collapsed_parent["collapsed"])
+        self.assertLess(len(collapsed["rows"]), len(expanded["rows"]))
 
     def test_column_fields_include_values_and_column_grand_totals(self):
         self.pivot["column_fields"] = [4, -2]

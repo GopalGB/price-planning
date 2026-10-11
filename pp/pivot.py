@@ -345,7 +345,8 @@ def _collapsed_options(raw, pivot):
     valid_fields = set(pivot["row_fields"][:-1])
     output = []
     for item in raw:
-        if not isinstance(item, dict) or set(item) != {"field", "item"}:
+        if (not isinstance(item, dict)
+                or set(item) not in ({"field", "item"}, {"field", "selector"})):
             raise AppError(422, "invalid", "Pivot collapsed group is invalid")
         field_index = item["field"]
         if (isinstance(field_index, bool) or not isinstance(field_index, int)
@@ -353,7 +354,14 @@ def _collapsed_options(raw, pivot):
             raise AppError(422, "invalid", "Pivot collapsed group is invalid")
         field = pivot["fields"][field_index]
         value = item.get("item")
-        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < len(field["shared_items"]):
+        if "selector" in item:
+            selector = item["selector"]
+            if not isinstance(selector, dict) or not _valid_selection(
+                    selector, len(field["shared_items"])):
+                raise AppError(422, "invalid", "Pivot collapsed item is invalid")
+            value = _selection_key(field, selector)
+        elif (isinstance(value, bool) or not isinstance(value, int)
+              or not 0 <= value < len(field["shared_items"])):
             raise AppError(422, "invalid", "Pivot collapsed item is invalid")
         output.append({"field": field_index, "item": value})
     return output

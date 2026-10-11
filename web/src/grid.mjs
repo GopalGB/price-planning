@@ -1208,6 +1208,11 @@ export class PlanningGrid {
       this.growCalcExtents(message.changes);
     }
     this.controller.remote(message);
+    if (message.type === "calc" || message.type === "calc_state")
+      this.dashboard?.sourceChanged(
+        this.store.inputRevision,
+        this.store.calculatedRevision,
+      );
     if (message.type === "op" && message.at == null)
       await this.refreshOpDetails(message);
   }
