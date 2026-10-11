@@ -66,9 +66,7 @@ class DashboardViewAPIContractTests(unittest.TestCase):
         self.assertEqual(default.status_code, 200, default.body)
         body = default.json()
         self.assertEqual(body["pivot"], "DashboardPivot")
-        self.assertEqual(body["page"][0]["items"], [
-            {"kind": "string", "value": "Department 01"}
-        ])
+        self.assertIsNone(body["page"][0]["items"])
         self.assertEqual(body["slicers"][0]["items"], [
             {"kind": "string", "value": "Region 01"}
         ])

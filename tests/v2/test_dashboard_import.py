@@ -136,18 +136,18 @@ class DashboardImportTests(unittest.TestCase):
             workspace = Path(temp)
             source = dashboard_fixture(workspace)
 
-            def omit_defaults(data):
+            def set_first_page_item(data):
                 root = ET.fromstring(data)
-                root.find(f"{MAIN}pageFields/{MAIN}pageField").attrib.pop("item")
+                root.find(f"{MAIN}pageFields/{MAIN}pageField").set("item", "0")
                 root.find(f"{MAIN}colItems/{MAIN}i").attrib.pop("i")
                 return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
-            rewrite_member(source, "xl/pivotTables/pivotTable1.xml", omit_defaults)
+            rewrite_member(source, "xl/pivotTables/pivotTable1.xml", set_first_page_item)
             snapshot = import_template(source, workspace / "data")
             sheet = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))["sheets"][0]
 
-        self.assertEqual(sheet["pivots"][0]["page_fields"][0]["item"], None)
-        self.assertIsNone(sheet["pivots"][0]["page_fields"][0]["cache_index"])
+        self.assertEqual(sheet["pivots"][0]["page_fields"][0]["item"], 0)
+        self.assertEqual(sheet["pivots"][0]["page_fields"][0]["cache_index"], 0)
         self.assertEqual(sheet["pivots"][0]["column_items"][0]["data_index"], 0)
 
     def test_unsupported_pivot_features_are_rejected(self):
@@ -209,7 +209,7 @@ class DashboardImportTests(unittest.TestCase):
         self.assertEqual(pivot["column_fields"], [-2])
         self.assertEqual([field["field"] for field in pivot["page_fields"]], [1, 2, 3])
         self.assertEqual(pivot["page_fields"][0], {
-            "field": 1, "item": 0, "hierarchy": -1, "cache_index": 0,
+            "field": 1, "item": None, "hierarchy": -1, "cache_index": None,
             "name": "Department", "caption": "Department",
         })
         self.assertEqual([field["field"] for field in pivot["data_fields"]], [5, 6, 7, 8, 9])

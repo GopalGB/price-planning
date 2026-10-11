@@ -247,7 +247,7 @@ def _pivot_table():
  <rowItems count="4">{row_items}</rowItems>
  <colFields count="1"><field x="-2"/></colFields>
  <colItems count="5">{column_items}</colItems>
- <pageFields count="3"><pageField fld="1" item="0"/><pageField fld="2" item="0"/><pageField fld="3" item="0"/></pageFields>
+ <pageFields count="3"><pageField fld="1" hier="-1"/><pageField fld="2" hier="-1"/><pageField fld="3" hier="-1"/></pageFields>
  <dataFields count="5">{data_fields}</dataFields>
  <pivotTableStyleInfo name="PivotStyleLight16" showRowHeaders="1" showColHeaders="1"
   showRowStripes="0" showColStripes="0" showLastColumn="0"/>
