@@ -1,0 +1,1 @@
+import{r as t,j as a}from"./react-WtT1zNtY.js";var c=Object.defineProperty,o=(r,e)=>c(r,"name",{value:e,configurable:!0}),s={LTR:"ltr"},i=t.createContext(void 0),d=o(r=>{const{dir:e,children:n}=r;return a.jsx(i.Provider,{value:e,children:n})},"DirectionProvider");function u(r){const e=t.useContext(i);return r||e||s.LTR}o(u,"useDirection");export{d as D,u};

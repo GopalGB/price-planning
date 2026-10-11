@@ -1,0 +1,71 @@
+name: ci
+on: [pull_request, push]
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - run: python -m pip install --require-hashes -r requirements-dev.lock
+      - run: python ops/content_guard.py --all
+      - run: python -m unittest discover -s tests -v
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install semgrep bandit pip-audit
+      - run: semgrep scan --error --config p/python --config p/javascript --config p/owasp-top-ten --config p/secrets
+      - run: bandit -r app ops -ll
+      - run: pip-audit --require-hashes -r requirements.lock
+      - name: Gitleaks CLI (including Git history)
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$RUNNER_TEMP/gitleaks.tar.gz"
+          tar -xzf "$RUNNER_TEMP/gitleaks.tar.gz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect --source . --no-banner --redact
+
+  windows-offline:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        python: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '${{ matrix.python }}'
+      - name: Fresh offline install from vendored wheels
+        env:
+          PIP_NO_INDEX: '1'
+          PIP_DISABLE_PIP_VERSION_CHECK: '1'
+        run: |
+          if (Test-Path .venv) { throw 'Offline proof requires a fresh .venv' }
+          python ops/install_env.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Import installed runtime and check dependencies
+        run: |
+          .venv\Scripts\python -c "import formualizer, waitress; print('offline runtime imports: ok')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .venv\Scripts\python -m pip check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

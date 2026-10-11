@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Univer synthetic gate</title>
+    <style>
+      html, body { margin: 0; height: 100%; font-family: sans-serif; }
+      body { display: flex; flex-direction: column; }
+      header { padding: 8px; background: #ddebf7; }
+      #app { flex: 1; min-height: 0; }
+      #status { white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <header>Synthetic data only. <span id="status" role="status">Loading gate...</span></header>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
