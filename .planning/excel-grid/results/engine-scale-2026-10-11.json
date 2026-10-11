@@ -1,7 +1,6 @@
 {
   "attempted_scales": [
-    0.05,
-    0.2
+    0.05
   ],
   "completed_scales": [
     0.05
@@ -278,13 +277,14 @@
           }
         ]
       },
-      "broad_edit_seconds": 5.7169665829860605,
+      "attempt_elapsed_seconds": 264.9031445419532,
+      "broad_edit_seconds": 4.751349375001155,
       "cached_baseline": {
         "performed": false,
         "reason": "not_requested"
       },
-      "child_peak_rss_bytes": 605929472,
-      "child_rss_max_bytes": 566771712,
+      "child_peak_rss_bytes": 708395008,
+      "child_rss_max_bytes": 652525568,
       "correctness": {
         "broad": {
           "actual_changed": 75000,
@@ -297,53 +297,25 @@
           "expected_changed": 1
         }
       },
-      "disk_min_free_mib": 4298.3359375,
+      "disk_min_free_mib": 7263.50390625,
       "engine_version": "0.11.1",
-      "generation_seconds": 1.0123289580224082,
-      "load_seconds": 455.1497262499761,
-      "ordinary_edit_seconds": 0.5580187920131721,
+      "generation_seconds": 0.5603656250168569,
+      "load_seconds": 258.7317493329756,
+      "ordinary_edit_seconds": 0.4232435829471797,
       "physical_ram_bytes": 8589934592,
       "platform": "macOS-27.0.1-arm64-arm-64bit",
       "report_date": "2026-10-11",
-      "rss_at_stage_start_bytes": 131448832,
+      "rss_at_stage_start_bytes": 143015936,
       "scale": 0.05,
       "stage": "finished",
       "status": "completed",
       "swap_baseline_mib": 8875.31,
-      "swap_max_mib": 9196.56
-    },
-    {
-      "child_rss_bytes": 13205504,
-      "child_rss_max_bytes": 191528960,
-      "disk_free_mib": 8588.03515625,
-      "disk_min_free_mib": 6538.6328125,
-      "failure_stage": "timeout",
-      "generation_seconds": 4.167967458022758,
-      "latest_progress": {
-        "generation_seconds": 4.167967458022758,
-        "rss_at_stage_start_bytes": 28229632,
-        "stage": "load",
-        "status": "running"
-      },
-      "platform": "macOS-27.0.1-arm64-arm-64bit",
-      "rss_at_stage_start_bytes": 28229632,
-      "scale": 0.2,
-      "status": "failed",
-      "swap_baseline_mib": 8875.31,
-      "swap_current_mib": 4778.44,
       "swap_max_mib": 8875.31
-    },
-    {
-      "reason": "timeout",
-      "scale": 0.5,
-      "status": "skipped"
     }
   ],
   "seed": 20261011,
-  "skipped_scales": [
-    0.5
-  ],
-  "stop_reason": "timeout",
+  "skipped_scales": [],
+  "stop_reason": null,
   "swap_baseline_mib": 8875.31,
   "topology_limitations": [
     "Synthetic formulas use a bounded three-row lookup palette, not the real inventory.",
