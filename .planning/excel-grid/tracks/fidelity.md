@@ -6,6 +6,12 @@
 Synthetic fixtures only. No private workbook access. pp/engine and calculation pipeline remain read-only.
 
 ## Progress
+2026-10-11 resume STOPPED by current user resource gate. Baseline swap5278.62 MB; ceiling6814.62 MB. Controller measured swap6882.50 MB (growth1603.88 MB), disk3436 MB, so execution stopped immediately. No server or browser check started in this resume, no owned executors remain. Tables/AutoFilter committed7b4ae03 after Python36/36, web31/31, content guard0, global Ruff, pinned Prettier and diff check green. Phase5 added only unrun tests/v2/test_fidelity_views.py and web/test/fidelity-views.test.mjs; production unchanged. Never stage .venv or web/node_modules.
+
+Pending exact Claude review now RAN successfully: response modelUsage contains only claude-opus-5-5, is_error false; verdict FIX-FIRST. Evidence results-private/fidelity/resume-opus-review.json and resume-opus-result.md. Three HIGH findings require regression tests and fixes: (1) local hide/show rows are cancelled by PlanningGrid.command because calls lack the internal mutation guard; (2) pp/server.py async rows handler blocks the event loop during synchronous CF work, use existing asyncio.to_thread pattern; (3) one formula-result error rolls back healthy CF targets, treat error result as false while retaining EngineError handling. MED findings to investigate in same pass: deterministic function batching/template-block reuse, explicit cell styling precedence over table styles, overlay scroll redraw/asset caching. Header clipping needs coverage; table-order memory claim is unverified and must not be accepted without source evidence. Full review is preserved verbatim. No shipping/acceptance claim.
+
+Security: branch gitleaks f74d131..7b4ae03 no leaks; pinned Python audit no known vulnerabilities; production web audit0. Semgrep p/python flagged only fixed committed table-catalog ET.parse sink; trusted-path triage in resume-security-triage.md. Final all-source scan/full web dependency audit, coverage, planner review, duplicate full suites/builds and browser remain pending.
+
 Tables/AutoFilter resumed and controller-verified: Python36/36, web31/31, content guard0, Ruff and Prettier green. New resource guard: disk2500 MB, swap6814.62 MB. Phase4 local commit follows; review and final acceptance pending.
 
 2026-10-11 19:33 IST resume stopped at the resource gate: df -g / available 3 GB, df -k / available 3323888 KiB, swap used 9912.44 MB baseline. Tables/AutoFilter changes and tests are present but uncommitted and unverified in this resume. No source edits, tests, commits, review calls or browser checks ran; checkpoint documentation only. Pending exact claude-opus-5-5 review is deferred by low disk, not a newly verified quota failure. TaskSpace 42 remains retained.
@@ -30,9 +36,7 @@ Latest focused checks: Python 22/22 and web 23/23. Earlier full Python 296/296 p
 No passing feature tests or final acceptance claimed yet. Runtime evidence belongs in results-private/fidelity. Active Python lock audit: no known vulnerabilities. Active web lock audit: zero findings. Exact Opus probe: canonical claude-opus-5-5. These are preliminary gates, not a code review or feature acceptance. TaskSpace 42 reserved. Low-disk incident preserved in STATE; checks remain sequential.
 
 ## Next
-Recover to at least 4 GB free, confirm swap growth stays within 2 GB of the 9912.44 MB resume baseline, then test and commit the uncommitted tables/AutoFilter feature. Run pending exact claude-opus-5-5 review and implement sheet views before final acceptance gates. TaskSpace 42 stays open until successful acceptance.
-
-Implement conditional formatting first, then drawings, notes, tables/filters and sheet view in order.
+Resource stop: swap6882.50 MB exceeded6814.62 MB. Next resume must first fix the three HIGH exact Opus findings preserved in results-private/fidelity/resume-opus-result.md. Tables committed7b4ae03; two view tests remain unrun/uncommitted. Then finish Phase5 and all acceptance gates.
 
 ## CF contract and bounds
 
