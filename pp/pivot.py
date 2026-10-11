@@ -622,7 +622,10 @@ def _clauses(pivot, options):
                 field = pivot["fields"][item["field"]]
                 selected = frozenset(_selection_key(field, value) for value in item["items"])
                 clauses.append((origin, item.get("name", ""), item["field"], selected))
-    for field_index in pivot["row_fields"] + [item for item in pivot["column_fields"] if item >= 0]:
+    hidden_fields = (pivot["row_fields"]
+                     + [item for item in pivot["column_fields"] if item >= 0]
+                     + [item["field"] for item in pivot["page_fields"]])
+    for field_index in hidden_fields:
         hidden = {item["cache_index"] for item in pivot["fields"][field_index]["items"] if item["hidden"]}
         if hidden:
             clauses.append(("hidden", "", field_index, frozenset(hidden)))

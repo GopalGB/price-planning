@@ -353,6 +353,20 @@ class PivotServiceTests(unittest.TestCase):
             "copy-a", "owner", 0, "OtherPivot", options_all(other, self.slicers)))
         self.assertEqual(len(result["filters"]["slicers"]), len(self.slicers))
 
+    def test_hidden_page_filter_items_are_excluded_like_excel(self):
+        def grand_total(result):
+            return next(cell["v"] for cell in result["cells"]
+                        if cell["row_kind"] == "grand_total" and cell.get("data_field") == 9)
+
+        before = self.refresh(options_all(self.pivot, self.slicers))
+        for item in self.pivot["fields"][1]["items"]:
+            item["hidden"] = True
+        after = self.refresh(options_all(self.pivot, self.slicers))
+
+        self.assertEqual([row["caption"] for row in after["rows"] if row["kind"] == "item"], [])
+        self.assertFalse(grand_total(after))
+        self.assertGreater(grand_total(before), 0)
+
     def test_current_dynamic_axis_values_have_stable_selectors(self):
         with self.fixture.database.transaction() as connection:
             connection.executemany(
