@@ -20,6 +20,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
+from .dashboard import read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
 
@@ -29,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 6
+IMPORT_VERSION = 7
 
 
 class TemplateImportError(Exception):
@@ -562,10 +563,12 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
             sheet_specs, names = _workbook_data(archive)
+            dashboard = read_dashboard_metadata(archive, sheet_specs)
             metadata, protected = [], set()
             context = SheetContext(archive, database, unlocked, staging)
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)
+                info.update(dashboard[spec["index"]])
                 metadata.append(info)
                 if is_protected:
                     protected.add(spec["index"])
