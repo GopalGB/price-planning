@@ -150,6 +150,7 @@ def _formula_map(path: Path):
                     element.clear()
             dimensions.append((max_row, max_col))
     _expand_shared_text(formulas, masters, followers)
+    _validate_isformula_forms(formulas, frozenset(cells), names)
     named_formulas, opaque_formulas = _expand_defined_names(formulas, names, defined_ranges)
     budget = _trace_budget(formulas, names, dimensions)
     return (frozenset(cells), formulas, names, caches,
@@ -381,6 +382,12 @@ def _rewrite_isformula(formula: str, lookup: FormulaLookup) -> str:
         if ISFORMULA_CALL.search(segments[index]):
             raise EngineError("unsupported ISFORMULA reference")
     return "".join(segments)
+
+
+def _validate_isformula_forms(formulas, formula_cells, names):
+    for (sheet, _, _), formula in formulas.items():
+        if ISFORMULA_CALL.search(formula):
+            _rewrite_isformula(formula, FormulaLookup(sheet, formula_cells, names))
 
 
 def _formula_runs(registrations):
