@@ -10,6 +10,15 @@ v2 integration is feature-complete and verified on the Mac with synthetic fixtur
 
 ## Last handoff
 
+2026-10-11 19:49 IST: exact review returned verified modelUsage
+claude-opus-5-5 and FIX-FIRST. HIGH outdated runner limits and LOW fixture
+cleanup already resolved by 63e4391. Named-range trace budget, import baseline
+versioning, bootstrap error wrapping and repeated process-group cleanup are under
+review/repair. Cached volatile-on-open finding is being checked against explicit
+cached-startup scope and the inventoried function list. Review log:
+results-private/p6-resume-review.json. Scale 5% remains in load; no timing accepted.
+
+
 2026-10-11 19:44 IST resume checkpoint: focused tests 112/112 PASS; primary full
 Python run 1 368/368 PASS; web 101/101 PASS twice. Python run 2 is running.
 Scoped ruff (pp, tests/v2, new scale tools) clean; broad legacy scan has 141
