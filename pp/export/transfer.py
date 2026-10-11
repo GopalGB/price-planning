@@ -26,8 +26,9 @@ CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 CUSTOM_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties"
 VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 CUSTOM_REL = f"{REL_NS}/custom-properties"
-PIVOT_REL_SUFFIXES = ("/pivotCacheDefinition", "/slicerCache", "/slicerCacheDefinition")
 MAX_CLEANUP_XML = 64 * 1024 * 1024
+DRAWING_SLICER = "http://schemas.microsoft.com/office/drawing/2010/slicer}slicer"
+DRAWING_TIMELINE = "http://schemas.microsoft.com/office/drawing/2012/timeslicer}timeslicer"
 REL_ATTRIBUTE_NAMESPACES = {
     REL_NS,
     "http://purl.oclc.org/ooxml/officeDocument/relationships",
@@ -49,6 +50,11 @@ OVERRIDE_TAG = re.compile(
 )
 REMOVABLE_OBJECT_PREFIXES = (
     "xl/pivotTables/", "xl/pivotCache/", "xl/slicers/", "xl/slicerCaches/", "xl/charts/",
+    "xl/timelines/", "xl/timelineCaches/",
+)
+CONTROL_KINDS = (
+    ("/slicerCache", "/slicer", "slicer", DRAWING_SLICER),
+    ("/TimelineCache", "/Timeline", "timeline", DRAWING_TIMELINE),
 )
 
 
@@ -81,6 +87,7 @@ class FormulaContext:
     sheets: list
     removed_names: set
     definitions: dict
+    known_names: set
     affected_names: set
     results: dict
 
@@ -96,6 +103,7 @@ class RewriteContext:
 class CleanupOptions:
     dropped_ids: set
     worksheet: bool = False
+    dropped_names: frozenset = frozenset()
 
 
 @dataclass
@@ -127,6 +135,8 @@ class DependencyState:
     removed_sheet_parts: set
     roots: set
     removed_identifiers: set
+    named: dict
+    controls: set
 
 
 @dataclass
@@ -154,6 +164,8 @@ class TransformState:
     kept: list
     removed: set
     dropped: dict
+    named: dict
+    controls: set
     rewritten_workbook: bytes
     frozen: dict
 
@@ -262,12 +274,30 @@ def _closure(starts, graph):
     return seen
 
 
+def _live_closure(starts, graph, blocked):
+    seen, todo = set(), list(starts)
+    while todo:
+        source = todo.pop()
+        if source in seen:
+            continue
+        seen.add(source)
+        if source in blocked:
+            continue
+        todo.extend(
+            item["target"] for item in graph.get(source, [])
+            if item["target"] is not None
+        )
+    return seen
+
+
 def _object_sources_removed(context, removed_names, affected_names):
     removed = set()
     folded = {name.casefold() for name in removed_names}
     affected = set(affected_names)
-    for name in context.parts:
-        if not name.endswith(".xml") or not name.startswith(("xl/pivotCache/", "xl/charts/")):
+    definitions = _targets_by_role(context, "/pivotCacheDefinition")
+    charts = {name for name in context.parts if name.startswith("xl/charts/")}
+    for name in definitions | charts:
+        if name not in context.parts or not name.endswith(".xml"):
             continue
         with context.archive.open(name) as stream:
             root = ET.parse(stream).getroot()
@@ -290,13 +320,17 @@ def _dependency_plan(context):
     state = _dependency_state(context)
     _remove_dependent_objects(context, state)
     _finish_dependency_plan(context, state)
-    return state.removed, state.dropped, state.removed_identifiers
+    return (
+        state.removed, state.dropped, state.removed_identifiers,
+        state.named, state.controls,
+    )
 
 
 def _dependency_state(context):
     kept_parts = {sheet["part"] for sheet in context.kept}
     state = DependencyState(
         {"xl/calcChain.xml"} & context.parts, defaultdict(set), kept_parts, set(), set(), set(),
+        defaultdict(set), set(),
     )
     for sheet in context.sheets:
         if sheet["part"] not in kept_parts:
@@ -330,15 +364,85 @@ def _remove_dependent_objects(context, state):
         state.removed.update(_object_sources_removed(
             context, removed_names, {name for _, name in affected} | table_names,
         ))
-        changed = True
-        while changed:
-            changed = False
-            for source, relationships in context.graph.items():
-                if source in state.removed or not source.startswith(REMOVABLE_OBJECT_PREFIXES):
-                    continue
-                if any(item["target"] in state.removed for item in relationships):
-                    state.removed.add(source)
-                    changed = True
+        _cascade_removed_objects(context, state)
+        _remove_timeline_caches(context, state)
+        _cascade_removed_objects(context, state)
+        for kind in CONTROL_KINDS:
+            _remove_named_views(context, state, kind)
+
+
+def _targets_by_role(context, suffix):
+    return {
+        item["target"] for relationships in context.graph.values() for item in relationships
+        if item["target"] is not None and item["type"].endswith(suffix)
+    }
+
+
+def _cascade_removed_objects(context, state):
+    changed = True
+    while changed:
+        changed = False
+        for source, relationships in context.graph.items():
+            if source in state.removed or not source.startswith(REMOVABLE_OBJECT_PREFIXES):
+                continue
+            if any(item["target"] in state.removed for item in relationships):
+                state.removed.add(source)
+                changed = True
+
+
+def _removed_pivot_ids(context, state):
+    relationships = {
+        item["id"] for item in context.graph["xl/workbook.xml"]
+        if item["target"] in state.removed and item["type"].endswith("/pivotCacheDefinition")
+    }
+    root = ET.fromstring(context.workbook_xml)
+    return {
+        node.get("cacheId") for node in root.iter()
+        if (_local(node.tag) == "pivotCache"
+            and node.get(f"{{{REL_NS}}}id") in relationships)
+    }
+
+
+def _remove_timeline_caches(context, state):
+    pivot_ids = _removed_pivot_ids(context, state)
+    if not pivot_ids:
+        return
+    for part in _targets_by_role(context, "/TimelineCache") - state.removed:
+        with context.archive.open(part) as stream:
+            root = ET.parse(stream).getroot()
+        if any(_local(node.tag) == "state" and node.get("pivotCacheId") in pivot_ids
+               for node in root.iter()):
+            state.removed.add(part)
+
+
+def _removed_cache_names(context, state, role):
+    names = set()
+    for part in _targets_by_role(context, role) & state.removed:
+        with context.archive.open(part) as stream:
+            name = ET.parse(stream).getroot().get("name")
+        if name:
+            names.add(name.casefold())
+    return names
+
+
+def _remove_named_views(context, state, kind):
+    cache_role, view_role, local, drawing_tag = kind
+    cache_names = _removed_cache_names(context, state, cache_role)
+    if not cache_names:
+        return
+    for part in _targets_by_role(context, view_role) - state.removed:
+        with context.archive.open(part) as stream:
+            root = ET.parse(stream).getroot()
+        nodes = [node for node in root.iter() if _local(node.tag) == local]
+        affected = [node for node in nodes if (node.get("cache") or "").casefold() in cache_names]
+        for node in affected:
+            name = (node.get("name") or "").casefold()
+            if name:
+                state.controls.add((drawing_tag, name))
+                state.named[part].add((node.tag.lstrip("{"), name))
+        if nodes and len(affected) == len(nodes):
+            state.removed.add(part)
+            state.named.pop(part, None)
 
 
 def _removed_table_names(context, state):
@@ -360,6 +464,8 @@ def _finish_dependency_plan(context, state):
     if state.roots:
         protected = _closure(state.kept_parts, context.graph)
         state.removed.update(_closure(state.roots, context.graph) - protected)
+    live = _live_closure(state.kept_parts, context.graph, state.removed)
+    state.removed.update(_closure(state.removed, context.graph) - live)
     for source, relationships in context.graph.items():
         for relationship in relationships:
             if source in state.removed or relationship["target"] in state.removed:
@@ -411,10 +517,11 @@ def _sheet_names_in_formula(formula, sheets):
 
 def _definition_references(formula, known):
     code = _formula_code(formula)
-    return {
-        name for name in known
-        if re.search(rf"(?i)(?<![A-Za-z0-9_.]){re.escape(name)}(?![A-Za-z0-9_.(])", code)
-    }
+    candidates = re.findall(
+        r"(?<![\w.])([\w\\][\w.\\]*)(?![\w.(])",
+        code,
+    )
+    return {name.casefold() for name in candidates if name.casefold() in known}
 
 
 def _definition_state(data, sheets, removed_names):
@@ -428,6 +535,7 @@ def _definition_state(data, sheets, removed_names):
         formula = unescape(re.sub(rb"^<[^>]*>|</[^>]*>$", b"", tag, flags=re.S).decode("utf-8"))
         definitions[(scope, name.casefold())] = formula
     known = {name for _, name in definitions}
+    removed = {name.casefold() for name in removed_names}
     removed_indexes = {sheet["index"] for sheet in sheets if sheet["name"] in removed_names}
     affected, visiting = set(), set()
 
@@ -444,7 +552,7 @@ def _definition_state(data, sheets, removed_names):
         formula = definitions[key]
         broken = scope in removed_indexes or bool(
             _sheet_names_in_formula(formula, sheets) & removed_names
-            or _definition_references(formula, {name.casefold() for name in removed_names})
+            or _definition_references(formula, removed)
         )
         if not broken:
             broken = any(is_affected(resolve(scope, name)) for name in _definition_references(formula, known))
@@ -464,8 +572,7 @@ def _formula_needs_freeze(formula, sheet_index, context):
     if _definition_references(
             formula, {name.casefold() for name in context.removed_names}):
         return True
-    known = {name for _, name in context.definitions}
-    for name in _definition_references(formula, known):
+    for name in _definition_references(formula, context.known_names):
         key = ((sheet_index, name) if (sheet_index, name) in context.definitions
                else (None, name))
         if key in context.affected_names:
@@ -492,10 +599,26 @@ def _rewrite_workbook(data, dropped_relationships, context):
         return tag
 
     data = NAME_TAG.sub(replace_name, data)
+
+    def replace_view(match):
+        tag = match.group()
+        visible = next(
+            (context.old_to_new[sheet["index"]] for sheet in context.sheets
+             if sheet["index"] in context.old_to_new and not sheet["hidden"]),
+            0,
+        )
+        for attribute in ("activeTab", "firstSheet"):
+            value = _attribute(tag, attribute)
+            if value is not None and value.isdigit():
+                tag = _set_attribute(tag, attribute, context.old_to_new.get(int(value), visible))
+        return tag
+
+    view = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?workbookView\b[^>]*/?>")
+    data = view.sub(replace_view, data)
     if dropped_relationships:
-        pivot = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?(?:pivotCache|slicerCache)\b[^>]*(?:/>|>.*?</(?P=prefix)(?:pivotCache|slicerCache)\s*>)", re.S)
+        pivot = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?(?:pivotCache|slicerCache|timelineCacheRef)\b[^>]*(?:/>|>.*?</(?P=prefix)(?:pivotCache|slicerCache|timelineCacheRef)\s*>)", re.S)
         data = pivot.sub(lambda match: b"" if _attribute(match.group(), "id") in dropped_relationships else match.group(), data)
-    return data, definitions, affected
+    return _remove_empty_containers(data), definitions, affected
 
 
 def _cell_formula(cell):
@@ -707,6 +830,25 @@ def _dropped_relationship(attributes, dropped_ids):
     return False
 
 
+def _dropped_name(name, attributes, dropped_names):
+    value = (attributes.get("name") or "").casefold()
+    return bool(value and (name, value) in dropped_names)
+
+
+def _remove_empty_containers(data):
+    empty = re.compile(
+        rb"<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)"
+        rb"(?P<name>pivotTableParts|pivotCaches|slicerCaches|timelineCacheRefs|"
+        rb"oleObjects|controls|slicerList|timelines|ext|extLst)\b[^>]*>\s*"
+        rb"</(?P=prefix)(?P=name)\s*>",
+        re.S,
+    )
+    previous = None
+    while previous != data:
+        previous, data = data, empty.sub(b"", data)
+    return data
+
+
 def _merged_ranges(ranges):
     merged = []
     for start, end in sorted(ranges):
@@ -718,8 +860,8 @@ def _merged_ranges(ranges):
 
 
 class RelationshipRangeParser:
-    def __init__(self, data, dropped_ids):
-        self.data, self.dropped_ids = data, dropped_ids
+    def __init__(self, data, options):
+        self.data, self.options = data, options
         self.parser = expat.ParserCreate(namespace_separator="}")
         self.stack, self.ranges = [], []
 
@@ -738,7 +880,8 @@ class RelationshipRangeParser:
         frame = RelationshipFrame(
             start, tag_end, self.data[start:tag_end].rstrip().endswith(b"/>"),
             name.rpartition("}")[2] in {"oneCellAnchor", "twoCellAnchor", "absoluteAnchor"},
-            _dropped_relationship(attributes, self.dropped_ids),
+            (_dropped_relationship(attributes, self.options.dropped_ids)
+             or _dropped_name(name, attributes, self.options.dropped_names)),
         )
         self.stack.append(frame)
         if frame.direct:
@@ -754,21 +897,15 @@ class RelationshipRangeParser:
             self.ranges.append((frame.start, end))
 
 
-def _drop_relationship_references(data, dropped_ids, root=b""):
-    if not dropped_ids:
+def _drop_relationship_references(data, options, root=b""):
+    if not options.dropped_ids and not options.dropped_names:
         return data
     offset = len(root)
-    ranges = RelationshipRangeParser(root + data, dropped_ids).parse()
+    ranges = RelationshipRangeParser(root + data, options).parse()
     for start, end in reversed(ranges):
         if start >= offset:
             data = data[:start - offset] + data[end - offset:]
-    empty = re.compile(
-        rb"<(?P<prefix>(?:[A-Za-z_][\w.-]*:)?)"
-        rb"(?P<name>pivotTableParts|oleObjects|controls)\b[^>]*>\s*"
-        rb"</(?P=prefix)(?P=name)\s*>",
-        re.S,
-    )
-    return empty.sub(b"", data)
+    return _remove_empty_containers(data)
 
 
 def _custom_properties(existing, provenance):
@@ -897,7 +1034,7 @@ def _copy_cleaned_xml(source, target, options):
                 tail = buffer[match.end():] + source.read()
                 if not root:
                     raise ValueError("worksheet XML root is malformed")
-                target.write(_drop_relationship_references(tail, options.dropped_ids, root))
+                target.write(_drop_relationship_references(tail, options, root))
                 return
             if len(buffer) > CHUNK * 2:
                 target.write(buffer[:-CHUNK])
@@ -905,7 +1042,7 @@ def _copy_cleaned_xml(source, target, options):
     data = source.read(MAX_CLEANUP_XML + 1)
     if len(data) > MAX_CLEANUP_XML:
         raise ValueError("relationship-bearing XML part is too large for surgical cleanup")
-    target.write(_drop_relationship_references(data, options.dropped_ids))
+    target.write(_drop_relationship_references(data, options))
 
 
 def _write_transformed(plan):
@@ -927,18 +1064,13 @@ def _write_transformed(plan):
                         _freeze_sheet(source, staged, plan.frozen[name])
                         staged.seek(0)
                         with target.open(_clone(info), "w") as stream:
-                            _copy_cleaned_xml(
-                                staged, stream, CleanupOptions(plan.cleanups[name], True)
-                            )
+                            _copy_cleaned_xml(staged, stream, plan.cleanups[name])
                 elif name in plan.frozen:
                     with archive.open(info) as source, target.open(_clone(info), "w") as stream:
                         _freeze_sheet(source, stream, plan.frozen[name])
                 elif name in plan.cleanups:
                     with archive.open(info) as source, target.open(_clone(info), "w") as stream:
-                        _copy_cleaned_xml(
-                            source, stream,
-                            CleanupOptions(plan.cleanups[name], name.startswith("xl/worksheets/")),
-                        )
+                        _copy_cleaned_xml(source, stream, plan.cleanups[name])
                 else:
                     with archive.open(info) as source, target.open(_clone(info), "w") as stream:
                         shutil.copyfileobj(source, stream, CHUNK)
@@ -990,18 +1122,20 @@ def _transform_state(archive, request):
     dependency = DependencyContext(
         archive, parts, graph, workbook_xml, sheets, kept, request.fmt,
     )
-    removed, dropped, removed_identifiers = _dependency_plan(dependency)
+    removed, dropped, removed_identifiers, named, controls = _dependency_plan(dependency)
     old_to_new = {sheet["index"]: index for index, sheet in enumerate(kept)}
     rewritten, definitions, affected = _rewrite_workbook(
         workbook_xml, dropped["xl/workbook.xml"],
         RewriteContext(removed_identifiers, old_to_new, sheets),
     )
     formula = FormulaContext(
-        sheets, removed_identifiers, definitions, affected, request.results or {},
+        sheets, removed_identifiers, definitions, {name for _, name in definitions},
+        affected, request.results or {},
     )
     frozen = _freeze_targets(archive, kept, formula) if removed_names else {}
     return TransformState(
-        parts, graph, workbook_xml, sheets, kept, removed, dropped, rewritten, frozen,
+        parts, graph, workbook_xml, sheets, kept, removed, dropped, named, controls,
+        rewritten, frozen,
     )
 
 
@@ -1034,10 +1168,21 @@ def _transform_replacements(archive, state, request):
 
 def _transform_cleanups(state):
     cleanups = {}
-    for source, dropped_ids in state.dropped.items():
+    sources = set(state.dropped) | set(state.named)
+    for source in sources:
         if (source and source in state.parts and source not in state.removed
                 and source != "xl/workbook.xml" and source.endswith(".xml")):
-            cleanups[source] = dropped_ids
+            cleanups[source] = CleanupOptions(
+                state.dropped[source], source.startswith("xl/worksheets/"),
+                frozenset(state.named[source]),
+            )
+    if state.controls:
+        for source in state.parts:
+            if source.startswith("xl/drawings/") and source.endswith(".xml"):
+                options = cleanups.get(source, CleanupOptions(set()))
+                cleanups[source] = CleanupOptions(
+                    options.dropped_ids, False, frozenset(state.controls),
+                )
     return cleanups
 
 

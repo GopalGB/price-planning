@@ -246,15 +246,33 @@ def _pivot_source_fixture(path):
         content_types = archive.read("[Content_Types].xml")
     workbook_xml = workbook_xml.replace(
         b"</workbook>",
-        b'<pivotCaches><pivotCache cacheId="1" r:id="rIdBadCache"/></pivotCaches></workbook>',
+        b'<pivotCaches><pivotCache cacheId="1" r:id="rIdBadCache"/></pivotCaches>'
+        b'<extLst><ext uri="{removed-controls}"><x14:slicerCaches '
+        b'xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">'
+        b'<x14:slicerCache r:id="rIdBadSlicerCache"/></x14:slicerCaches>'
+        b'<x15:timelineCacheRefs xmlns:x15="http://schemas.microsoft.com/office/'
+        b'spreadsheetml/2010/11/main"><x15:timelineCacheRef '
+        b'r:id="rIdBadTimelineCache"/></x15:timelineCacheRefs></ext></extLst></workbook>',
     )
     workbook_rels = workbook_rels.replace(
         b"</Relationships>",
         b'<Relationship Id="rIdBadCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="pivotCache/pivotCacheDefinition1.xml"/></Relationships>',
     )
+    workbook_rels = workbook_rels.replace(
+        b"</Relationships>",
+        b'<Relationship Id="rIdBadSlicerCache" Type="http://schemas.microsoft.com/'
+        b'office/2007/relationships/slicerCache" Target="slicerCaches/slicerCache1.xml"/>'
+        b'<Relationship Id="rIdBadTimelineCache" Type="http://schemas.microsoft.com/'
+        b'office/2010/relationships/TimelineCache" '
+        b'Target="timelineCaches/timelineCache1.xml"/></Relationships>',
+    )
     sheet_xml = sheet_xml.replace(
         b"</worksheet>",
-        b'<pivotTableParts count="1"><pivotTablePart r:id="rIdBadPivot"/></pivotTableParts></worksheet>',
+        b'<pivotTableParts count="1"><pivotTablePart r:id="rIdBadPivot"/></pivotTableParts>'
+        b'<extLst><ext uri="{slicer-view}"><x14:slicerList r:id="rIdSlicerView"/>'
+        b'</ext><ext uri="{timeline-view}"><x15:timelines xmlns:x15="http://schemas.'
+        b'microsoft.com/office/spreadsheetml/2010/11/main" '
+        b'r:id="rIdTimelineView"/></ext></extLst></worksheet>',
     )
     if b"xmlns:r=" not in sheet_xml.partition(b">")[0]:
         sheet_xml = sheet_xml.replace(
@@ -262,9 +280,27 @@ def _pivot_source_fixture(path):
             f'<worksheet xmlns:r="{REL}" '.encode(),
             1,
         )
+    if b"xmlns:x14=" not in sheet_xml.partition(b">")[0]:
+        sheet_xml = sheet_xml.replace(
+            b"<worksheet ",
+            b'<worksheet xmlns:x14="http://schemas.microsoft.com/office/'
+            b'spreadsheetml/2009/9/main" ',
+            1,
+        )
     sheet_rels = sheet_rels.replace(
         b"</Relationships>",
         b'<Relationship Id="rIdBadPivot" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable" Target="../pivotTables/pivotTable1.xml"/></Relationships>',
+    )
+    sheet_rels = sheet_rels.replace(
+        b"</Relationships>",
+        b'<Relationship Id="rIdSlicerView" Type="http://schemas.microsoft.com/office/'
+        b'2007/relationships/slicer" Target="../slicers/slicer1.xml"/></Relationships>',
+    )
+    sheet_rels = sheet_rels.replace(
+        b"</Relationships>",
+        b'<Relationship Id="rIdTimelineView" Type="http://schemas.microsoft.com/office/'
+        b'2010/relationships/Timeline" Target="../timelines/timeline1.xml"/>'
+        b'</Relationships>',
     )
     bad_anchor = (
         b'<xdr:twoCellAnchor xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/'
@@ -274,15 +310,28 @@ def _pivot_source_fixture(path):
         b'<xdr:graphicFrame><xdr:nvGraphicFramePr><xdr:cNvPr id="99" name="Bad slicer"/>'
         b'<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm/><a:graphic '
         b'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData '
-        b'uri="urn:test:slicer"><x14:slicer xmlns:x14="http://schemas.microsoft.com/office/'
-        b'spreadsheetml/2009/9/main" r:id="rIdBadSlicer"/></a:graphicData></a:graphic>'
+        b'uri="http://schemas.microsoft.com/office/drawing/2010/slicer"><sle:slicer '
+        b'xmlns:sle="http://schemas.microsoft.com/office/drawing/2010/slicer" '
+        b'name="BadSlicer"/></a:graphicData></a:graphic>'
         b'</xdr:graphicFrame><xdr:clientData/></xdr:twoCellAnchor>'
     )
+    timeline_anchor = bad_anchor.replace(
+        b'Bad slicer', b'Bad timeline',
+    ).replace(
+        b'http://schemas.microsoft.com/office/drawing/2010/slicer',
+        b'http://schemas.microsoft.com/office/drawing/2012/timeslicer',
+    ).replace(
+        b'sle:slicer', b'ts:timeslicer',
+    ).replace(
+        b'xmlns:sle=', b'xmlns:ts=',
+    ).replace(b'BadSlicer', b'BadTimeline')
     vendor = (
         b'<extLst><ext uri="urn:vendor"><r:record xmlns:r="urn:vendor" '
         b'r:id="rIdBadSlicer">retain exactly</r:record></ext></extLst>'
     )
-    drawing = drawing.replace(b"</wsDr>", bad_anchor + vendor + b"</wsDr>")
+    drawing = drawing.replace(
+        b"</wsDr>", bad_anchor + timeline_anchor + vendor + b"</wsDr>",
+    )
     original_formula = b"'Drop'!$A$1:$A$2"
     if original_formula not in chart2:
         raise AssertionError("chart2 source formula was not found")
@@ -295,17 +344,23 @@ def _pivot_source_fixture(path):
         b"</Types>",
         b'<Override PartName="/xl/pivotTables/pivotTable1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml"/>'
         b'<Override PartName="/xl/pivotCache/pivotCacheDefinition1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml"/>'
+        b'<Override PartName="/xl/pivotCache/pivotCacheRecords1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml"/>'
         b'<Override PartName="/xl/slicers/slicer1.xml" ContentType="application/vnd.ms-excel.slicer+xml"/>'
-        b'<Override PartName="/xl/slicerCaches/slicerCache1.xml" ContentType="application/vnd.ms-excel.slicerCache+xml"/></Types>',
+        b'<Override PartName="/xl/slicerCaches/slicerCache1.xml" ContentType="application/vnd.ms-excel.slicerCache+xml"/>'
+        b'<Override PartName="/xl/timelines/timeline1.xml" ContentType="application/vnd.ms-excel.Timeline+xml"/>'
+        b'<Override PartName="/xl/timelineCaches/timelineCache1.xml" ContentType="application/vnd.ms-excel.TimelineCache+xml"/></Types>',
     )
     additions = (
         ("xl/pivotTables/pivotTable1.xml", b'<pivotTableDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" name="BadPivot" cacheId="1" dataCaption="Values"><location ref="A1" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/><pivotFields count="0"/></pivotTableDefinition>'),
         ("xl/pivotTables/_rels/pivotTable1.xml.rels", b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>'),
         ("xl/pivotCache/pivotCacheDefinition1.xml", b'<pivotCacheDefinition xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" saveData="0" recordCount="0"><cacheSource type="worksheet"><worksheetSource name="DropTable"/></cacheSource><cacheFields count="0"/></pivotCacheDefinition>'),
-        ("xl/slicers/slicer1.xml", b'<x14:slicers xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:slicer name="BadSlicer" r:id="rIdCache" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/></x14:slicers>'),
-        ("xl/slicers/_rels/slicer1.xml.rels", b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdCache" Type="http://schemas.microsoft.com/office/2007/relationships/slicerCache" Target="../slicerCaches/slicerCache1.xml"/></Relationships>'),
-        ("xl/slicerCaches/slicerCache1.xml", b'<x14:slicerCacheDefinition xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" r:id="rIdPivotCache" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'),
+        ("xl/slicers/slicer1.xml", b'<x14:slicers xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:slicer name="BadSlicer" cache="BadCache"/></x14:slicers>'),
+        ("xl/slicerCaches/slicerCache1.xml", b'<x14:slicerCacheDefinition xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" name="BadCache" r:id="rIdPivotCache" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>'),
         ("xl/slicerCaches/_rels/slicerCache1.xml.rels", b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdPivotCache" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition" Target="../pivotCache/pivotCacheDefinition1.xml"/></Relationships>'),
+        ("xl/timelines/timeline1.xml", b'<x15:timelines xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"><x15:timeline name="BadTimeline" cache="BadTimelineCache" level="0" selectionLevel="0"/></x15:timelines>'),
+        ("xl/timelineCaches/timelineCache1.xml", b'<x15:timelineCacheDefinition xmlns:x15="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main" name="BadTimelineCache"><x15:state pivotCacheId="1"/></x15:timelineCacheDefinition>'),
+        ("xl/pivotCache/_rels/pivotCacheDefinition1.xml.rels", b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdRecords" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords" Target="pivotCacheRecords1.xml"/></Relationships>'),
+        ("xl/pivotCache/pivotCacheRecords1.xml", b'<pivotCacheRecords xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1"><r><x v="synthetic"/></r></pivotCacheRecords>'),
     )
     _rewrite(path, {
         "xl/workbook.xml": workbook_xml,
@@ -342,8 +397,12 @@ class ObjectDependencyTests(unittest.TestCase):
         self.assertNotIn("xl/pivotCache/pivotCacheDefinition1.xml", names)
         self.assertNotIn("xl/slicers/slicer1.xml", names)
         self.assertNotIn("xl/slicerCaches/slicerCache1.xml", names)
+        self.assertNotIn("xl/timelines/timeline1.xml", names)
+        self.assertNotIn("xl/timelineCaches/timelineCache1.xml", names)
+        self.assertNotIn("xl/pivotCache/pivotCacheRecords1.xml", names)
         self.assertNotIn(b"rIdBadPivot", sheet)
-        self.assertNotIn(b"<x14:slicer", drawing)
+        self.assertNotIn(b'name="BadSlicer"', drawing)
+        self.assertNotIn(b'name="BadTimeline"', drawing)
         self.assertNotIn(b"rIdBadSlicer", drawing_rels)
         self.assertIn(
             b'<r:record xmlns:r="urn:vendor" r:id="rIdBadSlicer">retain exactly</r:record>',
@@ -352,6 +411,91 @@ class ObjectDependencyTests(unittest.TestCase):
         self.assertIn("xl/charts/chart1.xml", names)
         self.assertNotIn("xl/charts/chart2.xml", names)
         self.assertIn(b"chart", drawing)
+
+    def test_pivot_cache_records_are_not_tree_parsed(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        _pivot_source_fixture(source)
+        original = ET.parse
+
+        def reject_records(stream, *args, **kwargs):
+            if getattr(stream, "name", "").endswith("pivotCacheRecords1.xml"):
+                raise AssertionError("pivot records reached the tree parser")
+            return original(stream, *args, **kwargs)
+
+        with mock.patch("pp.export.transfer.ET.parse", side_effect=reject_records):
+            export_transfer(TransferRequest(
+                source, [], output, "hash", "copy", 0,
+                selected={"Keep"}, results={},
+            ))
+
+    def test_removed_cache_wrappers_are_not_left_empty(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        _pivot_source_fixture(source)
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0,
+            selected={"Keep"}, results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            workbook = archive.read("xl/workbook.xml")
+        self.assertNotIn(b"pivotCaches", workbook)
+        self.assertNotIn(b"slicerCaches", workbook)
+        self.assertNotIn(b"timelineCacheRefs", workbook)
+
+
+class WorkbookViewTests(unittest.TestCase):
+    def test_subset_remaps_active_and_first_visible_sheet_indexes(self):
+        root = Path(self.id().replace(".", "-"))
+        self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
+        root.mkdir()
+        source, output = root / "source.xlsx", root / "output.xlsx"
+        workbook = Workbook()
+        workbook.active.title = "Drop"
+        hidden = workbook.create_sheet("Hidden")
+        hidden.sheet_state = "hidden"
+        workbook.create_sheet("Keep")
+        workbook.save(source)
+        with zipfile.ZipFile(source) as archive:
+            xml = archive.read("xl/workbook.xml")
+        xml = re.sub(
+            rb"<workbookView\b[^>]*/>",
+            b'<workbookView activeTab="0" firstSheet="0"/>',
+            xml,
+        )
+        _rewrite(source, {"xl/workbook.xml": xml})
+
+        export_transfer(TransferRequest(
+            source, [], output, "hash", "copy", 0,
+            selected={"Hidden", "Keep"}, results={},
+        ))
+
+        with zipfile.ZipFile(output) as archive:
+            root_xml = ET.fromstring(archive.read("xl/workbook.xml"))
+        view = next(node for node in root_xml.iter() if node.tag.endswith("workbookView"))
+        self.assertEqual(view.get("activeTab"), "1")
+        self.assertEqual(view.get("firstSheet"), "1")
+
+
+class FormulaReferenceCostTests(unittest.TestCase):
+    def test_defined_name_detection_does_not_scan_once_per_known_name(self):
+        from pp.export.transfer import _definition_references
+
+        class MembershipOnlyNames(set):
+            def __iter__(self):
+                raise AssertionError("known names were traversed")
+
+        known = MembershipOnlyNames(
+            {f"unused_{index}" for index in range(1_000)} | {"target"}
+        )
+        references = _definition_references("=Target+1", known)
+        self.assertEqual(references, {"target"})
 
 
 class TableDependencyTests(unittest.TestCase):
