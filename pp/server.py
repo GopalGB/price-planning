@@ -28,6 +28,7 @@ from .errors import AppError
 from .export.xlsm import export_xlsm
 from .live import LiveHub, serve_live
 from .ops import OperationService
+from .pivot import PivotQuery, PivotService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
 
 
@@ -53,6 +54,7 @@ class Services:
         self.categories = CategoryService(context.database)
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
+        self.pivots = PivotService(context.database, context.snapshot)
         self.operations = OperationService(context.database, templates)
         self.calculations = CalculationService(context.database, templates)
         self.engine_pool = context.engine_pool
@@ -79,6 +81,8 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/workbook", _workbook, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/rows", _rows, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/cell", _cell, methods=["GET"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/refresh",
+              _pivot_refresh, methods=["POST"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
@@ -214,6 +218,16 @@ async def _cell(request: Request):
     query = CellQuery(request.path_params["copy_id"], user["id"],
                       request.path_params["sheet"], row, col)
     body = services.workbooks.cell(query)
+    return JSONResponse(body)
+
+
+async def _pivot_refresh(request: Request):
+    services, user = _read_auth(request)
+    require_origin(request.headers.get("origin"), services.config.allowed_origins)
+    query = PivotQuery(request.path_params["copy_id"], user["id"],
+                       request.path_params["sheet"], request.path_params["name"],
+                       await _body(request))
+    body = await asyncio.to_thread(services.pivots.refresh, query)
     return JSONResponse(body)
 
 

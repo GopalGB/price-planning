@@ -7,6 +7,8 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
+from openpyxl.styles import Protection
 
 
 MAIN = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -39,9 +41,10 @@ def _source_row(index):
     department = None if index % 79 == 78 else f"Department {index % 78 + 1:02d}"
     product = None if index % 770 == 769 else f"Product {index % 769 + 1:03d}"
     return [
-        region, department, product, f"Season {index % 9 + 1}",
+        region, department, product, f"Season {index % 9 + 1:02d}",
         f"Class {index % 52 + 1:02d}", index % 20 + 1, (index % 200 + 1) * 9.5,
-        (index % 150 + 1) * 2.25, (index % 120 + 1) * 4.75, (index % 80 + 1) * 1.5,
+        (index % 150 + 1) * 2.25, (index % 120 + 1) * 4.75,
+        "=Dashboard!$H$1*2" if index == 0 else (index % 80 + 1) * 1.5,
         f"Channel {index % 4 + 1}", f"Country {index % 6 + 1}", "USD",
         "Working", 2027, f"Q{index % 4 + 1}", index % 12 + 1,
         f"Owner {index % 8 + 1}", "Active",
@@ -51,7 +54,10 @@ def _source_row(index):
 def _write_base(path, row_count):
     workbook = Workbook(write_only=True)
     dashboard = workbook.create_sheet("Dashboard")
-    dashboard.append(["Department", "(All)"])
+    dashboard.protection.sheet = True
+    multiplier = WriteOnlyCell(dashboard, value=2)
+    multiplier.protection = Protection(locked=False)
+    dashboard.append(["Department", "(All)", None, None, None, None, "Multiplier", multiplier])
     dashboard.append(["Product", "(All)"])
     dashboard.append(["Season", "(All)"])
     dashboard.append([])
