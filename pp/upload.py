@@ -126,7 +126,6 @@ class CellIdentity:
 @dataclass(frozen=True)
 class HistoryRequest:
     copy_id: str
-    user_id: str
     revision: int | None
 
 
@@ -748,10 +747,11 @@ def _preview_details(context):
     model, snapshot, copy = context.model, context.snapshot, context.copy
     sheet_indexes = {item["name"].casefold(): item["index"] for item in snapshot.sheets}
     overrides = _overrides(context.connection, copy["id"]) if copy is not None else {}
-    history = (_history_since(context.connection, HistoryRequest(
-        copy["id"], context.user_id, context.revision,
-    )) if copy is not None else {})
+    history = _history_since(context.connection, HistoryRequest(copy["id"], context.revision)) if copy is not None else {}
     changes, conflicts, ignored, all_inputs = [], [], list(model.ignored), []
+    if copy is not None and context.revision is None:
+        ignored.append({"sheet": None, "cell": None, "reason":
+                        "This file has no download information, so later edits cannot be checked for conflicts"})
     known_order = tuple(name for name in model.sheets if name.casefold() in sheet_indexes)
     expected_order = tuple(
         name for name in context.template_model.sheets
@@ -776,14 +776,24 @@ def _preview_details(context):
         for item in sorted(found.values(), key=lambda value: (value["r"], value["c"])):
             if not exactly_equal(item["template"], item["new"]):
                 all_inputs.append(item)
-            if not exactly_equal(item["old"], item["new"]):
-                conflict = history.get((index, item["r"], item["c"]))
-                if conflict:
-                    item["conflict"] = {"by": conflict["by"], "at": conflict["at"]}
-                    conflicts.append(_public_change(item))
-                changes.append(item)
+            change = _uploaded_change(item, history)
+            if change is not None:
+                changes.append(change)
+                if "conflict" in change:
+                    conflicts.append(_public_change(change))
     return {"changes": changes, "conflicts": conflicts, "ignored": ignored, "all_inputs": all_inputs,
             "current_revision": copy["input_revision"] if copy is not None else None}
+
+
+def _uploaded_change(item, history):
+    if exactly_equal(item["old"], item["new"]):
+        return None
+    record = history.get((item["sheet_index"], item["r"], item["c"]))
+    if record is not None and exactly_equal(item["new"], record["base"]):
+        return None
+    if record is not None:
+        item["conflict"] = {"by": record["by"], "at": record["at"]}
+    return item
 
 
 def _inspect_sheet(cells, context):
@@ -861,14 +871,17 @@ def _history_since(connection, request):
     if request.revision is None:
         return {}
     rows = connection.execute(
-        "SELECT h.sheet,h.row,h.col,h.at,u.id,u.name FROM pp_history h "
+        "SELECT h.sheet,h.row,h.col,h.before_json,h.at,u.id,u.name FROM pp_history h "
         "JOIN pp_users u ON u.id=h.actor_id WHERE h.copy_id=? AND h.revision>? "
-        "AND h.actor_id<>? ORDER BY h.id",
-        (request.copy_id, request.revision, request.user_id),
+        "ORDER BY h.id",
+        (request.copy_id, request.revision),
     ).fetchall()
-    return {(row["sheet"], row["row"], row["col"]): {
-        "at": row["at"], "by": {"id": row["id"], "name": row["name"]}
-    } for row in rows}
+    history = {}
+    for row in rows:
+        key = row["sheet"], row["row"], row["col"]
+        record = history.setdefault(key, {"base": json.loads(row["before_json"])})
+        record.update({"at": row["at"], "by": {"id": row["id"], "name": row["name"]}})
+    return history
 
 
 def _public_change(item):

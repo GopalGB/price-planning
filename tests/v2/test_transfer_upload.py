@@ -155,6 +155,10 @@ class UploadAPITests(unittest.TestCase):
         accepted = self.preview(self.owner, self.owner_csrf, upload)
         self.assertEqual(accepted.status_code, 200, accepted.body)
         self.assertEqual(accepted.json()["identification"], "structure")
+        self.assertTrue(any(
+            "later edits cannot be checked for conflicts" in item["reason"]
+            for item in accepted.json()["ignored"]
+        ))
 
         changed = _workbook_bytes(upload, self.fixture.root, (("Calc", "B3", "=1+1"),))
         refused = self.preview(self.owner, self.owner_csrf, changed)
@@ -480,6 +484,69 @@ class UploadAPITests(unittest.TestCase):
             ).fetchall()
         self.assertEqual([(row["row"], json.loads(row["value_json"])) for row in rows],
                          [(1, 99), (2, 25)])
+
+    def test_untouched_export_value_skips_update_but_remains_in_new_copy(self):
+        other, other_csrf, _ = self.fixture.signup("stale@example.test", "Stale Editor")
+        self.owner.put(
+            f"/api/copies/{self.copy['id']}/shares",
+            {"email": "stale@example.test", "role": "editor"},
+            {"x-csrf-token": self.owner_csrf},
+        )
+        first = self.owner.post(f"/api/copies/{self.copy['id']}/ops", {
+            "op_id": "exported-value", "action": "edit", "cells": [
+                {"sheet": 0, "r": 1, "c": 1, "v": 14, "expected_version": 0},
+            ],
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(first.status_code, 200, first.body)
+        exported = self.owner.get(f"/api/copies/{self.copy['id']}/export.xlsx").body
+        later = other.post(f"/api/copies/{self.copy['id']}/ops", {
+            "op_id": "later-value", "action": "edit", "cells": [
+                {"sheet": 0, "r": 1, "c": 1, "v": 99, "expected_version": 1},
+            ],
+        }, {"x-csrf-token": other_csrf})
+        self.assertEqual(later.status_code, 200, later.body)
+
+        preview = self.preview(self.owner, self.owner_csrf, exported)
+        self.assertEqual((preview.json()["changes"], preview.json()["conflicts"]), ([], []))
+        updated = self.confirm(
+            self.owner, self.owner_csrf, preview.json()["token"], {"mode": "update"},
+        )
+        self.assertEqual(updated.json()["accepted"], 0)
+        second = self.preview(self.owner, self.owner_csrf, exported)
+        created = self.confirm(self.owner, self.owner_csrf, second.json()["token"], {
+            "mode": "new_copy", "category_id": self.category["id"], "name": "Export baseline",
+        })
+        with self.fixture.database.connect() as connection:
+            values = connection.execute(
+                "SELECT copy_id,value_json FROM pp_overrides WHERE sheet=0 AND row=1 AND col=1 "
+                "AND copy_id IN (?,?) ORDER BY copy_id",
+                (self.copy["id"], created.json()["copy"]["id"]),
+            ).fetchall()
+        self.assertEqual(sorted(json.loads(row["value_json"]) for row in values), [14, 99])
+
+    def test_own_post_export_edit_is_a_true_conflict_and_upload_stays_default(self):
+        changed = self.owner.post(f"/api/copies/{self.copy['id']}/ops", {
+            "op_id": "own-later-value", "action": "edit", "cells": [
+                {"sheet": 0, "r": 1, "c": 1, "v": 77, "expected_version": 0},
+            ],
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(changed.status_code, 200, changed.body)
+        upload = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
+
+        preview = self.preview(self.owner, self.owner_csrf, upload)
+
+        self.assertEqual(len(preview.json()["conflicts"]), 1)
+        self.assertEqual(preview.json()["conflicts"][0]["by"]["name"], "Upload Owner")
+        confirmed = self.confirm(
+            self.owner, self.owner_csrf, preview.json()["token"], {"mode": "update"},
+        )
+        self.assertEqual(confirmed.json()["accepted"], 1)
+        with self.fixture.database.connect() as connection:
+            value = connection.execute(
+                "SELECT value_json FROM pp_overrides WHERE copy_id=? AND sheet=0 AND row=1 AND col=1",
+                (self.copy["id"],),
+            ).fetchone()
+        self.assertEqual(json.loads(value["value_json"]), 12)
 
     def test_update_is_one_atomic_operation_with_upload_source_and_uploader(self):
         upload = _workbook_bytes(
