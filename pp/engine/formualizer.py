@@ -37,6 +37,7 @@ POTENTIAL_SPILL = re.compile(
     r"\b(?:SEQUENCE|FILTER|UNIQUE|SORT(?:BY)?|RANDARRAY|TAKE|DROP|CHOOSECOLS|CHOOSEROWS|"
     r"TOCOL|TOROW|WRAPCOLS|WRAPROWS|EXPAND|VSTACK|HSTACK)\s*\(", re.I)
 ABSENT = object()
+MAX_ROWS, MAX_COLS = 1_048_576, 16_384
 
 
 class EngineError(Exception):
@@ -224,6 +225,12 @@ def _defined_name_target(reference, current_sheet, names, ranges):
     return ranges.get((None, key), ABSENT)
 
 
+def _axis_within_excel(first, last, limit):
+    if first is None or last is None:
+        return first is None and last is None
+    return 1 <= first <= last <= limit
+
+
 def _static_reference(reference, names):
     sheet_name, marker, address = reference.rpartition("!")
     if marker:
@@ -231,10 +238,14 @@ def _static_reference(reference, names):
         if not any(name.casefold() == normalized.casefold() for name in names):
             return False
     try:
-        range_boundaries(address)
+        min_col, min_row, max_col, max_row = range_boundaries(address)
     except ValueError:
         return False
-    return True
+    if ":" not in address and (min_col is None or min_row is None):
+        return False
+    columns_valid = _axis_within_excel(min_col, max_col, MAX_COLS)
+    rows_valid = _axis_within_excel(min_row, max_row, MAX_ROWS)
+    return columns_valid and rows_valid and (min_col is not None or min_row is not None)
 
 
 def _trace_budget(formulas, names, dimensions):

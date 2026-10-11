@@ -312,6 +312,59 @@ class CachedStartupTests(unittest.TestCase):
 
             self.assertIn((0, 0, 1, 8), changes)
 
+    def test_short_defined_name_expands_without_capturing_let_local(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "short-name-shadow.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 2
+            workbook.defined_names.add(
+                DefinedName("Tax", attr_text="'Sheet'!$A$1")
+            )
+            sheet["B1"] = "=Tax*2"
+            sheet["C1"] = "=B1+1"
+            sheet["D1"] = "=LET(Tax,A1+1,Tax*3)"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {
+                    "B1": ("4", None), "C1": ("5", None), "D1": ("9", None),
+                }}
+            )
+
+            engine = FormualizerAdapter.load(source)
+            changes = engine.apply([(0, 0, 0, 4)])
+
+            self.assertIn((0, 0, 1, 8), changes)
+            self.assertIn((0, 0, 2, 9), changes)
+            self.assertIn((0, 0, 3, 15), changes)
+
+    def test_out_of_bounds_cell_like_defined_name_expands(self):
+        from pp.engine.formualizer import FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "out-of-bounds-name.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 2
+            workbook.defined_names.add(
+                DefinedName("ZZZ1", attr_text="'Sheet'!$A$1")
+            )
+            sheet["B1"] = "=ZZZ1*2"
+            sheet["C1"] = "=B1+1"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {
+                    "B1": ("4", None), "C1": ("5", None),
+                }}
+            )
+
+            changes = FormualizerAdapter.load(source).apply([(0, 0, 0, 4)])
+
+            self.assertIn((0, 0, 1, 8), changes)
+            self.assertIn((0, 0, 2, 9), changes)
+
     def test_complex_defined_name_recalculates_on_consecutive_edits(self):
         from pp.engine.formualizer import FormualizerAdapter
 
