@@ -27,6 +27,7 @@ CUSTOM_NS = "http://schemas.openxmlformats.org/officeDocument/2006/custom-proper
 VT_NS = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"
 CUSTOM_REL = f"{REL_NS}/custom-properties"
 PIVOT_REL_SUFFIXES = ("/pivotCacheDefinition", "/slicerCache", "/slicerCacheDefinition")
+MAX_CLEANUP_XML = 64 * 1024 * 1024
 REL_ATTRIBUTE_NAMESPACES = {
     REL_NS,
     "http://purl.oclc.org/ooxml/officeDocument/relationships",
@@ -34,6 +35,10 @@ REL_ATTRIBUTE_NAMESPACES = {
 SHEET_TAG = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?sheet\b[^>]*(?:/>|>.*?</(?P=prefix)sheet\s*>)", re.S)
 NAME_TAG = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?definedName\b[^>]*>.*?</(?:[A-Za-z_][\w.-]*:)?definedName\s*>", re.S)
 CELL_START = re.compile(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?c\b[^>]*>")
+SHEET_DATA_END = re.compile(
+    rb"(?:<(?:[A-Za-z_][\w.-]*:)?sheetData\b[^>]*/\s*>|"
+    rb"</(?:[A-Za-z_][\w.-]*:)?sheetData\s*>)",
+)
 RELATIONSHIP_TAG = re.compile(
     rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?Relationship\b[^>]*(?:/>|>.*?</(?P=prefix)Relationship\s*>)",
     re.S,
@@ -514,12 +519,16 @@ def _iter_cells(stream):
 
 
 def _range_references(reference):
-    match = re.fullmatch(r"\$?([A-Z]+)\$?([1-9][0-9]*):\$?([A-Z]+)\$?([1-9][0-9]*)", reference or "")
+    match = re.fullmatch(
+        r"\$?([A-Z]+)\$?([1-9][0-9]*)(?::\$?([A-Z]+)\$?([1-9][0-9]*))?",
+        reference or "",
+    )
     if match is None:
         raise ValueError(f"unsupported array formula range: {reference}")
+    end_col, end_row = match.group(3) or match.group(1), match.group(4) or match.group(2)
     col1, row1, col2, row2 = (
         col_index(match.group(1)), int(match.group(2)) - 1,
-        col_index(match.group(3)), int(match.group(4)) - 1,
+        col_index(end_col), int(end_row) - 1,
     )
     return {
         (f"{letters}{row + 1}", row, col)
@@ -624,6 +633,7 @@ def _freeze_cell(cell, value):
     inner = re.sub(rb"<" + re.escape(prefix) + rb"f\b[^>]*(?:/>|>.*?</" + re.escape(prefix) + rb"f\s*>)", b"", inner, flags=re.S)
     inner = re.sub(rb"<" + re.escape(prefix) + rb"v\b[^>]*(?:/>|>.*?</" + re.escape(prefix) + rb"v\s*>)", b"", inner, flags=re.S)
     tag = re.sub(rb'\s+t="[^"]*"', b"", opening.group())
+    tag = re.sub(rb'\s+cm="[^"]*"', b"", tag)
     value_type, content = _value_xml(value)
     if value_type is not None:
         tag = _set_attribute(tag, "t", value_type)
@@ -873,7 +883,6 @@ def _rewrite_content_types(data, removed, fmt):
 def _copy_cleaned_xml(source, target, options):
     if options.worksheet:
         buffer, root = b"", b""
-        closing = re.compile(rb"</(?:[A-Za-z_][\w.-]*:)?sheetData\s*>")
         while True:
             chunk = source.read(CHUNK)
             if not chunk:
@@ -882,7 +891,7 @@ def _copy_cleaned_xml(source, target, options):
             if not root:
                 opening = re.search(rb"<(?:[A-Za-z_][\w.-]*:)?worksheet\b[^>]*>", buffer)
                 root = opening.group() if opening is not None else b""
-            match = closing.search(buffer)
+            match = SHEET_DATA_END.search(buffer)
             if match is not None:
                 target.write(buffer[:match.end()])
                 tail = buffer[match.end():] + source.read()
@@ -893,8 +902,8 @@ def _copy_cleaned_xml(source, target, options):
             if len(buffer) > CHUNK * 2:
                 target.write(buffer[:-CHUNK])
                 buffer = buffer[-CHUNK:]
-    data = source.read(CHUNK * 16 + 1)
-    if len(data) > CHUNK * 16:
+    data = source.read(MAX_CLEANUP_XML + 1)
+    if len(data) > MAX_CLEANUP_XML:
         raise ValueError("relationship-bearing XML part is too large for surgical cleanup")
     target.write(_drop_relationship_references(data, options.dropped_ids))
 

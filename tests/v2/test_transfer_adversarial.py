@@ -181,6 +181,35 @@ class FormulaPreservationTests(unittest.TestCase):
                 )
             )
 
+    def test_single_cell_array_freezes_without_dynamic_array_metadata(self):
+        with zipfile.ZipFile(self.source) as archive:
+            root = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        cell = _cell(root, "B1")
+        cell.set("cm", "1")
+        cell.find(f"{{{MAIN}}}f").set("ref", "B1")
+        _rewrite(self.source, {
+            "xl/worksheets/sheet1.xml": ET.tostring(
+                root, encoding="utf-8", xml_declaration=True,
+            ),
+        })
+        results = {
+            (0, 0, 0): 11, (0, 1, 0): 12, (0, 0, 1): 21,
+            (0, 0, 2): 31, (0, 0, 5): 61, (0, 0, 6): 16,
+        }
+
+        export_transfer(TransferRequest(
+            template_path=self.source, cells=[], out_path=self.output,
+            template_hash="template-hash", copy_id="copy-id", input_revision=3,
+            fmt="xlsx", selected={"KeepA", "KeepB"}, results=results,
+        ))
+
+        with zipfile.ZipFile(self.output) as archive:
+            output = ET.fromstring(archive.read("xl/worksheets/sheet1.xml"))
+        frozen = _cell(output, "B1")
+        self.assertIsNone(frozen.find(f"{{{MAIN}}}f"))
+        self.assertEqual(frozen.findtext(f"{{{MAIN}}}v"), "21")
+        self.assertIsNone(frozen.get("cm"))
+
 
 def _pivot_source_fixture(path):
     workbook = Workbook()

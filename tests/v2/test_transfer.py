@@ -4,6 +4,7 @@ import asyncio
 import io
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 import time
@@ -230,6 +231,39 @@ class PackageDownloadTests(unittest.TestCase):
         self.assertEqual(root.findtext(f".//{{{MAIN_NS}}}c[@r='B2']/{{{MAIN_NS}}}v"), "42")
         self.assertIsNotNone(root.find(f".//{{{MAIN_NS}}}c[@r='A2']"))
         self.assertIsNotNone(root.find(f".//{{{MAIN_NS}}}c[@r='C2']"))
+
+    def test_self_closing_empty_sheet_data_allows_relationship_cleanup(self):
+        with zipfile.ZipFile(self.source) as archive:
+            sheet = archive.read("xl/worksheets/sheet1.xml")
+        sheet = re.sub(rb"<sheetData>.*?</sheetData>", b"<sheetData/>", sheet, flags=re.S)
+        sheet = sheet.replace(
+            b"<worksheet ",
+            f'<worksheet xmlns:r="{OFFICE_REL_NS}" '.encode(),
+            1,
+        ).replace(b"</worksheet>", b'<drawing r:id="rIdRemoved"/></worksheet>')
+        relationships = (
+            f'<Relationships xmlns="{PKG_REL_NS}"><Relationship Id="rIdRemoved" '
+            f'Type="{OFFICE_REL_NS}/drawing" Target="sheet2.xml"/></Relationships>'
+        ).encode()
+        _replace_members(
+            self.source, {"xl/worksheets/sheet1.xml": sheet},
+            (("xl/worksheets/_rels/sheet1.xml.rels", relationships),),
+        )
+
+        self.download(results={})
+
+        root = ET.fromstring(self.xml("xl/worksheets/sheet1.xml"))
+        self.assertIsNotNone(root.find(f"{{{MAIN_NS}}}sheetData"))
+        self.assertIsNone(root.find(f"{{{MAIN_NS}}}drawing"))
+
+    def test_nonworksheet_cleanup_limit_is_independent_of_copy_chunk_size(self):
+        from pp.export.transfer import CleanupOptions, _copy_cleaned_xml
+
+        source = io.BytesIO(b"<root>" + b" " * 80 + b"</root>")
+        target = io.BytesIO()
+        with mock.patch("pp.export.transfer.CHUNK", 4):
+            _copy_cleaned_xml(source, target, CleanupOptions({"rIdMissing"}))
+        self.assertEqual(target.getvalue(), b"<root>" + b" " * 80 + b"</root>")
 
     def test_missing_current_result_refuses_to_substitute_a_template_cache(self):
         with self.assertRaisesRegex(ValueError, "current calculation result"):
