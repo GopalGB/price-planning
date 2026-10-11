@@ -337,6 +337,25 @@ class DownloadRouteSelectionTests(unittest.TestCase):
         token = response.json()["download_url"].rsplit("/", 1)[-1]
         return self.fixture.app.state.services.downloads._items[token].path
 
+    def test_head_does_not_consume_the_prepared_download_token(self):
+        response = self.prepare()
+        self.assertEqual(response.status_code, 201, response.body)
+        url = response.json()["download_url"]
+
+        probe = self.client.request("HEAD", url)
+
+        self.assertEqual(probe.status_code, 405, probe.body)
+        downloaded = self.client.get(url)
+        self.assertEqual(downloaded.status_code, 200)
+        self.assertTrue(downloaded.body.startswith(b"PK"))
+
+    def test_head_does_not_build_an_export(self):
+        export = f"/api/copies/{self.copy['id']}/export.xlsx?sheets=Visible"
+
+        probe = self.client.request("HEAD", export)
+
+        self.assertEqual(probe.status_code, 405, probe.body)
+
     def test_repeated_parameters_select_comma_named_sheet(self):
         response = self.client.get(
             f"/api/copies/{self.copy['id']}/export.xlsx?sheets=Visible&sheets=Cost%2C%20Fees"
