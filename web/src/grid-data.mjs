@@ -54,27 +54,50 @@ export function commandUndo(id, editing) {
 }
 export function renderCell(cell, style, options = {}) {
   const { inputHighlight = true, width, measureText } = options;
+  const effectiveStyle = cell.style_override
+    ? {
+        ...(style ?? {}),
+        ...cell.style_override,
+        ...((style?.border || cell.style_override.border) && {
+          border: {
+            ...(style?.border ?? {}),
+            ...(cell.style_override.border ?? {}),
+          },
+        }),
+      }
+    : style;
   // The server's formula text is deliberately absent from Univer's model.
   const rendered = {
     v: typeof cell.v === "object" && cell.v !== null ? cell.v.error : cell.v,
-    s: String(cell.s),
+    s: cell.style_override ? styleData(effectiveStyle ?? {}) : String(cell.s),
     t: typeof cell.v === "number" ? 2 : typeof cell.v === "boolean" ? 3 : 1,
   };
-  if (typeof cell.v === "number" && (style?.nf ?? "General") === "General")
+  if (
+    typeof cell.v === "number" &&
+    (effectiveStyle?.nf ?? "General") === "General"
+  )
     rendered.s = {
-      ...styleData(style ?? {}),
+      ...styleData(effectiveStyle ?? {}),
       pd: {
         t: 0,
         b: 2,
         l: GRID_NUMBER_HORIZONTAL_PADDING,
         r: GRID_NUMBER_HORIZONTAL_PADDING,
       },
-      n: { pattern: generalPattern(cell.v, { width, style, measureText }) },
+      n: {
+        pattern: generalPattern(cell.v, {
+          width,
+          style: effectiveStyle,
+          measureText,
+        }),
+      },
     };
-  if (inputHighlight && editableInput(cell) && !style?.fill)
+  if (inputHighlight && editableInput(cell) && !effectiveStyle?.fill)
     rendered.s = {
-      ...(typeof rendered.s === "object" ? rendered.s : styleData(style ?? {})),
-      bg: { rgb: inputFill(cell, style, inputHighlight) },
+      ...(typeof rendered.s === "object"
+        ? rendered.s
+        : styleData(effectiveStyle ?? {})),
+      bg: { rgb: inputFill(cell, effectiveStyle, inputHighlight) },
     };
   return rendered;
 }

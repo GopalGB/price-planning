@@ -273,6 +273,26 @@ export class CellStore {
     this.blockRevisions.set(`${sheet}:${start}`, revision);
     this.advanceBlocks();
   }
+  resetBlockStyles(sheet, start, data) {
+    const rows = data.rows ?? {};
+    for (const [key, current] of this.cells) {
+      const [cellSheet, row, col] = key.split(":").map(Number);
+      if (
+        cellSheet !== sheet ||
+        row < start ||
+        row >= start + BLOCK_ROWS ||
+        !current.style_override ||
+        Object.hasOwn(rows[row] ?? {}, col) ||
+        current.pending ||
+        data.calculated_revision < (current.calcRevision ?? -1) ||
+        data.input_revision < (this.cellInputRevisions.get(key) ?? -1)
+      )
+        continue;
+      const next = { ...current };
+      delete next.style_override;
+      this.cells.set(key, next);
+    }
+  }
   advanceBlocks() {
     for (const [key, revision] of this.blockRevisions) {
       let next = revision;

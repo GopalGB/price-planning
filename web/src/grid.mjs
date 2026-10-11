@@ -491,6 +491,7 @@ export class PlanningGrid {
     if (data.calculated_revision < this.store.calculatedRevision) return;
     cache.put(sheet, start, data);
     this.store.registerBlock(sheet, start, data.calculated_revision);
+    this.store.resetBlockStyles(sheet, start, data);
     for (const evicted of cache.lastEvicted) {
       const cleared = {};
       for (
@@ -521,8 +522,16 @@ export class PlanningGrid {
       this.store.calculatedRevision,
       data.calculated_revision,
     );
+    this.warnConditionalFormatting(data.conditional_format_warnings);
     this.paint();
     return true;
+  }
+  warnConditionalFormatting(warnings) {
+    if (!warnings?.length) return;
+    this.cfWarningSheets ??= new Set();
+    if (this.cfWarningSheets.has(this.sheet)) return;
+    this.cfWarningSheets.add(this.sheet);
+    this.toast("Some conditional formatting could not be applied.");
   }
   scheduleVisible() {
     clearTimeout(this.scrollTimer);
@@ -1139,8 +1148,49 @@ export class PlanningGrid {
       this.growCalcExtents(message.changes);
     }
     this.controller.remote(message);
+    if (message.type === "calc") await this.refreshCalculatedBlocks();
     if (message.type === "op" && message.at == null)
       await this.refreshOpDetails(message);
+  }
+  async refreshCalculatedBlocks() {
+    if (!this.cache?.blocks || !this.currentSheet()?.has_conditional_formats)
+      return;
+    if (this.cfRefreshPromise) {
+      this.cfRefreshDirty = true;
+      return this.cfRefreshPromise;
+    }
+    const pending = this.runCalculatedRefreshes();
+    this.cfRefreshPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.cfRefreshPromise === pending) this.cfRefreshPromise = null;
+    }
+  }
+  async runCalculatedRefreshes() {
+    do {
+      this.cfRefreshDirty = false;
+      if (!(await this.refreshCalculatedBlocksOnce())) return;
+    } while (this.cfRefreshDirty);
+  }
+  async refreshCalculatedBlocksOnce() {
+    const context = {
+      sheet: this.sheet,
+      worksheet: this.worksheet,
+      generation: this.generation,
+      cache: this.cache,
+    };
+    const starts = [...context.cache.blocks.keys()]
+      .map((key) => key.split(":").map(Number))
+      .filter(([sheet]) => sheet === context.sheet)
+      .map(([, start]) => start)
+      .sort((a, b) => a - b);
+    for (const start of starts) {
+      if (!this.viewMatches(context) || this.cache !== context.cache)
+        return false;
+      await this.loadBlock(start, true);
+    }
+    return true;
   }
   async refreshOpDetails(message) {
     const context = {

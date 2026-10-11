@@ -16,8 +16,9 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from openpyxl.formula.translate import Translator
+from openpyxl.styles.colors import COLOR_INDEX
 from openpyxl.styles.numbers import BUILTIN_FORMATS
-from openpyxl.utils.cell import get_column_letter
+from openpyxl.utils.cell import get_column_letter, range_boundaries
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .store import publish, replace_snapshot, staging_directory
@@ -28,8 +29,16 @@ LOGGER = logging.getLogger(__name__)
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 6
+IMPORT_VERSION = 8
+CF_RULE_TYPES = frozenset({"expression", "cellIs", "containsText", "duplicateValues", "beginsWith", "containsErrors"})
+CF_BORDER_STYLES = {
+    "thin": 1, "hair": 2, "dotted": 3, "dashed": 4,
+    "dashDot": 5, "dashDotDot": 6, "double": 7, "medium": 8,
+    "mediumDashed": 9, "mediumDashDot": 10, "mediumDashDotDot": 11,
+    "slantDashDot": 12, "thick": 13,
+}
 
 
 class TemplateImportError(Exception):
@@ -55,6 +64,7 @@ class SheetContext:
     archive: zipfile.ZipFile
     database: sqlite3.Connection
     unlocked: set[int]
+    dxf_styles: list[dict]
     destination: Path
 
 
@@ -138,16 +148,55 @@ def _bounds(ref: str) -> list[int]:
     return [min(row1, row2), min(col1, col2), max(row1, row2), max(col1, col2)]
 
 
-def _color(node: ET.Element | None) -> str | None:
+def _canonical_color(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.lstrip("#")
+    if len(value) == 8:
+        value = value[2:]
+    return f"#{value.upper()}" if len(value) == 6 else None
+
+
+def _tinted(color: str | None, tint: str | None) -> str | None:
+    if color is None or tint is None:
+        return color
+    amount = float(tint)
+    channels = [int(color[index:index + 2], 16) for index in (1, 3, 5)]
+    adjusted = [round(value * (1 + amount) if amount < 0 else value * (1 - amount) + 255 * amount)
+                for value in channels]
+    return "#" + "".join(f"{max(0, min(255, value)):02X}" for value in adjusted)
+
+
+def _color(node: ET.Element | None, theme: dict[int, str] | None = None) -> str | None:
     if node is None:
         return None
-    if node.get("rgb"):
-        return node.get("rgb")
-    if node.get("theme"):
-        return f"theme:{node.get('theme')}"
-    if node.get("indexed"):
-        return f"indexed:{node.get('indexed')}"
-    return None
+    color = _canonical_color(node.get("rgb"))
+    if color is None and node.get("theme") and theme:
+        color = theme.get(int(node.get("theme")))
+    if color is None and node.get("indexed"):
+        index = int(node.get("indexed"))
+        color = _canonical_color(COLOR_INDEX[index] if index < len(COLOR_INDEX) else None)
+    if color is None and node.get("auto") in {"1", "true"}:
+        color = "#000000"
+    return _tinted(color, node.get("tint"))
+
+
+def _theme_colors(archive: zipfile.ZipFile) -> dict[int, str]:
+    if "xl/theme/theme1.xml" not in archive.namelist():
+        return {}
+    root = ET.fromstring(archive.read("xl/theme/theme1.xml"))
+    scheme = root.find(f".//{DRAWING_NS}clrScheme")
+    if scheme is None:
+        return {}
+    nodes = {item.tag.rsplit("}", 1)[-1]: item for item in scheme}
+    order = ("lt1", "dk1", "lt2", "dk2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink")
+    colors = {}
+    for index, name in enumerate(order):
+        child = next(iter(nodes.get(name, ())), None)
+        value = None if child is None else child.get("lastClr") or child.get("val")
+        if color := _canonical_color(value):
+            colors[index] = color
+    return colors
 
 
 def _font_name(font: ET.Element | None) -> str | None:
@@ -177,7 +226,7 @@ def _locked(xf: ET.Element | None, inherited: bool = True) -> bool:
     return protection.get("locked", "1") not in {"0", "false"}
 
 
-def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
+def _style_record(style: StyleDefinition, root: ET.Element, theme: dict[int, str]) -> dict:
     index, xf, base = style.index, style.node, style.base
     fonts = list(root.findall(f"{NS}fonts/{NS}font"))
     fills = list(root.findall(f"{NS}fills/{NS}fill"))
@@ -199,8 +248,8 @@ def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
         "bold": font is not None and font.find(f"{NS}b") is not None,
         "italic": font is not None and font.find(f"{NS}i") is not None,
         "font_name": _font_name(font),
-        "color": _color(font.find(f"{NS}color") if font is not None else None),
-        "fill": _color(fill.find(f"{NS}patternFill/{NS}fgColor") if fill is not None else None),
+        "color": _color(font.find(f"{NS}color") if font is not None else None, theme),
+        "fill": _color(fill.find(f"{NS}patternFill/{NS}fgColor") if fill is not None else None, theme),
         "align": alignment.get("horizontal") if alignment is not None else None,
         "valign": alignment.get("vertical") if alignment is not None else None,
         "wrap": alignment is not None and alignment.get("wrapText") in {"1", "true"},
@@ -214,15 +263,64 @@ def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
     if "xl/styles.xml" not in archive.namelist():
         return [_default_style()], set()
     root = ET.fromstring(archive.read("xl/styles.xml"))
+    theme = _theme_colors(archive)
     bases = list(root.findall(f"{NS}cellStyleXfs/{NS}xf"))
     styles, unlocked = [], set()
     for index, xf in enumerate(root.findall(f"{NS}cellXfs/{NS}xf")):
         parent = int(xf.get("xfId", "0"))
         base = bases[parent] if parent < len(bases) else None
-        styles.append(_style_record(StyleDefinition(index, xf, base), root))
+        styles.append(_style_record(StyleDefinition(index, xf, base), root, theme))
         if not _locked(xf, _locked(base)):
             unlocked.add(index)
     return styles or [_default_style()], unlocked
+
+
+def _dxf_data(archive: zipfile.ZipFile) -> list[dict]:
+    if "xl/styles.xml" not in archive.namelist():
+        return []
+    root = ET.fromstring(archive.read("xl/styles.xml"))
+    theme = _theme_colors(archive)
+    return [_dxf_style(node, theme) for node in root.findall(f"{NS}dxfs/{NS}dxf")]
+
+
+def _dxf_style(node: ET.Element, theme: dict[int, str]) -> dict:
+    style, font, fill = {}, node.find(f"{NS}font"), node.find(f"{NS}fill")
+    if font is not None:
+        bold, color = font.find(f"{NS}b"), _color(font.find(f"{NS}color"), theme)
+        if bold is not None:
+            style["bold"] = bold.get("val", "1").lower() not in {"0", "false"}
+        if color is not None:
+            style["color"] = color
+    if fill is not None:
+        pattern = fill.find(f"{NS}patternFill")
+        if pattern is not None and pattern.get("patternType") == "none":
+            style["fill"] = None
+        elif pattern is not None:
+            color = _color(pattern.find(f"{NS}bgColor"), theme)
+            color = color or _color(pattern.find(f"{NS}fgColor"), theme)
+            if color is not None:
+                style["fill"] = color
+    number = node.find(f"{NS}numFmt")
+    if number is not None and number.get("formatCode") is not None:
+        style["nf"] = number.get("formatCode")
+    border = node.find(f"{NS}border")
+    if border is not None:
+        edges = {}
+        for source, target in (("top", "t"), ("right", "r"), ("bottom", "b"), ("left", "l")):
+            side = border.find(f"{NS}{source}")
+            if side is None:
+                continue
+            border_style = CF_BORDER_STYLES.get(side.get("style"))
+            if border_style is None:
+                continue
+            color = _color(side.find(f"{NS}color"), theme)
+            edge = {"s": border_style}
+            if color is not None:
+                edge["cl"] = {"rgb": color}
+            edges[target] = edge
+        if edges:
+            style["border"] = edges
+    return style
 
 
 def _default_style() -> dict:
@@ -391,7 +489,8 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     index = sheet_info["index"]
     metadata = {**sheet_info, "rows": 0, "cols": 0, "freeze": {"rows": 0, "cols": 0},
                 "col_widths": {}, "row_heights": {}, "hidden_rows": [], "hidden_cols": [],
-                "col_styles": [], "row_styles": {}, "merges": [], "validations": []}
+                "col_styles": [], "row_styles": {}, "merges": [], "validations": [],
+                "conditional_formats": [], "has_conditional_formats": False}
     metadata.pop("part")
     block_index, block_rows, protected = None, {}, False
     sheet_dir = context.destination / "sheets" / str(index)
@@ -412,7 +511,7 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
                 block_index = next_block
                 _record_row(element, row_number, state)
             else:
-                protected = _sheet_metadata(element, metadata, protected)
+                protected = _sheet_metadata(element, metadata, protected, context.dxf_styles)
             if len(stack) > 1 and element.tag == f"{NS}row":
                 stack[-2].remove(element)
             stack.pop()
@@ -439,7 +538,7 @@ def _record_row(element, row_number, state: SheetState) -> None:
         state.metadata["row_styles"][str(row_number)] = int(element.get("s"))
 
 
-def _sheet_metadata(element, metadata, protected):
+def _sheet_metadata(element, metadata, protected, dxf_styles):
     if element.tag == f"{NS}dimension" and element.get("ref"):
         _, _, row2, col2 = _bounds(element.get("ref"))
         metadata["rows"] = max(metadata["rows"], row2 + 1)
@@ -455,7 +554,39 @@ def _sheet_metadata(element, metadata, protected):
         metadata["merges"].append(_bounds(element.get("ref")))
     elif element.tag == f"{NS}dataValidation":
         metadata["validations"].append(_validation(element))
+    elif element.tag == f"{NS}conditionalFormatting":
+        metadata["conditional_formats"].extend(_conditional_formats(element, dxf_styles))
+        metadata["has_conditional_formats"] = bool(metadata["conditional_formats"])
     return protected
+
+
+def _conditional_formats(element, dxf_styles: list[dict]) -> list[dict]:
+    ranges = [_cf_bounds(value) for value in (element.get("sqref") or "").split()]
+    top_left = ranges[0][:2] if ranges else [0, 0]
+    output = []
+    for rule_index, rule in enumerate(element.findall(f"{NS}cfRule")):
+        kind = rule.get("type")
+        if kind not in CF_RULE_TYPES:
+            continue
+        try:
+            dxf_id, priority = int(rule.get("dxfId", "-1")), int(rule.get("priority", str(2**31)))
+        except ValueError:
+            continue
+        formulas = [item.text or "" for item in rule.findall(f"{NS}formula")]
+        dxf = dxf_styles[dxf_id] if 0 <= dxf_id < len(dxf_styles) else {}
+        for area_index, bounds in enumerate(ranges):
+            output.append({"type": kind, "range": bounds, "top_left": top_left, "priority": priority,
+                           "stop_if_true": rule.get("stopIfTrue") in {"1", "true"},
+                           "operator": rule.get("operator"), "text": rule.get("text"),
+                           "formulas": formulas, "dxf": dxf,
+                           "rule_id": f"cf-{priority}-{rule_index}-{area_index}"})
+    return output
+
+
+def _cf_bounds(reference: str) -> list[int]:
+    min_col, min_row, max_col, max_row = range_boundaries(reference)
+    return [(min_row or 1) - 1, (min_col or 1) - 1,
+            (max_row or 1_048_576) - 1, (max_col or 16_384) - 1]
 
 
 def _column_metadata(element, metadata):
@@ -561,9 +692,10 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
         with zipfile.ZipFile(source.path) as archive:
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
+            dxf_styles = _dxf_data(archive)
             sheet_specs, names = _workbook_data(archive)
             metadata, protected = [], set()
-            context = SheetContext(archive, database, unlocked, staging)
+            context = SheetContext(archive, database, unlocked, dxf_styles, staging)
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)
                 metadata.append(info)

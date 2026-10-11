@@ -9,6 +9,9 @@ from pathlib import Path
 
 from .authorization import effective_role
 from .errors import AppError
+from .fidelity.conditional_formatting import (
+    CurrentCopyValues, conditional_style_overrides,
+)
 
 
 class TemplateSnapshot:
@@ -147,7 +150,9 @@ class WorkbookService:
                    "col_widths": {key: round(value * 7 + 5) for key, value in item["col_widths"].items()},
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
-                   "merges": item["merges"]} for item in snapshot.sheets]
+                   "merges": item["merges"],
+                   "has_conditional_formats": item.get("has_conditional_formats", False)}
+                  for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": copy["calculated_revision"],
                 "sheets": sheets, "styles": snapshot.styles}
@@ -160,37 +165,49 @@ class WorkbookService:
                     or not 1 <= query.count <= 500):
                 raise AppError(422, "invalid", "Sheet row range is invalid")
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
-            rows = self._row_data(connection, render)
+            conditional = conditional_style_overrides(
+                snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
+            )
+            rows = self._row_data(connection, render, conditional.styles)
         return {"calculated_revision": copy["calculated_revision"], "input_revision": copy["input_revision"],
-                "start": query.start, "rows": rows}
+                "start": query.start, "rows": rows,
+                "conditional_format_warnings": conditional.warnings}
 
-    def _row_data(self, connection, render):
+    def _row_data(self, connection, render, style_overrides=None):
         output = {}
+        style_overrides = style_overrides or {}
         query = render.query
+        override_rows = _group_rows(render.overrides)
+        result_rows = _group_rows(render.results)
+        style_rows = _group_rows(style_overrides)
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
             cells = {**implicit, **stored}
-            coordinates = (set(cells) | {str(col) for r, col in render.overrides if r == row}
-                           | {str(col) for r, col in render.results if r == row})
+            overrides = override_rows.get(row, {})
+            results = result_rows.get(row, {})
+            styles = style_rows.get(row, {})
+            coordinates = set(cells) | {str(col) for col in overrides | results | styles}
             rendered = {}
             for col_text in sorted(coordinates, key=int):
                 col = int(col_text)
                 record = dict(cells.get(col_text, render.snapshot.cell(query.sheet, row, col)))
                 record.pop("formula", None)
-                override = render.overrides.get((row, col))
+                override = overrides.get(col)
                 input_record = _input_record(connection, override) if override else None
-                if (row, col) in render.results:
-                    record.update({"v": render.results[(row, col)], "k": "f"})
+                if col in results:
+                    record.update({"v": results[col], "k": "f"})
                     record.update(_spill_input_metadata(
                         render.snapshot, (query.sheet, row, col), input_record
                     ))
                 elif record["k"] == "f":
                     record["v"] = None
-                if override and (row, col) not in render.results:
+                if override and col not in results:
                     record.update(input_record)
                 elif record["k"] == "i":
                     record["ver"] = 0
+                if col in styles:
+                    record["style_override"] = styles[col]
                 rendered[col_text] = record
             if rendered:
                 output[str(row)] = rendered
@@ -278,6 +295,13 @@ def _overrides(connection, query):
         (query.copy_id, query.sheet, query.start, query.start + query.count),
     ).fetchall()
     return {(item["row"], item["col"]): item for item in rows}
+
+
+def _group_rows(records):
+    grouped = {}
+    for (row, col), value in records.items():
+        grouped.setdefault(row, {})[col] = value
+    return grouped
 
 
 def _results(connection, query):
