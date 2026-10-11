@@ -290,9 +290,7 @@ class PublicFormulaEvaluator:
         for formula, (_, row, col) in zip(formulas, outputs):
             book.worksheets[self.sheet].cell(row + 1, col + 1, formula)
         values = self._run(book, outputs)
-        if any(isinstance(value, dict) and set(value) == {"error"} for value in values):
-            raise ConditionalFormatError("formula_engine", "conditional formula returned an error")
-        return values
+        return [_formula_result(value) for value in values]
 
     @staticmethod
     def _run(book, outputs) -> list:
@@ -350,6 +348,13 @@ def _area(bounds):
 
 def _formula_truth(value):
     return value is True or (type(value) in {int, float} and value != 0)
+
+
+def _formula_result(value):
+    """Excel formats nothing when a condition evaluates to an error."""
+    if isinstance(value, dict) and set(value) == {"error"}:
+        return False
+    return value
 
 
 def _rule_id(rule):

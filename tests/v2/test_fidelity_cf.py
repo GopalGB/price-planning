@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from ops.fixtures import (
     make_broad_conditional_formatting,
     make_conditional_formatting,
+    make_partial_error_conditional_formatting,
     make_volatile_conditional_formatting,
 )
 from pp.calc_service import CalculationPublication, CalculationService
@@ -412,6 +413,29 @@ class BroadConditionalFormattingRowsTest(unittest.TestCase):
             [warning["code"] for warning in body["conditional_format_warnings"]],
             ["formula_engine"],
         )
+
+
+class PartialErrorConditionalFormattingRowsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.fixture = APIFixture(make_partial_error_conditional_formatting)
+        self.client, self.csrf, _ = self.fixture.signup("partial-cf@example.test")
+        _, copy = self.fixture.make_copy(self.client, self.csrf)
+        self.copy_id = copy["id"]
+
+    def tearDown(self) -> None:
+        self.fixture.close()
+
+    def test_one_formula_error_leaves_healthy_targets_styled(self) -> None:
+        response = self.client.get(
+            f"/api/copies/{self.copy_id}/sheets/0/rows?start=0&count=3",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["conditional_format_warnings"], [])
+        self.assertNotIn("style_override", body["rows"]["0"]["1"])
+        self.assertEqual(body["rows"]["1"]["1"]["style_override"], {"fill": "#112233"})
+        self.assertEqual(body["rows"]["2"]["1"]["style_override"], {"fill": "#112233"})
 
 
 class VolatileConditionalFormattingRowsTest(unittest.TestCase):

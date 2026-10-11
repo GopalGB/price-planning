@@ -303,6 +303,24 @@ def make_volatile_conditional_formatting(path):
     book.save(path)
 
 
+def make_partial_error_conditional_formatting(path):
+    """Create one CF rule whose formula errors on only its first target."""
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Partial"
+    for row, value in enumerate((-1, 4, 9), start=1):
+        sheet.cell(row, 1, value)
+        sheet.cell(row, 2, "target")
+    sheet.conditional_formatting.add(
+        "B1:B3",
+        FormulaRule(
+            formula=["SQRT(A1)>1"],
+            fill=PatternFill(patternType="solid", fgColor="112233"),
+        ),
+    )
+    book.save(path)
+
+
 def make_tables(path):
     """Create two sparse tables, an overlapping sheet filter, and custom DXFs."""
     book = Workbook()
