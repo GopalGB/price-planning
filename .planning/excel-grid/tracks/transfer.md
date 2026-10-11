@@ -16,13 +16,15 @@ Users upload Excel files by content, preview changed inputs, conflicts with auth
 - [x] B1: Synthetic red/green upload parsing, content/size/archive/XML safety, provenance/structure identification, input-only preview, conflict author/time and ignored-edit reasons.
 - [x] B2: Preview-confirmed update/new-copy endpoints using the existing operation pipeline, one undoable operation, upload filename source/uploader attribution, selected conflicts and authorization. Upload UI on home and inside copy, regression tests and one focused upload commit.
 - [ ] C: Exact claude-opus-5-5 review with returned identity, planner review, security-auditor; resolve blocking findings test-first.
-- [x] D: Python twice, web twice, content guard 0, ruff, pinned Prettier, two identical builds. One real-server Ego TaskSpace on a free port excluding 8000/8765/8766: all-sheet and two-sheet downloads/openpyxl, edit/download/upload preview/update/undo/new-copy. Finish keep: []. Preserve STATE headings and hand off evidence.
+- [ ] D: Refresh after review corrections: Python twice, web twice, content guard 0, ruff, pinned Prettier, two identical builds. One real-server Ego TaskSpace on a free port excluding 8000/8765/8766: all-sheet and two-sheet downloads/openpyxl, edit/download/upload preview/update/undo/new-copy. Finish keep: []. Preserve STATE headings and hand off evidence.
 
 ## Ownership and boundaries
 
 Transfer owns download/upload package helpers, routes/config strictly needed for transfer, transfer UI/tests and build artifacts. Engine/calculation pipeline is read-only. Formatting/drawing rendering and pivot/slicer dashboards belong to other tracks. Preserve their APIs and edits. Synthetic fixtures only, no private workbook paths, no Docker, no dependency upgrades without lock/wheels together, no push/main/merge/deploy. Controller owns Git, state, review, runtime/browser and evidence. One routed executor owns transfer implementation and regression tests.
 
 ## Evidence and current checkpoint
+
+Latest corrections: `e6c8a89` fixes H1 self-closing cells (red, regression green twice, controller export18/18). `baceaa6` fixes H3 stale upload merging (red, final regressions4/4 twice, controller upload33/33) and preserves the existing change/revert conflict contract. Both passed changed-file Ruff, staged secret scans and commit content guards. H2 and medium/low disposition remain in progress. All earlier full-suite, browser and build evidence below is historical until refreshed against corrected source.
 
 Local feature commits: `d4dddd4` download, `2ead2d7` upload. Both have matching built assets and passed staged secret/content guards without bypassing hooks. Full source remains identical to the final acceptance hash receipt. No dependency changes or outbound publication.
 
@@ -40,7 +42,7 @@ Independent planner findings were corrected test-first, including shared/array/n
 
 Resume resource blocker (2026-10-11): RESOURCE_DISK_LOW. Initial `df -g /` reported 3 GB available, below the owner's 4 GB stop threshold. Swap used=9912.44M is the resume baseline. No tests, builds, browser, worker or exact Claude retry ran this session. Initial Git status had no tracked changes; only untracked `.venv` and `web/node_modules`, with HEAD `ae79f33`. No cleanup was attempted after the stop threshold triggered. Previous acceptance remains historical evidence.
 
-Phase C remains unchecked solely for CLAUDE_REVIEW_QUOTA. Exact `claude-opus-5-5` returned is_error=true, a weekly-limit error with reported reset7:30pm Asia/Calcutta, and empty modelUsage. It is not an identity or review receipt. No substitute is authorized. Review input/retry instructions are prepared under ignored `results-private/transfer/`. Resolve CRITICAL/HIGH findings and verify returned identity before DONE. Existing Ruff141 baseline findings remain a disclosed concern.
+Historical quota failure: exact `claude-opus-5-5` previously returned is_error=true and empty modelUsage. The subsequent successful exact review above supersedes that blocker. Phase C remains unchecked for unresolved findings and clean re-review. Existing Ruff141 baseline findings remain a disclosed concern.
 
 ## Resumption
 
