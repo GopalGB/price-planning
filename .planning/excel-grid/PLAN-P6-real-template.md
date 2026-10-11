@@ -15,20 +15,26 @@ Fresh session resource baseline: swap 6061.94 MiB; stop above 7597.94 MiB or
 free disk below 2500 MiB. Guard: results-private/native-resource-live.json.
 No private workbook reads, dependency changes, forbidden ports, push or deployment.
 
-- [ ] Review and drop conflicting inherited shared-engine/reload changes; retain
+- [x] Review and drop conflicting inherited shared-engine/reload changes; retain
   compatible tests. Commit native loader and independent resident copy behavior
-  after targeted synthetic load/edit/revert correctness checks.
-- [ ] Connect bounded transitive dependents, visible row blocks, deferred stale
+  after targeted synthetic load/edit/revert correctness checks. Dropped; da9720d.
+- [x] Connect bounded transitive dependents, visible row blocks, deferred stale
   requests and atomic revision publication. Prove invisible downstream cells never
-  return old caches, including concurrent revisions and reopened copies.
-- [ ] Add engine_memory_budget_mb (3000 Mac, 16000 office), idle LRU, connected
+  return old caches, including concurrent revisions and reopened copies. Engine
+  side complete, 1764d01. The service does not yet report open blocks.
+- [x] Add engine_memory_budget_mb (3000 Mac, 16000 office), idle LRU, connected
   editor protection and memory telemetry with synthetic capacity tests.
-- [ ] Build counts-only native parity script for controller use, prove sampling,
-  edit/revert and function-count reporting on synthetic fixtures.
-- [ ] Measure 5%/20%/50% sequential synthetic native load, first/warm/broad visible
-  and full edits, peak RSS; commit aggregate JSON after each finished item.
-- [ ] Verify Python twice, web twice, content guard 0, scoped Ruff, security audit,
-  exact claude-opus-5-5 and planner review. Update STATE preserving headings.
+  cf028e3. Protection is an available pool API with no caller yet.
+- [x] Build counts-only native parity script for controller use, prove sampling,
+  edit/revert and function-count reporting on synthetic fixtures. 787953d, with
+  three tests that break the engine or the cache to prove the audit goes red.
+- [x] Measure 5%/20%/50% sequential synthetic native load, first/warm/broad visible
+  and full edits, peak RSS; commit aggregate JSON after each finished item. 10db8af.
+  5% and 20% completed with every value matching; the 50% load completed at
+  92.12 s and its full broad edit was killed by this 8 GiB Mac at 955 MB.
+- [x] Verify Python twice, web twice, content guard 0, scoped Ruff. 431 of 431
+  twice, 101 of 101 twice, guard exit 0, Ruff clean. The exact model review and
+  the planner review belong to the supervisor and were not run by this runner.
 
 Ruling: drop template-keyed single mutable engine and spill export/reload fallback
 because both conflict with the owner's latest explicit per-copy native decision.

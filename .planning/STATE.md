@@ -2,162 +2,106 @@
 
 ## Current phase
 
-Branch: feat/v2-integration. Source HEAD: a05d30b. Documentation checkpoint follows.
-2026-10-11 native Option A task is BLOCKED_RESOURCE_SWAP. Fresh baseline swap
-6061.94 MiB; guard observed 7747.25 MiB, growth 1685.31 MiB exceeding 1536 MiB.
-Disk at stop 5670 MiB, minimum this session 3409 MiB. Stop flag is durable in
-results-private/native-resource-stop.json. Do not restart during this stopped
-session or reset its baseline. Host-wide growth is not attributed to the engine.
+Branch: feat/v2-integration. Native Formualizer load is implemented and measured.
+The startup blocker is closed: no formula is registered per cell at load, and
+native load reports zero parity mismatches on the synthetic fixture.
 
-Owner decision remains native formualizer==0.11.1 loading once per active copy,
-visible-only affected evaluation, stale block calculation, independent resident
-copy engines, engine_memory_budget_mb and idle LRU with editor protection.
-The previous single mutable template-keyed engine is superseded. This session
-dropped inherited pool/worker/pool-test changes and parked the warm-clear test
-in results-private/native-redirect-start.diff. No new production code remains.
-No engine implementation item, full verification or review gate completed.
+Owner decision honoured: native formualizer==0.11.1, one resident engine per
+active copy, loaded once from the template, input overlays only, visible-only
+affected evaluation, stale blocks calculated on request, atomic per-revision
+publication, engine_memory_budget_mb with idle LRU and editor protection.
 
-Native default-loader synthetic preflight: 150 cached formulas, 47 mismatches,
-all shared-formula followers. Native Workbook.load_path backend=calamine
-reproduced 47/150; backend=umya raised OSError. This is synthetic evidence only,
-not a real-template verdict. Aggregate report:
-.planning/excel-grid/results/native-load-preflight-2026-10-11.json.
+Root cause of the 47 of 150 mismatch is inside the pinned engine, not our code.
+Formualizer 0.11.1 expands a shared-formula follower by translating the master
+text with the follower offset, and that translation also shifts a cross-sheet
+qualifier whose sheet name parses as a cell address, rewriting S01!$A$1 as
+T1!$A$1. Excel never translates the sheet part. Every follower of such a family
+read a sheet that does not exist and evaluated to #REF!. Minimal reproduction:
+.planning/excel-grid/results/formualizer-shared-formula-repro.py. The library is
+not patched. The package is rewritten once per immutable template so every
+shared follower carries its own explicit formula, which keeps native load a
+single read and needs no per-cell registration.
 
-Prior implementation and verification below describe starting HEAD a05d30b and
-historical adapter work. They do not verify the new native design.
+Scale results, aggregate JSON in
+.planning/excel-grid/results/engine-scale-native-2026-10-11.json, synthetic only:
+
+  scale  prepare  load    resident after load  first  warm   broad visible  broad full
+  5%     1.91 s   10.03 s 71.8 MiB             0.003 s 0.0002 s 4.13 s       3.26 s
+  20%   10.10 s   32.89 s 152.0 MiB            0.014 s 0.0002 s 18.48 s     26.69 s
+  50%   15.09 s   92.12 s 263.7 MiB            not reached on this host
+
+The previous per-cell adapter load was 258.73 s at 5% and never finished 20%
+inside a 600 s timeout. Load is no longer the blocker. Resident engine size
+scales about 1.03 MiB per 1000 formulas, which puts the 1.89M formula template
+near 2.0 GiB and inside both the 3000 MB Mac and 16000 MB office budgets.
+
+At 50% the load completed in 92.12 s at 263.7 MiB resident, then the child was
+killed by the host during the full-workbook dependency trace at 955 MB on an
+8 GiB Mac with swap already above 5 GiB. That is a host limit of this machine,
+not a load failure, and it is recorded as failed rather than reported as passed.
+
+Known limits, all measured rather than assumed: visible-only evaluation reduces
+evaluation and publication but not the dependency trace, so at 5% it was no
+faster than the full edit; the trace is now the dominant edit cost. Editor
+protection exists as a pool API but nothing calls protect() yet, because the
+connection registry has not been wired. Defined-name expansion still registers
+formulas after load; the synthetic fixtures exercise none.
 
 ## Last handoff
 
-2026-10-11 native resume stopped by live swap guard before implementation. Exact
-planner invocation header confirmed gpt-5.6-sol/xhigh; its review did not finish
-and was terminated with only its owned subprocesses. No execution-lane worker
-was started, no real workbook/private directory read, no ports bound, no push.
-Both native synthetic probes completed; no Python full suite, web suite, Ruff,
-content guard or new exact Claude review ran in this stopped session.
+2026-10-11 native Option A session. Uncommitted work from the interrupted run
+did not exist; the tree was clean at a25989c and nothing was inherited.
 
-Inherited incompatible engine changes were dropped with git restore to HEAD.
-Original full diff preserved in results-private/native-redirect-start.diff.
-Superseded untracked WARM briefs and the previous guard JSON were archived as
-results-private/superseded-* and dropped from the worktree.
-Compatible regression test is parked there, not committed as failing code.
-Updated plan and lesson NATIVE-LOAD-KEEP-RESIDENT record the owner correction.
-Checkpoint commit is documentation and aggregate evidence only.
+Shipped and committed, each item verified before commit:
+  da9720d expand shared formulas before native template load, 0 of 150 mismatches
+  787953d counts-only native parity audit for the controller real-workbook runs
+  1764d01 visible-only evaluation with stale deferral and on-demand resolution
+  10db8af shared formulas split across a read boundary, plus scale measurements
+  cf028e3 engine memory budget, idle LRU eviction and editor protection
 
-Historical handoffs follow, including superseded candidate design and baselines.
+Two real defects were found by testing rather than review. Cells straddling a
+read boundary were copied through unexamined, so their shared followers leaked
+into the prepared package and the 20% load failed closed; a test now forces the
+boundary with 64 byte reads. recalculate_stale resolved each cell on demand
+during the publish capture, which zeroed the delta; the marks are now cleared
+before evaluation and restored on failure.
 
-2026-10-11 20:58 IST resident attempt stopped. Baseline swap 4589.25 MiB; observed
-6277.06 MiB, growth 1687.81 MiB, exceeding the 1536 MiB limit. Free disk 4747 MiB,
-above the 2500 MiB floor. Recorded in results/warm-resource-live.json and private
-warm-resource-stop.json. Parent interrupted /root/resident_core immediately. The
-guard is host-wide; engine attribution is not established, and no scale load was
-running. Do not reset the baseline or resume during this stopped session.
+Verification for this session: Python 431 of 431 twice (48.05 s and 48.84 s),
+web 101 of 101 twice, content guard exit 0, Ruff clean on every changed file.
+Synthetic fixtures only. No real workbook or private directory read, no port
+bound, no push, no dependency change, no external model review. The supervisor
+runs reviews after this runner.
 
-Retained partial code: template-keyed shared worker, ordinary no-reload clear,
-dead-child fail-closed behavior and revised pool/warm tests. Focused suite 18/18
-passed before the stop; full Python twice, web twice, Ruff, content guard and exact
-Claude review were not completed for this attempt. No core implementation item is
-accepted as finished. Known open issues include a forbidden spill export/reload
-fallback, copy-switch delta publication and resetting the engine after errors.
-Background startup/progress and memory/LRU/presence policy are not implemented.
-
-Pinned API investigation is in private warm-planner-preflight.md. No clone,
-deepcopy/pickle or native snapshot/restore exists. XLSX byte round-trip reparses;
-batch value/formula writes, targeted evaluation and undo/redo exist. Scalar None
-clear is supported, but native blocked-spill clearing/restoration is not proven
-correct without reload. The candidate remains one resident base plus serialized
-copy overlays, with logical state LRU and an explicit base memory limit.
-
-2026-10-11 20:27 IST final resume handoff: previous run was interrupted by a runner timeout. Read STATE/status,
-ran 112 focused tests successfully and committed retained work in focused items.
-Array compatibility `2ec0493`; generator `9dce2ba`; cache/delta engine `0e2e386`;
-bounded runner `63e4391`; named dependency/cache-format repair `65c190a`; runner
-cleanup repair `8b5a076`; batch registration `c1b06fc`; unsafe reference rejection
-`181e267`; whole-range regressions `802e0f5`; short-name fix `fccb177`; ISFORMULA
-validation-order fix `afc320a`.
-
-Scale aggregate: `.planning/excel-grid/results/engine-scale-2026-10-11.json`.
-Plan/results/recommended path: `.planning/excel-grid/PLAN-P6-real-template.md`.
-Batched 5%: 260000 cells/75000 formulas, load 258.7317 s, first edit 0.4232 s
-(1 correct delta), broad edit 4.7513 s (75000 correct deltas), child peak RSS
-708395008 bytes (675.6 MiB). At 20%: 1040000 cells/300000 formulas, load incomplete
-at 600 s attempt timeout; edits unmeasured. At 50%: skipped after 20% timeout.
-Prior unbatched 5% load: 455.15 s; 20% also timed out. Fixtures were deleted after
-each attempt; only small owned progress/log files remain. Benchmark source:
-`c1b06fc`; later correctness guards were not included in those timings.
-
-Resource baseline: 8875.31 MiB swap; stop at growth above 1536 MiB or free disk
-below 2500 MiB. Latest scale run minimum disk: 6922.94 MiB; swap never exceeded
-baseline. No resource guard fired. Initial resume disk: 5054 MiB. Host pressure
-varied, so timing comparisons are not isolated. No real workbook/private directory
-was read. No forbidden port was bound.
-
-Exact returned `modelUsage` identity `claude-opus-5-5` verified throughout reviews.
-Repairs closed with SHIP in `p6-tax-review.json` and `p6-isformula-review.json`.
-Planner `gpt-5.6-sol` verdict: NO BLOCKING DEFECTS after final repair. Initial final
-Python run passed 386/387: ISFORMULA named-argument rejection was bypassed by name
-expansion. Existing test reproduced it; validation now precedes expansion. Focused
-83/83 twice and adapter/cache 48/48 twice pass. Final unchanged full Python runs:
-387/387 PASS twice (85.657 s and 71.249 s). Second run emitted an ignored ZipFile
-destructor cleanup warning during a passing export-route test; recorded in the plan.
-
-Web: 101/101 twice PASS. Scoped Ruff clean; content guard exit 0; staged gitleaks
-clean. Semgrep: 151 rules/41 Python files, 0 findings/no timeout; final adapter patch
-rescanned with 151 rules/1 file, 0 findings. pip-audit requirements.lock: no known
-vulnerabilities. Broad Ruff reports 141 existing legacy ops/tests findings, not
-repaired. Raw logs: `results-private/p6-final-*`, `p6-resume-*`, `p6-isformula-*`.
-
-Prior controller checkpoint: `0079f66` prevents startup on an occupied port;
-`0ff02dd` corrects dropdown value types. Prior Round 5 review defects were closed.
-  Known minor limits include font-dependent General precision, stale-template backup
-  fail-closed, legacy restore relocation, unmeasured retry churn, and refresh returning
-  to the copy list.
-
-  2026-10-11 resident execution checkpoint: locally changed `pp/engine/pool.py` and
-  `worker.py` so one child is keyed by template path and serially overlays logical
-  copies. Focused warm/pool tests pass 18/18. Ordinary cleared inputs no longer reload
-  a renamed source; a blocked dynamic spill still uses a documented Formualizer 0.11.1
-  export/reload fallback because native targeted evaluation cannot rebuild spill
-  metadata. Commit was sandbox-blocked because Git cannot create the linked-worktree
-  index lock outside the writable boundary. No benchmark or external action ran.
-  Dead resident children now fail closed with a named server-restart error, rather
-  than silently recreating a worker.
+Aggregate evidence only is committed. Raw logs remain under results-private.
+Free disk 14174 MiB at the last check, far above the 2500 MiB floor.
 
 ## Next task
 
-Start a new safe session with lower host pressure. Keep the approved native
-Option A decision. First reproduce and diagnose missing native shared-formula
-followers using existing synthetic fixture (seed 20261011, scale 0.0001) and pinned
-0.11.1. Close native-load correctness without per-cell formula registration or
-silent cached downstream results. Then implement the unchecked native execution
-items at the top of PLAN-P6-real-template.md, restore the parked warm-clear test,
-commit each finished item and run all required final verification/review gates.
-Controller owns >=20k real-workbook parity and edit/revert runs. No dependency
-upgrade, per-cell loader, template-shared mutable worker or spill reload is approved.
+Controller owns the real-workbook evidence. Run the counts-only audit against the
+real template and report the aggregates:
 
-Historical next-task notes below are superseded by this checkpoint and owner
-native-load decision; old startup timings are not native-engine measurements.
+    .venv/bin/python -m ops.native_parity --template /path/to/template.xlsm \
+        --sample 20000 --output .planning/excel-grid/results/native-parity.json
 
-Resume the approved resident task only in a new safe session after host pressure
-falls. Read WARM-CORE-BRIEF.md and WARM-ENGINE-HANDOFF.md, retain synthetic-only
-scope, take a fresh baseline and supervise the guard. Repair the partial core's
-known correctness/reload issues before committing it. Then finish background startup,
-UI progress, memory/presence policy, one-scale-at-a-time benchmarks and all review
-gates. No fitted curve or full-size fit decision exists for the resident design.
+Pass requires zero mismatches across the lazy sample and zero after revert. The
+audit prints counts only. If it fails, mismatches_by_function names the family to
+investigate first. The same audit runs against a synthetic fixture as a control.
 
-The earlier Luna sandbox incorrectly treated historical swap as a current guard;
-the parent corrected it. The real stop above is a separate verified live event.
-Terra's commit was sandbox-denied; root Git access is available, but no unfinished
-implementation was committed. Final required verification remains pending.
+Then, in priority order:
 
-Profile 20% synthetic startup on the office server using the same seed and pinned
-engine. Separate eager native import, expanded formula registration and dependency
-trace construction before choosing a narrow adapter repair or requesting a
-dependency change. Do not call the full-size engine path viable from this evidence.
+1. Make the dependency trace cheaper. It now dominates every broad edit and the
+   visible-only path does not yet reduce it. This is the largest remaining
+   latency lever and it is what limits 50% and above.
+2. Wire the connection registry to pool.protect and release_protection, so
+   editor presence is real rather than only an available API.
+3. Decide defined-name expansion. If the real template uses names inside
+   formulas, those cells are still registered per cell after load. Measure the
+   count on the real workbook before choosing whether to extend the pre-load
+   rewrite to names.
+4. Re-run the 5/20/50 scale set on the office server. The 50% load succeeded
+   here; its full broad edit was killed by this 8 GiB Mac, so the trace cost at
+   scale is still unmeasured off-host.
 
-Recommended initial office host: 32 GiB RAM, one engine worker; 64 GiB planning
-allowance for multiple warm copies. Unverified linear extrapolation of the 5% child
-peak alone is 13.2 GiB per full-scale engine; native load CPU cost remains a blocker.
-The 8 GiB Mac is for small-fixture development. Estimate limits are in the P6 plan.
+Unverified and owner-controlled: office Windows and Excel acceptance, LAN access,
+any push or PR, and any dependency change. engine formualizer stays 0.11.1.
 
-Owner: push branch/open PR only after reviewing this blocker and green CI. Office
-acceptance and paid Strix actions remain owner-controlled. No push was performed. Final disk: 6917 MiB available; swap: 4669.25 MiB.
