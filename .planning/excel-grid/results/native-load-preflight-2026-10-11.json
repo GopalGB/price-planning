@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-11",
+  "status": "BLOCKED_RESOURCE_SWAP",
+  "resource": {
+    "baseline_swap_mib": 6061.94,
+    "swap_mib": 7747.25,
+    "peak_swap_mib": 7747.25,
+    "disk_free_mib": 5670,
+    "minimum_disk_mib": 3409,
+    "stop": true
+  },
+  "synthetic_native_load_probe": {
+    "formula_count": 150,
+    "mismatch_counts_by_encoding": {
+      "shared-follower": 47
+    }
+  },
+  "native_backend_probe": [
+    {
+      "backend": "calamine",
+      "formulas": 150,
+      "mismatches": 47,
+      "seconds": 0.12435433297650889
+    },
+    {
+      "backend": "umya",
+      "error_type": "OSError"
+    }
+  ],
+  "seed": 20261011,
+  "scale": 0.0001,
+  "real_workbook_read": false,
+  "implementation_completed": false,
+  "scale_benchmarks_run": false
+}

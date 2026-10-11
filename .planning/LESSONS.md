@@ -19,3 +19,8 @@ correct: Keep original input values as the undo/redo lineage independently of co
 hits: 1
 signal: The browser TaskSpace was finished before review corrections were complete, deleting the space needed for the final source check.
 correct: Retain the one TaskSpace until the final code and independent review gates are settled, then verify that revision and finish once. If the finished space no longer exists, name the browser skill's replacement-space approval requirement; preserve old proof as historical evidence and never claim it verifies later code.
+
+## NATIVE-LOAD-KEEP-RESIDENT
+hits: 1
+signal: Owner redirected the adapter bottleneck work to measured native Formualizer loading.
+correct: Load the template natively once per active copy, retain snapshot caches for untouched display, apply only input overlays, and evaluate affected visible cells with bounded transitive dependents. Keep memory budget and idle LRU with connected-editor protection. Never rebuild formulas per cell at load or reuse a single mutable engine across copies. Use synthetic fixtures here; controller owns real-workbook parity.

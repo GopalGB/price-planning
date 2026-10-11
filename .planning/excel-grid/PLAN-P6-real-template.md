@@ -3,6 +3,82 @@
 Date: 2026-10-11. Approved by the owner's GO-TOKEN.
 Branch: `feat/v2-integration`. Synthetic fixtures only. No push or deployment.
 
+## Approved native-load execution (2026-10-11)
+
+Owner GO-TOKEN supersedes the template-shared worker attempt below. One native
+Formualizer engine per active copy, native load once, input overlays only.
+Excel snapshot caches serve untouched cells. Edited downstream cells cannot fall
+back to those caches. Evaluate affected visible blocks and defer other affected
+cells until requested. Preserve atomic input-revision publication.
+
+Fresh session resource baseline: swap 6061.94 MiB; stop above 7597.94 MiB or
+free disk below 2500 MiB. Guard: results-private/native-resource-live.json.
+No private workbook reads, dependency changes, forbidden ports, push or deployment.
+
+- [ ] Review and drop conflicting inherited shared-engine/reload changes; retain
+  compatible tests. Commit native loader and independent resident copy behavior
+  after targeted synthetic load/edit/revert correctness checks.
+- [ ] Connect bounded transitive dependents, visible row blocks, deferred stale
+  requests and atomic revision publication. Prove invisible downstream cells never
+  return old caches, including concurrent revisions and reopened copies.
+- [ ] Add engine_memory_budget_mb (3000 Mac, 16000 office), idle LRU, connected
+  editor protection and memory telemetry with synthetic capacity tests.
+- [ ] Build counts-only native parity script for controller use, prove sampling,
+  edit/revert and function-count reporting on synthetic fixtures.
+- [ ] Measure 5%/20%/50% sequential synthetic native load, first/warm/broad visible
+  and full edits, peak RSS; commit aggregate JSON after each finished item.
+- [ ] Verify Python twice, web twice, content guard 0, scoped Ruff, security audit,
+  exact claude-opus-5-5 and planner review. Update STATE preserving headings.
+
+Ruling: drop template-keyed single mutable engine and spill export/reload fallback
+because both conflict with the owner's latest explicit per-copy native decision.
+Original interrupted diff preserved in results-private/native-redirect-start.diff.
+
+Checkpoint: inherited conflicting code dropped; native implementation not started.
+Guard fired at swap 7747.25 MiB (growth 1685.31 MiB). Session stopped without
+resetting baseline. Native synthetic preflight produced 47/150 mismatches, all
+shared followers; alternate umya loader raised OSError. Raw logs are under
+results-private/native-*. Aggregate: results/native-load-preflight-2026-10-11.json.
+Planner gpt-5.6-sol/xhigh started but did not complete before stop; no review verdict.
+Final Python/web twice, scoped Ruff, content guard, security and Claude gates pending.
+
+## Historical resident-engine owner decision and stopped attempt
+
+Owner decision 2026-10-11: load once and keep it loaded. The approved follow-up is
+tracked in WARM-ENGINE-HANDOFF.md and WARM-CORE-BRIEF.md. It is incomplete and
+BLOCKED_RESOURCE_SWAP. No new scale benchmark was run, so measured results below
+remain historical and do not establish the resident implementation's performance.
+
+Live resource guard fired at 20:58:19 IST: baseline swap 4589.25 MiB, observed
+6277.06 MiB, growth 1687.81 MiB above the 1536 MiB allowance. Free disk 4747 MiB,
+above the 2500 MiB floor. The parent stopped the implementation worker. No engine
+scale load was running; the host-wide growth is not attributed to Formualizer.
+Aggregate: results/warm-resource-live.json. Private stop log: warm-resource-stop.json.
+
+API evidence: pinned 0.11.1 exposes set_value(None), set_values_batch,
+set_formulas_batch, evaluate_cells, changelog actions and undo/redo. It has no public
+native clone/copy, deepcopy/pickle or native engine snapshot/restore. to_xlsx_bytes
+and from_bytes provide XLSX export/reparse, not resident-state restoration. No native
+load-progress callback exists; honest adapter milestone progress is the proposed UI
+path. Native scalar clearing works, but blocked-spill clearing and follower values
+remain unsafe in isolated probes. A production fallback reload violates the owner
+decision and is not an accepted solution.
+
+Retained uncommitted patch passes 18 focused pool/warm tests and shares a child by
+template path. It still has unresolved spill reload and publication/error-state
+issues. Background preparation, UI progress, memory budget/LRU/editor protection,
+N=1/3/5 resident benchmarks and final full verification/reviews remain unfinished.
+No implementation item is accepted as complete or committed from this attempt.
+
+Decision: keep the supported candidate (one resident base plus serialized copy
+overlays and logical-state LRU), repair correctness before further measurement, and
+resume on a quiet host or office server with adequate headroom. A 100% fitted curve
+is unavailable because only the prior 5% scale completed. The prior single-point
+linear estimate of 13.2 GiB peak process RSS is unverified: it exceeds 3 GB and does
+not prove fit within 16 GB for the whole server. Do not build partitioning or
+reachable-only evaluation in this round. If completed measurements exceed a one-base
+budget, the next smallest experiment is reachable-formula evaluation or partitioning.
+
 ## Goal and approved scope
 
 Accept single-cell OOXML array formulas without changing export XML, answer

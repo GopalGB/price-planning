@@ -2,22 +2,70 @@
 
 ## Current phase
 
-P6 implementation is committed on `feat/v2-integration`; large-scale engine viability
-remains BLOCKED (`P6_LARGE_SCALE_STARTUP`). Latest code commit: `afc320a`. Final
-handoff commit follows. Approved GO-TOKEN: 2026-10-11. No push or deployment.
+Branch: feat/v2-integration. Source HEAD: a05d30b. Documentation checkpoint follows.
+2026-10-11 native Option A task is BLOCKED_RESOURCE_SWAP. Fresh baseline swap
+6061.94 MiB; guard observed 7747.25 MiB, growth 1685.31 MiB exceeding 1536 MiB.
+Disk at stop 5670 MiB, minimum this session 3409 MiB. Stop flag is durable in
+results-private/native-resource-stop.json. Do not restart during this stopped
+session or reset its baseline. Host-wide growth is not attributed to the engine.
 
-Single-cell array compatibility/export preservation, template-map ISFORMULA, typed
-XML cache startup, dirty dependency recalculation and sparse revision-checked
-publication are implemented. Engine remains `formualizer==0.11.1`. IMPORT_VERSION 7
-rejects stale cached snapshot formats with a named reimport error. Multi-cell arrays
-and dataTable remain rejected; unsupported structured/external/named-colon references
-fail closed rather than silently returning stale native values.
+Owner decision remains native formualizer==0.11.1 loading once per active copy,
+visible-only affected evaluation, stale block calculation, independent resident
+copy engines, engine_memory_budget_mb and idle LRU with editor protection.
+The previous single mutable template-keyed engine is superseded. This session
+dropped inherited pool/worker/pool-test changes and parked the warm-clear test
+in results-private/native-redirect-start.diff. No new production code remains.
+No engine implementation item, full verification or review gate completed.
 
-Prior v2 integration remains feature-complete on synthetic Mac tests. Office
-Windows/Excel/LAN acceptance, real-workbook parity and paid Strix acceptance remain
-unverified. Synthetic P6 results do not advance P1/P5 release gates.
+Native default-loader synthetic preflight: 150 cached formulas, 47 mismatches,
+all shared-formula followers. Native Workbook.load_path backend=calamine
+reproduced 47/150; backend=umya raised OSError. This is synthetic evidence only,
+not a real-template verdict. Aggregate report:
+.planning/excel-grid/results/native-load-preflight-2026-10-11.json.
+
+Prior implementation and verification below describe starting HEAD a05d30b and
+historical adapter work. They do not verify the new native design.
 
 ## Last handoff
+
+2026-10-11 native resume stopped by live swap guard before implementation. Exact
+planner invocation header confirmed gpt-5.6-sol/xhigh; its review did not finish
+and was terminated with only its owned subprocesses. No execution-lane worker
+was started, no real workbook/private directory read, no ports bound, no push.
+Both native synthetic probes completed; no Python full suite, web suite, Ruff,
+content guard or new exact Claude review ran in this stopped session.
+
+Inherited incompatible engine changes were dropped with git restore to HEAD.
+Original full diff preserved in results-private/native-redirect-start.diff.
+Superseded untracked WARM briefs and the previous guard JSON were archived as
+results-private/superseded-* and dropped from the worktree.
+Compatible regression test is parked there, not committed as failing code.
+Updated plan and lesson NATIVE-LOAD-KEEP-RESIDENT record the owner correction.
+Checkpoint commit is documentation and aggregate evidence only.
+
+Historical handoffs follow, including superseded candidate design and baselines.
+
+2026-10-11 20:58 IST resident attempt stopped. Baseline swap 4589.25 MiB; observed
+6277.06 MiB, growth 1687.81 MiB, exceeding the 1536 MiB limit. Free disk 4747 MiB,
+above the 2500 MiB floor. Recorded in results/warm-resource-live.json and private
+warm-resource-stop.json. Parent interrupted /root/resident_core immediately. The
+guard is host-wide; engine attribution is not established, and no scale load was
+running. Do not reset the baseline or resume during this stopped session.
+
+Retained partial code: template-keyed shared worker, ordinary no-reload clear,
+dead-child fail-closed behavior and revised pool/warm tests. Focused suite 18/18
+passed before the stop; full Python twice, web twice, Ruff, content guard and exact
+Claude review were not completed for this attempt. No core implementation item is
+accepted as finished. Known open issues include a forbidden spill export/reload
+fallback, copy-switch delta publication and resetting the engine after errors.
+Background startup/progress and memory/LRU/presence policy are not implemented.
+
+Pinned API investigation is in private warm-planner-preflight.md. No clone,
+deepcopy/pickle or native snapshot/restore exists. XLSX byte round-trip reparses;
+batch value/formula writes, targeted evaluation and undo/redo exist. Scalar None
+clear is supported, but native blocked-spill clearing/restoration is not proven
+correct without reload. The candidate remains one resident base plus serialized
+copy overlays, with logical state LRU and an explicit base memory limit.
 
 2026-10-11 20:27 IST final resume handoff: previous run was interrupted by a runner timeout. Read STATE/status,
 ran 112 focused tests successfully and committed retained work in focused items.
@@ -60,11 +108,46 @@ repaired. Raw logs: `results-private/p6-final-*`, `p6-resume-*`, `p6-isformula-*
 
 Prior controller checkpoint: `0079f66` prevents startup on an occupied port;
 `0ff02dd` corrects dropdown value types. Prior Round 5 review defects were closed.
-Known minor limits include font-dependent General precision, stale-template backup
-fail-closed, legacy restore relocation, unmeasured retry churn, and refresh returning
-to the copy list.
+  Known minor limits include font-dependent General precision, stale-template backup
+  fail-closed, legacy restore relocation, unmeasured retry churn, and refresh returning
+  to the copy list.
+
+  2026-10-11 resident execution checkpoint: locally changed `pp/engine/pool.py` and
+  `worker.py` so one child is keyed by template path and serially overlays logical
+  copies. Focused warm/pool tests pass 18/18. Ordinary cleared inputs no longer reload
+  a renamed source; a blocked dynamic spill still uses a documented Formualizer 0.11.1
+  export/reload fallback because native targeted evaluation cannot rebuild spill
+  metadata. Commit was sandbox-blocked because Git cannot create the linked-worktree
+  index lock outside the writable boundary. No benchmark or external action ran.
+  Dead resident children now fail closed with a named server-restart error, rather
+  than silently recreating a worker.
 
 ## Next task
+
+Start a new safe session with lower host pressure. Keep the approved native
+Option A decision. First reproduce and diagnose missing native shared-formula
+followers using existing synthetic fixture (seed 20261011, scale 0.0001) and pinned
+0.11.1. Close native-load correctness without per-cell formula registration or
+silent cached downstream results. Then implement the unchecked native execution
+items at the top of PLAN-P6-real-template.md, restore the parked warm-clear test,
+commit each finished item and run all required final verification/review gates.
+Controller owns >=20k real-workbook parity and edit/revert runs. No dependency
+upgrade, per-cell loader, template-shared mutable worker or spill reload is approved.
+
+Historical next-task notes below are superseded by this checkpoint and owner
+native-load decision; old startup timings are not native-engine measurements.
+
+Resume the approved resident task only in a new safe session after host pressure
+falls. Read WARM-CORE-BRIEF.md and WARM-ENGINE-HANDOFF.md, retain synthetic-only
+scope, take a fresh baseline and supervise the guard. Repair the partial core's
+known correctness/reload issues before committing it. Then finish background startup,
+UI progress, memory/presence policy, one-scale-at-a-time benchmarks and all review
+gates. No fitted curve or full-size fit decision exists for the resident design.
+
+The earlier Luna sandbox incorrectly treated historical swap as a current guard;
+the parent corrected it. The real stop above is a separate verified live event.
+Terra's commit was sandbox-denied; root Git access is available, but no unfinished
+implementation was committed. Final required verification remains pending.
 
 Profile 20% synthetic startup on the office server using the same seed and pinned
 engine. Separate eager native import, expanded formula registration and dependency
