@@ -1,6 +1,7 @@
 """Spawn-safe calculation worker entry point."""
 
 import os
+import resource
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -110,6 +111,18 @@ def _different(before, after):
     return not exactly_equal(before, after)
 
 
+def _engine_bytes():
+    """Peak size of this process, an upper bound the pool can budget against.
+
+    Peak rather than resident, because the budget must not be relieved while
+    the engine is still holding the memory it reached at its high-water mark.
+    """
+    import sys
+
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return int(peak if sys.platform == "darwin" else peak * 1024)
+
+
 def worker_loop(connection, copy_id: str) -> None:
     """Serve one copy serially inside its dedicated spawned process."""
     copy = WarmCopy(copy_id)
@@ -125,7 +138,9 @@ def worker_loop(connection, copy_id: str) -> None:
                 revision, template_path, changes, base_revision = request
                 batch = WorkerBatch(changes, base_revision)
             try:
-                connection.send((True, copy.apply(revision, template_path, batch)))
+                result = copy.apply(revision, template_path, batch)
+                result["engine_bytes"] = _engine_bytes()
+                connection.send((True, result))
             except Exception as exc:
                 copy = WarmCopy(copy_id)
                 connection.send((False, type(exc).__name__))

@@ -24,7 +24,7 @@ class Config:
     allowed_origins: tuple[str, ...]
     cookie_secure: bool
     replay_window: int
-    engine_ram_budget_mb: int
+    engine_memory_budget_mb: int
 
 
 def _read_settings(root: Path, settings_path: str | Path | None = None) -> dict:
@@ -199,6 +199,11 @@ def _path(root: Path, value: object, name: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _default_engine_memory_mb() -> int:
+    """The development Mac holds fewer resident engines than the office server."""
+    return 16_000 if sys.platform == "win32" else 3_000
+
+
 def _data_dir(root: Path, settings: dict) -> Path:
     return _path(root, os.environ.get("DATA_DIR", settings.get("data_dir", "data")), "data_dir")
 
@@ -229,7 +234,8 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
     database_path = resolve_database_path(root, settings_path)
     max_workers = _positive(settings.get("max_workers", 1), "max_workers", 128)
     replay_window = _positive(settings.get("replay_window", 1000), "replay_window", 1_000_000)
-    engine_ram = _positive(settings.get("engine_ram_budget_mb", 1024), "engine_ram_budget_mb", 1_000_000)
+    engine_memory = _positive(settings.get("engine_memory_budget_mb", _default_engine_memory_mb()),
+                              "engine_memory_budget_mb", 1_000_000)
     demo_mode = settings.get("demo_mode", False)
     if not isinstance(demo_mode, bool):
         raise ValueError("demo_mode must be boolean")
@@ -250,4 +256,4 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         candidates = sorted((root / "template").glob("*.xlsm"))
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
-                  origins, cookie_secure, replay_window, engine_ram)
+                  origins, cookie_secure, replay_window, engine_memory)
