@@ -59,8 +59,8 @@ test("snapshot preserves literal sheet view geometry and display metadata", () =
   assert.deepEqual(sheet.freeze, {
     xSplit: 1,
     ySplit: 2,
-    startRow: 5,
-    startColumn: 3,
+    startRow: 2,
+    startColumn: 1,
   });
   assert.deepEqual(sheetViewState(viewSheet), {
     zoom: 1.25,

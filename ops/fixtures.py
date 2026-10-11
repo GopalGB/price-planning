@@ -524,12 +524,14 @@ def make_fidelity(path):
         "E1": "Prefix", "F1": "Broken", "G1": "Plan",
         "A2": 10, "A3": 2, "B2": 10, "B3": 1, "C2": "match literal",
         "D2": "dup", "D3": "dup", "E2": "prefix-value", "F2": "#DIV/0!",
-        "G2": 4,
+        "G2": 4, "A5": "Threshold probe", "B5": 10, "A6": "Threshold probe",
     }.items():
         rules[address] = value
     rules["F2"].data_type = "e"
     rules["A4"] = 0.25
     rules["A4"].number_format = "0.00"
+    rules["B5"].protection = Protection(locked=False)
+    rules.protection.sheet = True
     rules.conditional_formatting.add(
         "A2:A3",
         FormulaRule(formula=["$B2>5"],
@@ -564,6 +566,11 @@ def make_fidelity(path):
             type="containsErrors",
             dxf=DifferentialStyle(font=Font(bold=True, color="FF9C0006")),
         ),
+    )
+    rules.conditional_formatting.add(
+        "A5:A6",
+        FormulaRule(formula=["$B$5>5"],
+                    fill=PatternFill(patternType="solid", fgColor="FFE2EFDA")),
     )
 
     drawings = book.create_sheet("Drawings")

@@ -147,9 +147,14 @@ export class TableFilterLayer {
     container.append(this.root);
   }
 
+  attach() {
+    if (!this.root.isConnected) this.container.append(this.root);
+    return this;
+  }
   show(filters, view) {
     this.filters = filters;
     this.view = view;
+    this.attach();
     const range = view.worksheet.getVisibleRange?.(),
       split = view.worksheet.getFreeze?.().xSplit ?? 0,
       visible = range && { ...range, frozenEndColumn: split - 1 },
@@ -256,6 +261,7 @@ export class TableFilterLayer {
     this.filters = [];
     this.menu = null;
     this.trigger = null;
+    this.attach();
     this.root.replaceChildren();
   }
 

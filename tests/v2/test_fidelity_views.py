@@ -64,7 +64,7 @@ class FidelityConditionalFormatRowsTest(unittest.TestCase):
 
     def test_six_rule_types_render_literal_styles_on_the_fixture(self):
         response = self.owner.get(
-            f"/api/copies/{self.copy['id']}/sheets/0/rows?start=0&count=3"
+            f"/api/copies/{self.copy['id']}/sheets/0/rows?start=0&count=6"
         )
         self.assertEqual(response.status_code, 200)
         rows = response.json()["rows"]
@@ -72,7 +72,7 @@ class FidelityConditionalFormatRowsTest(unittest.TestCase):
             (row, col): rows.get(str(row), {}).get(str(col), {}).get("style_override")
             for row, col in (
                 (1, 0), (2, 0), (1, 1), (2, 1), (1, 2), (2, 2),
-                (1, 3), (2, 3), (1, 4), (2, 4), (1, 5),
+                (1, 3), (2, 3), (1, 4), (2, 4), (1, 5), (4, 0), (5, 0),
             )
         }
         self.assertEqual(styles, {
@@ -87,7 +87,36 @@ class FidelityConditionalFormatRowsTest(unittest.TestCase):
             (1, 4): {"fill": "#CCFFFF"},
             (2, 4): None,
             (1, 5): {"bold": True, "color": "#9C0006"},
+            (4, 0): {"fill": "#E2EFDA"},
+            (5, 0): {"fill": "#E2EFDA"},
         })
+
+    def test_conditional_formatting_re_evaluates_after_an_input_edit(self):
+        def probe():
+            rows = self.owner.get(
+                f"/api/copies/{self.copy['id']}/sheets/0/rows?start=4&count=2"
+            ).json()["rows"]
+            return (rows["4"]["0"].get("style_override"),
+                    rows["5"]["0"].get("style_override"))
+
+        self.assertEqual(probe(), ({"fill": "#E2EFDA"}, {"fill": "#E2EFDA"}))
+        edit = self.owner.post(
+            f"/api/copies/{self.copy['id']}/ops",
+            {"op_id": "cf-probe-1", "action": "edit",
+             "cells": [{"sheet": 0, "r": 4, "c": 1, "v": 1, "expected_version": 0}]},
+            {"x-csrf-token": self.csrf},
+        )
+        self.assertEqual(edit.status_code, 200, edit.body)
+        self.assertEqual(probe(), (None, None))
+
+        restored = self.owner.post(
+            f"/api/copies/{self.copy['id']}/ops",
+            {"op_id": "cf-probe-2", "action": "edit",
+             "cells": [{"sheet": 0, "r": 4, "c": 1, "v": 9, "expected_version": 1}]},
+            {"x-csrf-token": self.csrf},
+        )
+        self.assertEqual(restored.status_code, 200, restored.body)
+        self.assertEqual(probe(), ({"fill": "#E2EFDA"}, {"fill": "#E2EFDA"}))
 
 
 class SheetViewAPIContractTests(unittest.TestCase):

@@ -68,14 +68,20 @@ function notePopup(document, note, id) {
 
 export class NoteLayer {
   constructor({ container }) {
+    this.container = container;
     this.root = container.ownerDocument.createElement("div");
     this.root.className = "note-layer";
     this.root.setAttribute("aria-label", "Workbook notes");
     container.append(this.root);
   }
 
+  attach() {
+    if (!this.root.isConnected) this.container.append(this.root);
+    return this;
+  }
   show(notes, view) {
     this.notes = notes;
+    this.attach();
     this.root.replaceChildren(...notes.map((note) => this.element(note, view)));
   }
 
@@ -85,6 +91,7 @@ export class NoteLayer {
 
   clear() {
     this.notes = [];
+    this.attach();
     this.root.replaceChildren();
   }
 

@@ -12,11 +12,15 @@ class Element {
     this.style = {};
     this.dataset = {};
     this.attributes = {};
+    this.isConnected = false;
   }
   append(...nodes) {
+    for (const node of nodes) node.isConnected = true;
     this.children.push(...nodes);
   }
   replaceChildren(...nodes) {
+    for (const child of this.children) child.isConnected = false;
+    for (const node of nodes) node.isConnected = true;
     this.children = nodes;
   }
   remove() {
@@ -24,6 +28,15 @@ class Element {
   }
   setAttribute(name, value) {
     this.attributes[name] = String(value);
+  }
+  querySelectorAll(selector) {
+    const wanted = selector.replace(/^\./, "");
+    const found = [];
+    for (const child of this.children) {
+      if (child.className?.split(" ").includes(wanted)) found.push(child);
+      found.push(...child.querySelectorAll(selector));
+    }
+    return found;
   }
 }
 
@@ -202,4 +215,27 @@ test("PlanningGrid redraws overlays from real Univer scroll and zoom events", ()
     zoom: 1,
   });
   assert.equal(calls[1].zoom, 1.5);
+});
+
+test("drawing layer re-attaches when the grid container is rebuilt", () => {
+  const document = documentBoundary(),
+    container = new Element("div", document),
+    view = {
+      worksheet: worksheetBoundary(),
+      scrollX: 0,
+      scrollY: 0,
+      zoom: 1,
+    },
+    layer = new DrawingLayer({ container, copyId: "copy", api: {}, toast() {} });
+
+  layer.show([picture], view);
+  assert.equal(container.children.length, 1);
+
+  // Univer mounts its own container after the app appends its overlays.
+  container.replaceChildren();
+  layer.show([picture], view);
+
+  assert.equal(container.children.length, 1);
+  assert.equal(container.children[0], layer.root);
+  assert.equal(layer.root.querySelectorAll(".drawing").length, 1);
 });

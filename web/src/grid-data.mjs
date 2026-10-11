@@ -217,11 +217,13 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
         zoomRatio: view.zoom,
         scrollLeft: view.scrollX,
         scrollTop: view.scrollY,
+        // Univer stores the frozen split, not the template scroll cell; the scroll
+        // position travels separately in scrollLeft/scrollTop.
         freeze: {
           xSplit: sheet.freeze?.cols ?? 0,
           ySplit: sheet.freeze?.rows ?? 0,
-          startRow: sheet.freeze?.start_row ?? sheet.freeze?.rows ?? 0,
-          startColumn: sheet.freeze?.start_col ?? sheet.freeze?.cols ?? 0,
+          startRow: sheet.freeze?.rows ?? 0,
+          startColumn: sheet.freeze?.cols ?? 0,
         },
         mergeData: (sheet.merges ?? []).map(
           ([startRow, startColumn, endRow, endColumn]) => ({

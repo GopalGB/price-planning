@@ -156,15 +156,22 @@ export function clipCell(element, cell, bounds, view) {
 
 export class DrawingLayer {
   constructor({ container, copyId, api, toast }) {
-    Object.assign(this, { copyId, api, toast });
+    Object.assign(this, { copyId, api, toast, container });
     this.root = container.ownerDocument.createElement("div");
     this.root.className = "drawing-layer";
     this.root.setAttribute("aria-label", "Workbook drawings");
     container.append(this.root);
   }
 
+  // Univer replaces the grid container children when it mounts or recreates a
+  // unit, so an overlay root can be detached while this layer still holds it.
+  attach() {
+    if (!this.root.isConnected) this.container.append(this.root);
+    return this;
+  }
   show(drawings, view) {
     this.drawings = drawings;
+    this.attach();
     this.root.replaceChildren(
       ...drawings.map((drawing) => this.element(drawing, view)),
     );
@@ -176,6 +183,7 @@ export class DrawingLayer {
 
   clear() {
     this.drawings = [];
+    this.attach();
     this.root.replaceChildren();
   }
 
