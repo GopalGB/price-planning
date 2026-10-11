@@ -34,11 +34,13 @@ DRAWING_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 XDR_NS = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
 REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 9
+IMPORT_VERSION = 10
 DRAWING_ASSET_BYTES = 5 * 1024 * 1024
 DRAWING_TOTAL_BYTES = 25 * 1024 * 1024
 DRAWING_ASSET_COUNT = 100
 DRAWING_COUNT = 500
+NOTE_COUNT = 10_000
+NOTE_TEXT_BYTES = 64 * 1024
 MAX_SHEET_ROWS = 1_048_576
 MAX_SHEET_COLS = 16_384
 CF_RULE_TYPES = frozenset({"expression", "cellIs", "containsText", "duplicateValues", "beginsWith", "containsErrors"})
@@ -74,6 +76,11 @@ class DrawingBudget:
     count: int = 0
 
 
+@dataclass
+class NoteBudget:
+    count: int = 0
+
+
 @dataclass(frozen=True)
 class SheetContext:
     archive: zipfile.ZipFile
@@ -82,6 +89,7 @@ class SheetContext:
     dxf_styles: list[dict]
     destination: Path
     drawing_budget: DrawingBudget
+    note_budget: NoteBudget
 
 
 @dataclass(frozen=True)
@@ -664,6 +672,87 @@ def _extend_for_drawings(metadata: dict) -> None:
         metadata["cols"] = max(metadata["cols"], *(item["col"] + 1 for item in markers))
 
 
+def _note_text(element: ET.Element) -> str:
+    return _visible_text(element.find(f"{NS}text"))
+
+
+def _record_note(context: SheetContext, sheet: int, element: ET.Element, authors: list[str]):
+    if context.note_budget.count >= NOTE_COUNT:
+        raise TemplateImportError("note count exceeds the import limit")
+    row, col = _cell_ref(element.get("ref", ""))
+    if row >= MAX_SHEET_ROWS or col >= MAX_SHEET_COLS:
+        raise TemplateImportError("note coordinate is invalid")
+    try:
+        author_id = int(element.get("authorId", ""))
+    except ValueError:
+        raise TemplateImportError("note author is invalid") from None
+    if not 0 <= author_id < len(authors):
+        raise TemplateImportError("note author is invalid") from None
+    author = authors[author_id]
+    text = _note_text(element)
+    if len(text.encode("utf-8")) > NOTE_TEXT_BYTES:
+        raise TemplateImportError("note text exceeds the import limit")
+    try:
+        context.database.execute("INSERT INTO notes VALUES (?,?,?,?,?)", (sheet, row, col, author, text))
+    except sqlite3.IntegrityError:
+        raise TemplateImportError("duplicate note coordinate") from None
+    context.note_budget.count += 1
+    return row, col
+
+
+def _stream_notes(context: SheetContext, part: str, sheet: int) -> tuple[int, int, int]:
+    authors, count, max_row, max_col, stack = [], 0, -1, -1, []
+    with context.archive.open(part) as stream:
+        for event, element in ET.iterparse(stream, events=("start", "end")):
+            if event == "start":
+                stack.append(element)
+                continue
+            if element.tag == f"{NS}author":
+                author = element.text or ""
+                if len(authors) >= NOTE_COUNT or len(author.encode("utf-8")) > NOTE_TEXT_BYTES:
+                    raise TemplateImportError("note authors exceed the import limit")
+                authors.append(author)
+            elif element.tag == f"{NS}comment":
+                row, col = _record_note(context, sheet, element, authors)
+                count, max_row, max_col = count + 1, max(max_row, row), max(max_col, col)
+            if len(stack) > 1 and element.tag in {f"{NS}author", f"{NS}comment"}:
+                stack[-2].remove(element)
+            stack.pop()
+    return count, max_row, max_col
+
+
+def _write_note_blocks(destination: Path, database: sqlite3.Connection, sheet: int) -> None:
+    directory, block, rows = destination / "notes" / str(sheet), None, {}
+    query = database.execute(
+        "SELECT row,col,author,text FROM notes WHERE sheet=? ORDER BY row,col", (sheet,)
+    )
+    for row, col, author, text in query:
+        next_block = row // 256
+        if block is not None and next_block != block:
+            _flush_block(directory, block, rows)
+            rows = {}
+        block = next_block
+        rows.setdefault(str(row % 256), {})[str(col)] = {"author": author, "text": text}
+    _flush_block(directory, block, rows)
+
+
+def _import_notes(context: SheetContext, sheet_part: str, metadata: dict) -> bool:
+    total = 0
+    for relationship in _relationships(context.archive, sheet_part).values():
+        if not relationship.get("Type", "").endswith("/comments"):
+            continue
+        part = _internal_target(sheet_part, relationship)
+        if part is None or part not in context.archive.namelist():
+            continue
+        count, max_row, max_col = _stream_notes(context, part, metadata["index"])
+        total += count
+        metadata["rows"] = max(metadata["rows"], max_row + 1)
+        metadata["cols"] = max(metadata["cols"], max_col + 1)
+    if total:
+        _write_note_blocks(context.destination, context.database, metadata["index"])
+    return total > 0
+
+
 def _record_cell(element: ET.Element, context: CellContext) -> tuple[int, int, dict]:
     reference = element.get("r")
     if reference is None:
@@ -714,8 +803,9 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     metadata["protected"] = protected
     relation_id = metadata.pop("drawing_relationship", None)
     metadata["drawings"] = (_drawing_items(context, sheet_info["part"], relation_id, index)
-                            if relation_id else [])
+                             if relation_id else [])
     _extend_for_drawings(metadata)
+    metadata["has_notes"] = _import_notes(context, sheet_info["part"], metadata)
     return metadata, protected
 
 
@@ -888,6 +978,7 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
     database.execute("CREATE TABLE formulas (sheet INTEGER, id INTEGER, row INTEGER, col INTEGER, formula TEXT, PRIMARY KEY(sheet,id))")
+    database.execute("CREATE TABLE notes (sheet INTEGER, row INTEGER, col INTEGER, author TEXT, text TEXT, PRIMARY KEY(sheet,row,col))")
     try:
         with zipfile.ZipFile(source.path) as archive:
             _shared_strings(archive, database)
@@ -895,7 +986,9 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
             dxf_styles = _dxf_data(archive)
             sheet_specs, names = _workbook_data(archive)
             metadata, protected = [], set()
-            context = SheetContext(archive, database, unlocked, dxf_styles, staging, DrawingBudget())
+            context = SheetContext(
+                archive, database, unlocked, dxf_styles, staging, DrawingBudget(), NoteBudget()
+            )
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)
                 metadata.append(info)

@@ -34,6 +34,70 @@ TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 
+NOTE_TEXT = "Budget <script>alert('x')</script> & literal"
+
+
+def make_notes(path):
+    """Create two worksheets with separate rich-text comment parts."""
+    book = Workbook()
+    first = book.active
+    first.title = "Notes"
+    first["A1"] = "Synthetic"
+    first.merge_cells("B2:C3")
+    first.freeze_panes = "B2"
+    first.column_dimensions["B"].width = 18
+    first.row_dimensions[2].height = 30
+    second = book.create_sheet("Second")
+    second["A1"] = "Synthetic"
+    book.save(path)
+    with zipfile.ZipFile(path, "r") as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    members["[Content_Types].xml"] = _note_content_types(members["[Content_Types].xml"])
+    for sheet in (1, 2):
+        members[f"xl/worksheets/_rels/sheet{sheet}.xml.rels"] = _note_sheet_rels(sheet)
+    members["xl/comments1.xml"] = _comment_part_one()
+    members["xl/comments2.xml"] = _comment_part_two()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
+def _note_content_types(data):
+    root = ET.fromstring(data)
+    namespace = "{http://schemas.openxmlformats.org/package/2006/content-types}"
+    content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml"
+    for number in (1, 2):
+        root.append(ET.Element(f"{namespace}Override", {
+            "PartName": f"/xl/comments{number}.xml", "ContentType": content_type,
+        }))
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _note_sheet_rels(number):
+    return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+ <Relationship Id="rIdNote" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/comments" Target="../comments{number}.xml"/>
+</Relationships>'''.encode()
+
+
+def _comment_part_one():
+    return b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+ <authors><author>A &lt;Admin&gt;</author></authors><commentList>
+  <comment ref="B2" authorId="0"><text><r><t>Budget &lt;script&gt;</t></r><r><t>alert('x')&lt;/script&gt; &amp; literal</t></r></text></comment>
+  <comment ref="B300" authorId="0"><text><t>Far block</t></text></comment>
+ </commentList>
+</comments>'''
+
+
+def _comment_part_two():
+    return b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+ <authors><author>Reviewer</author></authors><commentList>
+  <comment ref="D4" authorId="0"><text><r><t>Second line</t></r><r><t xml:space="preserve"> continues</t></r></text></comment>
+ </commentList>
+</comments>'''
+
 
 def make_drawings(path, image_bytes=TINY_PNG):
     """Create a small workbook with pictures, shapes, a macro, and a slicer frame."""

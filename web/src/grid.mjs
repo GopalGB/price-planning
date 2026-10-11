@@ -17,6 +17,7 @@ import {
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
 import { DrawingLayer } from "./drawings.mjs";
+import { NoteLayer } from "./notes.mjs";
 import {
   makeSnapshot,
   displayWidth,
@@ -107,6 +108,7 @@ export class PlanningGrid {
       api: this.api,
       toast: this.toast,
     });
+    this.noteLayer = new NoteLayer({ container: $("grid") });
     this.bindEvents();
     await this.switchSheet(this.sheet);
     if (this.closed) return;
@@ -429,6 +431,7 @@ export class PlanningGrid {
     const generation = ++this.generation;
     this.sheet = index;
     this.drawingLayer?.clear();
+    this.noteLayer?.clear();
     this.detailKey = "";
     this.cache = new RowCache(3);
     this.loadTokens = new Map();
@@ -594,8 +597,20 @@ export class PlanningGrid {
     };
   }
   renderDrawings() {
-    if (this.worksheet?.getSkeleton() && this.drawingLayer)
-      this.drawingLayer.refresh(this.drawingView());
+    if (!this.worksheet?.getSkeleton()) return;
+    const view = this.drawingView();
+    this.drawingLayer?.refresh(view);
+    this.noteLayer?.refresh(view);
+  }
+  renderNotes() {
+    if (!this.noteLayer || !this.worksheet?.getSkeleton()) return;
+    const notes = [];
+    for (const [key, cell] of this.store.cells) {
+      const [sheet, r, c] = key.split(":").map(Number);
+      if (sheet === this.sheet && cell.note)
+        notes.push({ sheet, r, c, ...cell.note });
+    }
+    this.noteLayer.show(notes, this.drawingView());
   }
   paint(coordinates) {
     if (!this.worksheet || this.closed) return;
@@ -635,6 +650,7 @@ export class PlanningGrid {
       : `Saved · rev ${this.store.inputRevision}`;
     $("save-chip").classList.toggle("busy", busy);
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
+    if (!coordinates) this.renderNotes();
     this.selectionInfo();
   }
   refreshInputHighlight(enabled) {
@@ -916,8 +932,11 @@ export class PlanningGrid {
   keyDown(event) {
     if (this.closed || $("modal").open) return;
     const input = event.target.closest(
-      "input,textarea,select,[contenteditable=true]",
-    );
+        "input,textarea,select,[contenteditable=true]",
+      ),
+      overlayControl = event.target.closest(
+        ".drawing-layer button,.drawing-layer input,.drawing-layer select,.drawing-layer textarea,.note-layer button,.note-layer input,.note-layer select,.note-layer textarea",
+      );
     const mod = event.ctrlKey || event.metaKey,
       key = event.key.toLowerCase(),
       undo = serverUndoShortcut(
@@ -953,6 +972,7 @@ export class PlanningGrid {
       else this.copyDirection(key === "r");
     }
     if (event.key === "Delete" || event.key === "Backspace") {
+      if (overlayControl) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       this.clearSelection();
@@ -1399,6 +1419,7 @@ export class PlanningGrid {
     document.removeEventListener("keydown", this.keyHandler, true);
     for (const d of [...this.disposables, ...this.highlights]) d.dispose();
     this.drawingLayer?.dispose();
+    this.noteLayer?.dispose();
     this.univer?.dispose();
     if (import.meta.env.DEV) delete window.planning;
   }

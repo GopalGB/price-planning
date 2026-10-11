@@ -6,6 +6,8 @@
 Synthetic fixtures only. No private workbook access. pp/engine and calculation pipeline remain read-only.
 
 ## Progress
+Notes Phase3 implementation passes scoped Python27/27 and final popup web23/23. Drawings are committed082fea3; table styles/filtering are next. All features remain unaccepted pending Opus and final whole-track checks.
+
 CF locally committed f764aaa; drawing feature implementation passes relevant Python 32/32 and web 26/26. Final acceptance remains unaccepted pending exact Opus review and whole-track gates. Notes are next. Earlier checkpoints below are historical.
 
 CF F1-F7 correction implementation is tested (full Python 302/302, web 105/105) but unaccepted. Fresh exact Opus 5.5 re-review is blocked by weekly quota, HTTP 429, with provider-reported reset 7:30pm (Asia/Calcutta). Controller continues approved local work; no substitute or paid lane. Final acceptance remains blocked.
@@ -35,3 +37,7 @@ Bounds: 10000 formula targets/request, 256 formulas and 10000 referenced cells/p
 ## Drawings contract
 
 Internal PNG/JPEG/GIF assets only, with authenticated copy access. Macro identifiers remain verbatim; authorized POST action returns 501 and a clear message, viewer writes fail 403 and inaccessible copies fail 404. Anchors use installed Univer public skeleton, scroll and zoom APIs with DOM presentation, because the pinned preset has no sheets-drawing plugin. Limits: 500 anchored drawings, 100 asset references, 5 MiB per asset, 25 MiB cumulative. Slicer presentation is view only.
+
+## Notes contract
+
+Legacy notes are imported into row-block snapshots and returned as optional cell.note with author/text. Red markers and safe DOM hover/focus tooltips use live merged-cell/freeze/scroll/zoom geometry. Eviction and sheet switches remove markers; focused overlay controls do not execute destructive grid shortcuts. Limits: 10000 notes and 64 KiB UTF-8 per note/author. Notes are read only; threaded comments are not supported.

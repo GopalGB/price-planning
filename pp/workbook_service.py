@@ -30,6 +30,11 @@ class TemplateSnapshot:
         path = self.path / "sheets" / str(sheet) / f"{block}.json"
         return _read_json(path) if path.exists() else {}
 
+    @lru_cache(maxsize=64)
+    def note_block(self, sheet: int, block: int) -> dict:
+        path = self.path / "notes" / str(sheet) / f"{block}.json"
+        return _read_json(path) if path.exists() else {}
+
     def cell(self, sheet: int, row: int, col: int) -> dict:
         cells = self.block(sheet, row // 256).get(str(row % 256), {})
         if str(col) in cells:
@@ -156,8 +161,8 @@ class WorkbookService:
                    "col_widths": {key: round(value * 7 + 5) for key, value in item["col_widths"].items()},
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
-                   "merges": item["merges"],
-                   "has_conditional_formats": item.get("has_conditional_formats", False),
+                    "merges": item["merges"],
+                    "has_conditional_formats": item.get("has_conditional_formats", False),
                    **({"drawings": item["drawings"]} if item.get("drawings") else {})}
                   for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
@@ -213,6 +218,7 @@ class WorkbookService:
         override_rows = _group_rows(render.overrides)
         result_rows = _group_rows(render.results)
         style_rows = _group_rows(style_overrides)
+        note_rows = _requested_notes(render.snapshot, query)
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
@@ -220,7 +226,8 @@ class WorkbookService:
             overrides = override_rows.get(row, {})
             results = result_rows.get(row, {})
             styles = style_rows.get(row, {})
-            coordinates = set(cells) | {str(col) for col in overrides | results | styles}
+            notes = note_rows.get(row, {})
+            coordinates = set(cells) | {str(col) for col in overrides | results | styles | notes}
             rendered = {}
             for col_text in sorted(coordinates, key=int):
                 col = int(col_text)
@@ -241,6 +248,8 @@ class WorkbookService:
                     record["ver"] = 0
                 if col in styles:
                     record["style_override"] = styles[col]
+                if col in notes:
+                    record["note"] = notes[col]
                 rendered[col_text] = record
             if rendered:
                 output[str(row)] = rendered
@@ -334,6 +343,17 @@ def _group_rows(records):
     grouped = {}
     for (row, col), value in records.items():
         grouped.setdefault(row, {})[col] = value
+    return grouped
+
+
+def _requested_notes(snapshot, query):
+    grouped = {}
+    end = query.start + query.count
+    for block in range(query.start // 256, (end - 1) // 256 + 1):
+        for offset, columns in snapshot.note_block(query.sheet, block).items():
+            row = block * 256 + int(offset)
+            if query.start <= row < end:
+                grouped[row] = {int(col): note for col, note in columns.items()}
     return grouped
 
 

@@ -79,6 +79,32 @@ export function drawingBounds(drawing, view) {
   return boundsFor(drawing, sheetGeometry(view));
 }
 
+export function cellBounds(cell, view) {
+  const geometry = sheetGeometry(view),
+    coordinate = geometry.skeleton.getCellWithCoordByIndex(
+      cell.r,
+      cell.c,
+      false,
+    ),
+    marker = { row: cell.r, col: cell.c },
+    start = screenPoint(
+      { x: coordinate.startX, y: coordinate.startY },
+      marker,
+      geometry,
+    ),
+    end = screenPoint(
+      { x: coordinate.endX, y: coordinate.endY },
+      marker,
+      geometry,
+    );
+  return {
+    left: start.x,
+    top: start.y,
+    width: end.x - start.x,
+    height: end.y - start.y,
+  };
+}
+
 function position(element, bounds) {
   Object.assign(element.style, {
     left: `${bounds.left}px`,
@@ -118,6 +144,14 @@ function clipFrozen(element, drawing, frame) {
     );
   }
   element.style.clipPath = `inset(${top}px 0px 0px ${left}px)`;
+}
+
+export function clipCell(element, cell, bounds, view) {
+  clipFrozen(
+    element,
+    { anchor: { from: { row: cell.r, col: cell.c } } },
+    { view, bounds, geometry: sheetGeometry(view) },
+  );
 }
 
 export class DrawingLayer {
