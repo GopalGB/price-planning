@@ -9,6 +9,8 @@ import {
   escapeHTML as e,
   roleOptions,
   loadHome,
+  copyRows,
+  startCopyPolling,
   dispatchHomeAction,
   readInputHighlightPreference,
   writeInputHighlightPreference,
@@ -23,7 +25,8 @@ let user = null,
   grid = null,
   signup = false,
   toastTimer,
-  navigation = 0;
+  navigation = 0,
+  stopHomePolling = () => {};
 export function toast(text) {
   $("toast").textContent = text;
   $("toast").hidden = false;
@@ -31,6 +34,8 @@ export function toast(text) {
   toastTimer = setTimeout(() => ($("toast").hidden = true), 6500);
 }
 function showAuth() {
+  stopHomePolling();
+  stopHomePolling = () => {};
   navigation++;
   grid?.dispose();
   grid = null;
@@ -62,7 +67,9 @@ function showAuth() {
   };
 }
 async function showHome() {
-  navigation++;
+  stopHomePolling();
+  stopHomePolling = () => {};
+  const visit = ++navigation;
   grid?.dispose();
   grid = null;
   activeCopy = null;
@@ -72,6 +79,7 @@ async function showHome() {
   $("save-chip").textContent = user.name;
   $("save-chip").classList.remove("busy");
   const home = await loadHome(api, categoryId);
+  if (visit !== navigation) return;
   categories = home.categories;
   copies = home.copies;
   categoryId = home.categoryId;
@@ -100,8 +108,19 @@ async function showHome() {
   $("copy-create").onclick = createCopyModal;
   $("category-create").onclick = categoryModal;
   if ($("category-members")) $("category-members").onclick = membersModal;
+  stopHomePolling = startCopyPolling(api, {
+    categoryId,
+    isCurrent: () => visit === navigation,
+    onCopies: (latest) => {
+      copies = latest;
+      const rows = $("copy-rows");
+      if (rows) rows.innerHTML = copyRows(copies);
+    },
+  });
 }
 async function openCopy(copy) {
+  stopHomePolling();
+  stopHomePolling = () => {};
   const visit = ++navigation;
   grid?.dispose();
   $("view").onclick = null;

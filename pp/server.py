@@ -169,7 +169,11 @@ async def _copies(request: Request):
     services = _services(request)
     if request.method == "GET":
         user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
-        return JSONResponse({"copies": services.copies.list(user["id"], request.query_params.get("category"))})
+        copies = services.copies.list(user["id"], request.query_params.get("category"))
+        occupants = services.hub.occupants({copy["id"] for copy in copies})
+        for copy in copies:
+            copy["occupants"] = occupants.get(copy["id"], [])
+        return JSONResponse({"copies": copies})
     services, user, _ = _write_auth(request)
     body = await _body(request)
     copy = services.copies.create(user["id"], body, _session_check(request, services))

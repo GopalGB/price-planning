@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 from tests.v2.api_support import APIFixture
+from tests.v2.ws_client import WebSocketClient
 
 
 class CopyAPIContractTests(unittest.TestCase):
@@ -44,6 +45,63 @@ class CopyAPIContractTests(unittest.TestCase):
                        {"email": "copy-member@example.test", "role": None},
                        {"x-csrf-token": self.owner_csrf})
         self.assertEqual(self.member.get("/api/copies").json()["copies"], [])
+
+    def test_listing_reports_authorized_live_team_and_history_stats(self):
+        """Stale, revoked, and duplicate tabs must not inflate the live team."""
+        copy = self.owner.post("/api/copies", {
+            "category_id": self.category_id, "name": "Team Plan",
+            "visibility": "category", "default_role": "editor",
+        }, {"x-csrf-token": self.owner_csrf}).json()["copy"]
+
+        def connect(client):
+            socket = WebSocketClient(
+                self.fixture.app, f"/api/copies/{copy['id']}/ws", client.cookies
+            )
+            self.addCleanup(socket.close)
+            self.assertTrue(socket.accepted)
+            socket.send_json({"type": "hello", "last_revision": 0})
+            while socket.receive_json()["type"] != "calc_state":
+                pass
+            return socket
+
+        owner_first, owner_second = connect(self.owner), connect(self.owner)
+        member = connect(self.member)
+        listed = self.owner.get(f"/api/copies?category={self.category_id}").json()["copies"][0]
+        self.assertEqual(
+            [(person["id"], person["name"]) for person in listed["occupants"]],
+            [(self.member_user["id"], "Copy Member"), (self.owner_user["id"], "Copy Owner")],
+        )
+        self.assertEqual((listed["edit_count"], listed["last_edit"]), (0, None))
+
+        edited = self.member.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "team-edit", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        }, {"x-csrf-token": self.member_csrf})
+        self.assertEqual(edited.status_code, 200)
+        listed = self.owner.get(f"/api/copies?category={self.category_id}").json()["copies"][0]
+        self.assertEqual(listed["edit_count"], 1)
+        self.assertEqual(listed["last_edit"]["by"], {
+            "id": self.member_user["id"], "name": "Copy Member",
+        })
+
+        owner_first.close()
+        listed = self.owner.get(f"/api/copies?category={self.category_id}").json()["copies"][0]
+        self.assertEqual({person["id"] for person in listed["occupants"]}, {
+            self.member_user["id"], self.owner_user["id"],
+        })
+        member.close()
+        listed = self.owner.get(f"/api/copies?category={self.category_id}").json()["copies"][0]
+        self.assertEqual([person["id"] for person in listed["occupants"]], [self.owner_user["id"]])
+
+        revoked = connect(self.member)
+        response = self.owner.put(f"/api/categories/{self.category_id}/members", {
+            "email": "copy-member@example.test", "role": None,
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(revoked.wait_closed(timeout=1), 4403)
+        listed = self.owner.get(f"/api/copies?category={self.category_id}").json()["copies"][0]
+        self.assertEqual([person["id"] for person in listed["occupants"]], [self.owner_user["id"]])
+        owner_second.close()
 
     def test_unfiltered_listing_keeps_named_private_share_across_categories_and_revokes_it(self):
         """A private named share must list without leaking unrelated private copies."""

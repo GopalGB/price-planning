@@ -51,6 +51,22 @@ class LiveHub:
         with self._lock:
             self._connections.discard(connection)
 
+    def occupants(self, copy_ids):
+        with self._lock:
+            connections = [item for item in self._connections
+                           if item.copy_id in copy_ids and item.ready]
+        active = {}
+        for connection in connections:
+            if not self.authorized(connection):
+                continue
+            users = active.setdefault(connection.copy_id, {})
+            users[connection.user["id"]] = {
+                "id": connection.user["id"], "name": connection.user["name"],
+                "color": _color(connection.user["id"]),
+            }
+        return {copy_id: sorted(users.values(), key=lambda user: (user["name"], user["id"]))
+                for copy_id, users in active.items()}
+
     async def broadcast(self, copy_id: str, payload: dict):
         async with _serialized(self._publication_lock(copy_id)):
             with self._lock:
