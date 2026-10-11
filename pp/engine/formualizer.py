@@ -192,12 +192,16 @@ def _expand_defined_names(formulas, names, ranges):
         for token in tokens:
             if token.type != "OPERAND" or token.subtype != "RANGE":
                 continue
+            if "[" in token.value:
+                raise EngineError("unsupported structured formula reference")
             if _static_reference(token.value, names):
                 continue
+            if ":" in token.value:
+                raise EngineError("unsupported named range operator")
             target = _defined_name_target(token.value, coordinate[0], names, ranges)
             if target is not ABSENT and not binding_formula and target is not None:
                 token.value, changed = target, True
-            elif target is not ABSENT or "!" in token.value or "[" in token.value:
+            elif target is not ABSENT or "!" in token.value:
                 opaque.add(coordinate)
         if changed:
             formulas[coordinate] = "=" + "".join(token.value for token in tokens)

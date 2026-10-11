@@ -9,6 +9,7 @@ import zipfile
 from openpyxl import Workbook
 from openpyxl.styles import Protection
 from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.table import Table
 
 from ops.engine_scale_fixture import generate
 from tests.v2.support import TMP
@@ -259,6 +260,46 @@ class CachedStartupTests(unittest.TestCase):
             self.assertIn((0, 0, 2, 11), first)
             self.assertIn((0, 0, 1, 14), second)
             self.assertIn((0, 0, 2, 15), second)
+
+    def test_structured_table_reference_fails_before_cached_value_can_go_stale(self):
+        from pp.engine.formualizer import EngineError, FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "structured-reference.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["Price", "Total"])
+            sheet.append([1])
+            sheet.append([2])
+            sheet.add_table(Table(displayName="Prices", ref="A1:A3"))
+            sheet["B1"] = "=SUM(Prices[Price])"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {"B1": ("3", None)}}
+            )
+
+            with self.assertRaisesRegex(EngineError, "structured formula reference"):
+                FormualizerAdapter.load(source)
+
+    def test_named_range_operator_fails_before_cached_value_can_go_stale(self):
+        from pp.engine.formualizer import EngineError, FormualizerAdapter
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "named-range-operator.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"], sheet["B1"] = 1, 2
+            workbook.defined_names.add(
+                DefinedName("PriceStart", attr_text="'Sheet'!$A$1")
+            )
+            sheet["C1"] = "=SUM(PriceStart:B1)"
+            workbook.save(source)
+            _replace_formula_values(
+                source, {"xl/worksheets/sheet1.xml": {"C1": ("3", None)}}
+            )
+
+            with self.assertRaisesRegex(EngineError, "named range operator"):
+                FormualizerAdapter.load(source)
 
     def test_ordinary_let_local_is_not_a_dynamic_target(self):
         from pp.engine.formualizer import FormualizerAdapter
