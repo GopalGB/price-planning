@@ -447,3 +447,23 @@ class TemplateImporterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiteralListValidationTests(unittest.TestCase):
+    def test_literal_list_members_take_the_type_excel_enters_on_pick(self):
+        """Picking "1" from an Excel dropdown enters the number 1, so SUM and lookups see a number."""
+        from pp.template.importer import NS, _validation
+
+        node = ET.fromstring(
+            f'<dataValidation xmlns="{NS[1:-1]}" type="list" sqref="B2">'
+            '<formula1>"1,2.5,A,TRUE,007,1E400"</formula1></dataValidation>'
+        )
+        self.assertEqual(_validation(node)["list"], [1, 2.5, "A", True, 7, "1E400"])
+
+    def test_ops_accept_the_numeric_member_and_reject_its_text_twin(self):
+        from pp.ops import _validate_rule
+
+        rule = {"type": "list", "list": [1, 2], "showErrorMessage": True}
+        _validate_rule(rule, 1, {"sheet": 0, "r": 1, "c": 1})
+        with self.assertRaises(Exception):
+            _validate_rule(rule, "1", {"sheet": 0, "r": 1, "c": 1})

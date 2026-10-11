@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -28,7 +29,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 5
+IMPORT_VERSION = 6
 
 
 class TemplateImportError(Exception):
@@ -341,7 +342,7 @@ def _validation(node: ET.Element) -> dict:
         result["operator"] = node.get("operator")
     if result["type"] == "list":
         if formulas[0] and formulas[0].startswith('"'):
-            result["list"] = formulas[0].strip('"').split(",")
+            result["list"] = [_list_member(item) for item in formulas[0].strip('"').split(",")]
         elif formulas[0] is not None:
             result["formula1"] = formulas[0]
     elif formulas[0] is not None:
@@ -349,6 +350,14 @@ def _validation(node: ET.Element) -> dict:
         if formulas[1] is not None:
             result["max"] = _literal(formulas[1])
     return result
+
+
+def _list_member(item: str):
+    # Excel enters a picked member as if typed: "1" becomes the number 1, "true" the boolean.
+    if item.strip().upper() in {"TRUE", "FALSE"}:
+        return item.strip().upper() == "TRUE"
+    value = _literal(item)
+    return value if not isinstance(value, float) or math.isfinite(value) else item
 
 
 def _literal(value: str):
