@@ -70,6 +70,27 @@ def _without_provenance(data, root):
     return _rewrite_zip(data, root, transform)
 
 
+def _with_shared_strings(data, root, xml):
+    relationship = (
+        b'<Relationship Id="rIdSharedStrings" '
+        b'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" '
+        b'Target="sharedStrings.xml"/>'
+    )
+    content_type = (
+        b'<Override PartName="/xl/sharedStrings.xml" '
+        b'ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>'
+    )
+
+    def transform(name, content):
+        if name == "xl/_rels/workbook.xml.rels":
+            return content.replace(b"</Relationships>", relationship + b"</Relationships>")
+        if name == "[Content_Types].xml":
+            return content.replace(b"</Types>", content_type + b"</Types>")
+        return content
+
+    return _rewrite_zip(data, root, transform, (("xl/sharedStrings.xml", xml),))
+
+
 class UploadAPITests(unittest.TestCase):
     def setUp(self):
         self.fixture = APIFixture()
@@ -277,6 +298,137 @@ class UploadAPITests(unittest.TestCase):
                 with self.assertRaises(AppError) as raised:
                     _validate_archive(candidate)
                 self.assertEqual((raised.exception.status, raised.exception.code), (413, "archive_bomb"))
+
+    def test_styles_theme_and_renamed_shared_strings_have_tree_limits(self):
+        from pp.upload import _validate_archive
+
+        shared_xml = (
+            b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            b'<si><t>shared</t></si></sst>'
+        )
+        shared = _with_shared_strings(self.exported, self.fixture.root, shared_xml)
+
+        def rename_shared(name, content):
+            if name == "xl/sharedStrings.xml":
+                return None
+            return content.replace(b"sharedStrings.xml", b"metadata/strings.bin")
+
+        renamed = _rewrite_zip(
+            shared, self.fixture.root, rename_shared,
+            (("xl/metadata/strings.bin", shared_xml),),
+        )
+        cases = (
+            ("styles", self.exported, "MAX_STYLES_XML"),
+            ("theme", self.exported, "MAX_THEME_XML"),
+            ("renamed shared strings", renamed, "MAX_SHARED_STRINGS_XML"),
+        )
+        for name, data, limit in cases:
+            with self.subTest(name=name):
+                candidate = self.fixture.root / f"{name.replace(' ', '-')}.xlsx"
+                candidate.write_bytes(data)
+                with mock.patch(f"pp.upload.{limit}", 16, create=True), \
+                        mock.patch("pp.upload.validate_package",
+                                   side_effect=AssertionError("tree parser reached")):
+                    with self.assertRaises(AppError) as raised:
+                        _validate_archive(candidate)
+                self.assertEqual((raised.exception.status, raised.exception.code),
+                                 (413, "archive_bomb"))
+
+    def test_shared_string_count_and_decoded_bytes_are_bounded(self):
+        from pp.upload import _validate_archive
+
+        xml = (
+            b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            b'<si><t>abcd</t></si><si><t>efgh</t></si></sst>'
+        )
+        data = _with_shared_strings(self.exported, self.fixture.root, xml)
+        candidate = self.fixture.root / "shared-string-limits.xlsx"
+        candidate.write_bytes(data)
+        cases = (("MAX_SHARED_STRING_COUNT", 1), ("MAX_SHARED_STRING_BYTES", 3))
+        for limit, value in cases:
+            with self.subTest(limit=limit), mock.patch(f"pp.upload.{limit}", value), \
+                    mock.patch("pp.upload.validate_package",
+                               side_effect=AssertionError("package parser reached")):
+                with self.assertRaises(AppError) as raised:
+                    _validate_archive(candidate)
+                self.assertEqual((raised.exception.status, raised.exception.code),
+                                 (413, "archive_bomb"))
+
+    def test_shared_string_bytes_are_bounded_while_each_item_streams(self):
+        from pp.upload import _iter_shared_strings
+
+        root = ET.Element(f"{{{upload_module.MAIN_NS}}}sst")
+        item = ET.SubElement(root, f"{{{upload_module.MAIN_NS}}}si")
+        text = ET.SubElement(item, f"{{{upload_module.MAIN_NS}}}t")
+        text.text = "abcd"
+
+        def events():
+            yield "start", root
+            yield "start", item
+            yield "start", text
+            yield "end", text
+            raise AssertionError("parser advanced beyond the decoded-byte limit")
+
+        archive = mock.Mock()
+        archive.namelist.return_value = ["xl/sharedStrings.xml"]
+        archive.open.return_value = io.BytesIO()
+        with mock.patch("pp.upload.MAX_SHARED_STRING_BYTES", 3), \
+                mock.patch("pp.upload.ET.iterparse", return_value=events()):
+            with self.assertRaises(AppError) as raised:
+                list(_iter_shared_strings(archive, "xl/sharedStrings.xml"))
+        self.assertEqual((raised.exception.status, raised.exception.code),
+                         (413, "archive_bomb"))
+
+    def test_shared_strings_join_rich_text_without_phonetic_runs(self):
+        from pp.upload import _shared_strings
+
+        xml = (
+            b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            b'<si><r><t>ab</t></r><rPh><t>phonetic</t></rPh><r><t>cd</t></r></si>'
+            b'</sst>'
+        )
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("xl/sharedStrings.xml", xml)
+        with zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive:
+            self.assertEqual(_shared_strings(archive, "xl/sharedStrings.xml"), ["abcd"])
+
+    def test_worksheet_structure_records_and_bytes_are_bounded(self):
+        from pp.upload import _sheet_structure
+
+        xml = (
+            b'<worksheet xmlns="http://schemas.openxmlformats.org/'
+            b'spreadsheetml/2006/main"><sheetData><row r="1" ht="22" '
+            b'customHeight="1"/></sheetData></worksheet>'
+        )
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w") as archive:
+            archive.writestr("xl/worksheets/sheet1.xml", xml)
+        cases = (("MAX_STRUCTURE_RECORDS", 0), ("MAX_STRUCTURE_BYTES", 1))
+        for limit, value in cases:
+            with self.subTest(limit=limit), \
+                    zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive, \
+                    mock.patch(f"pp.upload.{limit}", value, create=True):
+                with self.assertRaises(AppError) as raised:
+                    _sheet_structure(archive, "xl/worksheets/sheet1.xml", False)
+                self.assertEqual((raised.exception.status, raised.exception.code),
+                                 (413, "archive_bomb"))
+
+    def test_row_spans_are_not_treated_as_structural_changes(self):
+        def add_spans(name, content):
+            if name == "xl/worksheets/sheet1.xml":
+                return content.replace(b"<row ", b'<row spans="1:8" ')
+            return content
+
+        upload = _rewrite_zip(self.exported, self.fixture.root, add_spans)
+
+        response = self.preview(self.owner, self.owner_csrf, upload)
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertFalse(any(
+            item["sheet"] == "Inputs" and "row, column" in item["reason"]
+            for item in response.json()["ignored"]
+        ))
 
     def test_utf16_and_chunk_split_xml_declarations_are_rejected(self):
         utf16 = ('<?xml version="1.0" encoding="UTF-16"?>'

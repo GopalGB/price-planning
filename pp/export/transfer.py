@@ -1044,15 +1044,21 @@ def _content_types(archive):
 
 
 def _relationship_references(stream):
-    references = set()
-    for _, element in ET.iterparse(stream, events=("end",)):
+    references, stack = set(), []
+    for event, element in ET.iterparse(stream, events=("start", "end")):
+        if event == "start":
+            stack.append(element)
+            continue
         for name, value in element.attrib.items():
             if not name.startswith("{"):
                 continue
             namespace, local = name[1:].split("}", 1)
             if namespace in REL_ATTRIBUTE_NAMESPACES and local in {"id", "embed", "link"}:
                 references.add(value)
+        if len(stack) > 1:
+            stack[-2].remove(element)
         element.clear()
+        stack.pop()
     return references
 
 

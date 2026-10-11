@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path, PurePosixPath
 import re
@@ -42,11 +43,18 @@ RATIO_MIN_BYTES = 1024 * 1024
 MAX_TREE_XML = 8 * 1024 * 1024
 MAX_RELATIONSHIP_XML = 4 * 1024 * 1024
 MAX_CUSTOM_PROPERTIES_XML = 1024 * 1024
+MAX_STYLES_XML = 16 * 1024 * 1024
+MAX_SHARED_STRINGS_XML = 64 * 1024 * 1024
+MAX_THEME_XML = 4 * 1024 * 1024
+MAX_SHARED_STRING_COUNT = 500_000
+MAX_SHARED_STRING_BYTES = 32 * 1024 * 1024
+MAX_STRUCTURE_RECORDS = 100_000
+MAX_STRUCTURE_BYTES = 16 * 1024 * 1024
 PREVIEW_SECONDS = 15 * 60
 MAX_ACTIVE_PREVIEWS = 128
 MAX_PREVIEW_CACHE_BYTES = 2 * MAX_UNCOMPRESSED
 XML_RELATIONSHIP_ROLES = {
-    "officeDocument", "worksheet", "sharedStrings", "custom-properties",
+    "officeDocument", "worksheet", "styles", "sharedStrings", "theme", "custom-properties",
 }
 
 
@@ -416,8 +424,11 @@ def _validate_archive(path):
                 _safe_member(info)
             if sum(item.file_size for item in infos) > MAX_UNCOMPRESSED:
                 raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
-            _validate_xml_members(archive)
+            graph = _validate_xml_members(archive)
             _validate_workbook_content_type(archive)
+            for _ in _iter_shared_strings(
+                    archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")):
+                pass
         validate_package(path)
     except AppError:
         raise
@@ -446,7 +457,7 @@ def _validate_xml_members(archive):
             raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
         if parser is not None:
             parser.Parse(b"", True)
-    _validate_xml_roles(archive, xml_members)
+    return _validate_xml_roles(archive, xml_members)
 
 
 def _xml_members(archive):
@@ -494,6 +505,12 @@ def _tree_xml_limit(name):
         return MAX_TREE_XML
     if name == "docProps/custom.xml":
         return MAX_CUSTOM_PROPERTIES_XML
+    if name == "xl/styles.xml":
+        return MAX_STYLES_XML
+    if name == "xl/sharedStrings.xml":
+        return MAX_SHARED_STRINGS_XML
+    if name.startswith("xl/theme/"):
+        return MAX_THEME_XML
     return None
 
 
@@ -517,6 +534,23 @@ def _validate_xml_roles(archive, xml_members):
                     422, "invalid_workbook",
                     "Workbook XML relationship has a non-XML content type",
                 )
+            limit = _role_xml_limit(role)
+            if target is not None and limit is not None:
+                _screen_xml(archive, archive.getinfo(target), limit)
+    return graph
+
+
+def _role_xml_limit(role):
+    return {
+        "styles": MAX_STYLES_XML,
+        "sharedStrings": MAX_SHARED_STRINGS_XML,
+        "theme": MAX_THEME_XML,
+    }.get(role)
+
+
+def _workbook_role_part(graph, role, fallback):
+    return next((item["target"] for item in graph["xl/workbook.xml"]
+                 if item["type"].rsplit("/", 1)[-1] == role), fallback)
 
 
 def _unsafe_xml(*_args):
@@ -541,7 +575,9 @@ def _read_workbook(path, provenance=True, snapshot=None):
         names = tuple(item["name"] for item in sheets)
         if len({name.casefold() for name in names}) != len(names):
             raise AppError(422, "invalid_workbook", "Workbook sheet names must be unique")
-        strings = _shared_strings(archive)
+        strings = _shared_strings(
+            archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")
+        )
         indexes = ({item["name"].casefold(): item["index"] for item in snapshot.sheets}
                    if snapshot is not None else {})
         all_formulas = snapshot is None and not provenance
@@ -568,37 +604,104 @@ def _read_workbook(path, provenance=True, snapshot=None):
     return WorkbookModel(names, cells, structures, fingerprint, props, ignored)
 
 
+def _structure_record(element):
+    local = _local(element.tag)
+    if local == "mergeCell":
+        return "merge", element.get("ref", "").upper()
+    if local == "row":
+        values = tuple(sorted(
+            (name, value) for name, value in element.attrib.items()
+            if name not in {"r", "spans"}
+        ))
+        return ("row", (element.get("r"), values)) if values else (None, None)
+    if local == "col":
+        return "column", tuple(sorted(element.attrib.items()))
+    if local == "sheetProtection":
+        return "protection", tuple(sorted(element.attrib.items()))
+    return None, None
+
+
+def _structure_bytes(value):
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value.encode("utf-8"))
+    return sum(_structure_bytes(item) for item in value)
+
+
+def _bounded_structure(record, usage):
+    if record[0] is None:
+        return record
+    usage[0] += 1
+    usage[1] += _structure_bytes(record[1])
+    if usage[0] > MAX_STRUCTURE_RECORDS or usage[1] > MAX_STRUCTURE_BYTES:
+        raise AppError(413, "archive_bomb", "Workbook structure exceeds the safe limit")
+    return record
+
+
 def _sheet_structure(archive, part, hidden):
-    merges, rows, columns, protection = [], [], [], None
+    merges, rows, columns, protection, stack, usage = [], [], [], None, [], [0, 0]
     with archive.open(part) as stream:
-        for _, element in ET.iterparse(stream, events=("end",)):
-            local = _local(element.tag)
-            if local == "mergeCell":
-                merges.append(element.get("ref", "").upper())
-            elif local == "row":
-                values = tuple(sorted(
-                    (name, value) for name, value in element.attrib.items() if name != "r"
-                ))
-                if values:
-                    rows.append((element.get("r"), values))
-            elif local == "col":
-                columns.append(tuple(sorted(element.attrib.items())))
-            elif local == "sheetProtection":
-                protection = tuple(sorted(element.attrib.items()))
+        for event, element in ET.iterparse(stream, events=("start", "end")):
+            if event == "start":
+                stack.append(element)
+                continue
+            kind, value = _bounded_structure(_structure_record(element), usage)
+            if kind == "merge":
+                merges.append(value)
+            elif kind == "row":
+                rows.append(value)
+            elif kind == "column":
+                columns.append(value)
+            elif kind == "protection":
+                protection = value
+            if len(stack) > 1:
+                stack[-2].remove(element)
             element.clear()
+            stack.pop()
     return hidden, tuple(sorted(merges)), tuple(rows), tuple(columns), protection
 
 
-def _shared_strings(archive):
-    if "xl/sharedStrings.xml" not in archive.namelist():
-        return []
-    output = []
-    with archive.open("xl/sharedStrings.xml") as stream:
-        for _, element in ET.iterparse(stream, events=("end",)):
-            if _local(element.tag) == "si":
-                output.append("".join(node.text or "" for node in element.iter() if _local(node.tag) == "t"))
-                element.clear()
-    return output
+def _iter_shared_strings(archive, part):
+    if part not in archive.namelist():
+        return
+    count, decoded, phonetic_depth, buffer, stack = 0, 0, 0, None, []
+    with archive.open(part) as stream:
+        for event, element in ET.iterparse(stream, events=("start", "end")):
+            local = _local(element.tag)
+            if event == "start":
+                stack.append(element)
+                if local == "si":
+                    count += 1
+                    if count > MAX_SHARED_STRING_COUNT:
+                        raise AppError(
+                            413, "archive_bomb", "Workbook shared strings exceed the safe limit"
+                        )
+                    buffer = StringIO()
+                elif local == "rPh" and buffer is not None:
+                    phonetic_depth += 1
+                continue
+            if local == "t" and buffer is not None and not phonetic_depth:
+                fragment = element.text or ""
+                decoded += len(fragment.encode("utf-8"))
+                if decoded > MAX_SHARED_STRING_BYTES:
+                    raise AppError(413, "archive_bomb", "Workbook shared strings exceed the safe limit")
+                if fragment:
+                    buffer.write(fragment)
+            elif local == "si" and buffer is not None:
+                yield buffer.getvalue()
+                buffer.close()
+                buffer = None
+            elif local == "rPh" and buffer is not None:
+                phonetic_depth -= 1
+            if len(stack) > 1:
+                stack[-2].remove(element)
+            element.clear()
+            stack.pop()
+
+
+def _shared_strings(archive, part):
+    return list(_iter_shared_strings(archive, part))
 
 
 def _sheet_cells(request):
