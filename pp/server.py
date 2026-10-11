@@ -87,6 +87,10 @@ def create_app(context: ServiceContext) -> Starlette:
               _pivot_refresh, methods=["POST"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/view",
               _dashboard_view, methods=["GET", "PUT"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/category/refresh",
+              _category_pivot_refresh, methods=["POST"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/category/view",
+              _category_dashboard_view, methods=["GET", "PUT"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
@@ -245,6 +249,31 @@ async def _dashboard_view(request: Request):
     if request.method == "GET":
         return JSONResponse(services.dashboard_views.get(query))
     body = services.dashboard_views.update(
+        query, await _body(request), _session_check(request, services)
+    )
+    return JSONResponse(body)
+
+
+async def _category_pivot_refresh(request: Request):
+    services, user = _read_auth(request)
+    require_origin(request.headers.get("origin"), services.config.allowed_origins)
+    query = PivotQuery(request.path_params["copy_id"], user["id"],
+                       request.path_params["sheet"], request.path_params["name"],
+                       await _body(request))
+    body = await asyncio.to_thread(services.pivots.refresh_category, query)
+    return JSONResponse(body)
+
+
+async def _category_dashboard_view(request: Request):
+    if request.method == "GET":
+        services, user = _read_auth(request)
+    else:
+        services, user, _ = _write_auth(request)
+    query = DashboardViewQuery(request.path_params["copy_id"], user["id"],
+                               request.path_params["sheet"], request.path_params["name"])
+    if request.method == "GET":
+        return JSONResponse(services.dashboard_views.get_category(query))
+    body = services.dashboard_views.update_category(
         query, await _body(request), _session_check(request, services)
     )
     return JSONResponse(body)

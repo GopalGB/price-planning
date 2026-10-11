@@ -12,7 +12,7 @@ import threading
 
 from openpyxl.utils.datetime import from_ISO8601, to_excel
 
-from .authorization import effective_role
+from .authorization import authorized_category_copies, effective_role
 from .errors import AppError, ErrorPayload
 from .workbook_service import TemplateCatalog
 
@@ -20,6 +20,7 @@ from .workbook_service import TemplateCatalog
 RESULT_CACHE_LIMIT = 32
 SOURCE_CACHE_LIMIT = 2
 INCREMENTAL_CHANGE_LIMIT = 128
+COPY_SLICER = "__pp_copy__"
 CELL_RANGE = re.compile(r"\$?([A-Z]{1,3})\$?([1-9][0-9]*)(?::\$?([A-Z]{1,3})\$?([1-9][0-9]*))?")
 
 
@@ -83,6 +84,47 @@ class PivotService:
         self._cache_put(self._results, key, result, RESULT_CACHE_LIMIT)
         latest = {"overlays": overlays, "result": result}
         self._cache_put(self._latest, latest_key, latest, RESULT_CACHE_LIMIT)
+        return deepcopy(result)
+
+    def refresh_category(self, query: PivotQuery) -> dict:
+        with self.database.read_transaction() as connection:
+            base, copies = authorized_category_copies(
+                connection, query.copy_id, query.user_id
+            )
+            if base is None:
+                raise AppError(404, "not_found", "Category dashboard not found")
+            if any(copy["template_id"] != base["template_id"] for copy in copies):
+                raise AppError(
+                    409, "incompatible_templates", "Category copies use incompatible templates"
+                )
+            revisions = [_revision(copy) for copy in copies]
+            pending = [item for item in revisions
+                       if item["calculated_revision"] < item["input_revision"]]
+            if pending:
+                raise AppError(409, "category_calculation_pending", ErrorPayload(
+                    "Category dashboard calculations are pending", {"revisions": revisions}
+                ))
+            snapshot = self.templates.get(connection, base["template_id"])
+            pivot, slicers = _metadata(snapshot, query.sheet, query.name)
+            options, selected = _category_options(
+                pivot, slicers, query.options or {}, copies
+            )
+            key = _category_result_key(snapshot, base, revisions, query, options, selected)
+            cached = self._cache_get(self._results, key)
+            if cached is not None:
+                return deepcopy(cached)
+            source = self._source(snapshot, pivot, slicers)
+            rows = []
+            for copy in copies:
+                overlays = _overlays(connection, copy["id"], copy, source)
+                rows.extend(_current_rows(source, overlays, copy["id"]))
+            if selected is not None:
+                rows = [row for row in rows if row[2] in selected]
+            result = _refresh_rows(pivot, slicers, source, rows, options, base, query.sheet)
+            result["pivot"] = _category_summary(pivot, base, query.sheet, revisions)
+            result["slicers"].append(_copy_slicer(copies, selected, slicers))
+            _ensure_output_safe(connection, snapshot, pivot, query.sheet, base, result)
+        self._cache_put(self._results, key, result, RESULT_CACHE_LIMIT)
         return deepcopy(result)
 
     def cache_info(self):
@@ -269,6 +311,50 @@ def _options(pivot, slicers, raw):
     return {"page": page, "slicers": slicer, "collapsed": collapsed}
 
 
+def _category_options(pivot, slicers, raw, copies):
+    if not isinstance(raw, dict) or set(raw) - {"page", "slicers", "collapsed"}:
+        raise AppError(422, "invalid", "Pivot options are invalid")
+    raw_slicers = raw.get("slicers", [])
+    if not isinstance(raw_slicers, list):
+        raise AppError(422, "invalid", "Pivot slicers filters are invalid")
+    raw_slicers = raw_slicers or []
+    copy_filters = [item for item in raw_slicers
+                    if isinstance(item, dict) and item.get("name") == COPY_SLICER]
+    imported = [item for item in raw_slicers
+                if not (isinstance(item, dict) and item.get("name") == COPY_SLICER)]
+    if len(copy_filters) > 1:
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    selected = _copy_selection(copy_filters[0] if copy_filters else None, copies)
+    clean = {key: value for key, value in raw.items() if key != "slicers"}
+    if raw_slicers is not None:
+        clean["slicers"] = imported
+    return _options(pivot, slicers, clean), selected
+
+
+def _copy_selection(raw, copies):
+    if raw is None:
+        return None
+    if (not isinstance(raw, dict) or set(raw) != {"name", "field", "items"}
+            or raw["name"] != COPY_SLICER or raw["field"] != -1):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    items = raw["items"]
+    if items is None:
+        return None
+    allowed = {copy["id"] for copy in copies}
+    if not isinstance(items, list):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    selected = []
+    for item in items:
+        if (not isinstance(item, dict) or set(item) != {"kind", "value"}
+                or item["kind"] != "string" or not isinstance(item["value"], str)
+                or item["value"] not in allowed):
+            raise AppError(422, "invalid", "Category copy filter is invalid")
+        selected.append(item["value"])
+    if len(set(selected)) != len(selected):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    return frozenset(selected)
+
+
 def _default_page(pivot):
     return [{"field": item["field"], "items": [item["cache_index"]]
              if item["cache_index"] is not None else None} for item in pivot["page_fields"]]
@@ -373,6 +459,14 @@ def _result_key(snapshot, copy, query, options):
             query.sheet, query.name, encoded)
 
 
+def _category_result_key(snapshot, base, revisions, query, options, selected):
+    encoded = json.dumps(options, sort_keys=True, separators=(",", ":"))
+    return ("category", snapshot.hash, base["category_id"], query.user_id,
+            tuple((item["copy_id"], item["input_revision"], item["calculated_revision"])
+                  for item in revisions), query.sheet, query.name, encoded,
+            None if selected is None else tuple(sorted(selected)))
+
+
 def _latest_key(snapshot, query, options):
     encoded = json.dumps(options, sort_keys=True, separators=(",", ":"))
     return snapshot.hash, query.copy_id, query.sheet, query.name, encoded
@@ -468,6 +562,10 @@ def _column_path(pivot, column):
 
 def _refresh(pivot, slicers, source, overlays, options, copy, sheet):
     rows = _current_rows(source, overlays)
+    return _refresh_rows(pivot, slicers, source, rows, options, copy, sheet)
+
+
+def _refresh_rows(pivot, slicers, source, rows, options, copy, sheet):
     clauses = _clauses(pivot, options)
     visible = [row for row in rows if _matches(row, clauses)]
     cube = _aggregate(pivot, visible)
@@ -476,14 +574,14 @@ def _refresh(pivot, slicers, source, overlays, options, copy, sheet):
     cells = _cells(pivot, output_rows, columns, cube, options)
     return {
         "pivot": _pivot_summary(pivot, copy, sheet),
-        "filters": _filter_summary(pivot, source, overlays, options),
+        "filters": _filter_summary(pivot, rows, options),
         "columns": [_public_column(item) for item in columns],
         "rows": [_public_row(item) for item in output_rows], "cells": cells,
-        "slicers": _slicer_states(pivot, slicers, rows, source, overlays, options),
+        "slicers": _slicer_states(pivot, slicers, rows, options),
     }
 
 
-def _current_rows(source, overlays):
+def _current_rows(source, overlays, copy_id=None):
     changes = defaultdict(dict)
     for (row, col), value in overlays.items():
         field = col - source.first_col
@@ -497,12 +595,12 @@ def _current_rows(source, overlays):
             for field, value in changes[offset].items():
                 mutable[source.positions[field]] = value
             values = tuple(mutable)
-        output.append((source, values))
+        output.append((source, values) if copy_id is None else (source, values, copy_id))
     return output
 
 
 def _value(rows, row, field):
-    source, _ = rows
+    source = rows[0]
     return row[source.positions[field]]
 
 
@@ -522,7 +620,7 @@ def _clauses(pivot, options):
 
 
 def _matches(rows, clauses, excluded=None):
-    source, row = rows
+    source, row = rows[:2]
     for origin, name, field, selected in clauses:
         if excluded == (origin, name, field):
             continue
@@ -595,7 +693,7 @@ def _aggregate(pivot, rows):
     row_fields = pivot["row_fields"]
     column_fields = [field for field in pivot["column_fields"] if field >= 0]
     for current in rows:
-        source, row = current
+        source, row = current[:2]
         row_key = tuple(_dimension_value(current, row, field) for field in row_fields)
         column_key = tuple(_dimension_value(current, row, field) for field in column_fields)
         values = [_value(current, row, item["field"]) for item in pivot["data_fields"]]
@@ -606,7 +704,7 @@ def _aggregate(pivot, rows):
 
 
 def _dimension_value(current, row, field):
-    source, _ = current
+    source = current[0]
     return _dimension_from_value(source.metadata, field, _value(current, row, field))
 
 
@@ -868,7 +966,20 @@ def _pivot_summary(pivot, copy, sheet):
             "calculated_revision": copy["calculated_revision"]}
 
 
-def _slicer_states(pivot, slicers, rows, source, overlays, options):
+def _revision(copy):
+    return {"copy_id": copy["id"], "input_revision": copy["input_revision"],
+            "calculated_revision": copy["calculated_revision"]}
+
+
+def _category_summary(pivot, base, sheet, revisions):
+    return {"name": pivot["name"], "sheet": sheet,
+            "location": deepcopy(pivot["location"]),
+            "captions": deepcopy(pivot["captions"]), "style": deepcopy(pivot["style"]),
+            "scope": "category", "category_id": base["category_id"],
+            "revisions": revisions}
+
+
+def _slicer_states(pivot, slicers, rows, options):
     clauses = _clauses(pivot, options)
     output = []
     for slicer in slicers:
@@ -877,7 +988,8 @@ def _slicer_states(pivot, slicers, rows, source, overlays, options):
         items = []
         excluded = ("slicers", slicer["name"], slicer["field"])
         imported = {item["cache_index"]: item for item in slicer["items"]}
-        current_keys = set(_current_counts(source, overlays, slicer["field"]))
+        current_keys = {_dimension_value(current, current[1], slicer["field"])
+                        for current in rows}
         available_keys = {_dimension_value(current, current[1], slicer["field"])
                           for current in rows if _matches(current, clauses, excluded)}
         keys = list(imported) + sorted(
@@ -897,6 +1009,30 @@ def _slicer_states(pivot, slicers, rows, source, overlays, options):
     return output
 
 
+def _copy_slicer(copies, selected, slicers):
+    chosen = {copy["id"] for copy in copies} if selected is None else selected
+    return {"name": COPY_SLICER, "field": -1, "caption": "Copy",
+            "style": "SlicerStyleLight1", "column_count": 1,
+            "row_height_emu": 241300, "anchor": _copy_anchor(slicers),
+            "items": [{"cache_index": None,
+                       "selector": {"kind": "string", "value": copy["id"]},
+                       "caption": copy["name"], "selected": copy["id"] in chosen,
+                       "available": True, "no_data": False} for copy in copies]}
+
+
+def _copy_anchor(slicers):
+    if not slicers:
+        return {"from": {"row": 16, "column": 8, "row_offset": 0, "column_offset": 0},
+                "to": {"row": 29, "column": 11, "row_offset": 0, "column_offset": 0}}
+    first_row = min(item["anchor"]["from"]["row"] for item in slicers)
+    last_row = max(item["anchor"]["to"]["row"] for item in slicers)
+    last_col = max(item["anchor"]["to"]["column"] for item in slicers)
+    return {"from": {"row": first_row, "column": last_col + 1,
+                     "row_offset": 0, "column_offset": 0},
+            "to": {"row": last_row, "column": last_col + 4,
+                   "row_offset": 0, "column_offset": 0}}
+
+
 def _slicer_selection(slicer, field, options):
     matching = [item["items"] for item in options["slicers"]
                 if item.get("name") == slicer["name"]]
@@ -906,11 +1042,11 @@ def _slicer_selection(slicer, field, options):
     return selected
 
 
-def _filter_summary(pivot, source, overlays, options):
+def _filter_summary(pivot, rows, options):
     result = deepcopy(options)
     for item in result["page"]:
         field = pivot["fields"][item["field"]]
-        keys = set(_current_counts(source, overlays, item["field"]))
+        keys = {_dimension_value(current, current[1], item["field"]) for current in rows}
         item["available_items"] = [{"cache_index": key if isinstance(key, int) else None,
                                     "selector": _selector(field, key),
                                     "caption": _caption(field, key)}

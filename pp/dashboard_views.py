@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 import json
 import math
 
-from .authorization import effective_role
+from .authorization import authorized_category_copies, effective_role
 from .errors import AppError
 from .workbook_service import TemplateCatalog
+
+
+COPY_SLICER = "__pp_copy__"
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,40 @@ class DashboardViewService:
             )
         return _response(query.pivot, view, updated_at)
 
+    def get_category(self, query: DashboardViewQuery) -> dict:
+        with self.database.read_transaction() as connection:
+            category_id, pivot, slicers, copies = self._category_metadata(connection, query)
+            row = connection.execute(
+                "SELECT view_json,updated_at FROM pp_category_dashboard_views "
+                "WHERE category_id=? AND user_id=? AND sheet=? AND pivot_name=?",
+                (category_id, query.user_id, query.sheet, query.pivot),
+            ).fetchone()
+        if row is None:
+            return _response(query.pivot, _default_category_view(pivot, slicers), None)
+        try:
+            view = _normalize_category(
+                json.loads(row["view_json"]), pivot, slicers, copies, strict=False
+            )
+        except (AppError, json.JSONDecodeError):
+            view = _default_category_view(pivot, slicers)
+        return _response(query.pivot, view, row["updated_at"])
+
+    def update_category(self, query: DashboardViewQuery, raw: dict, session_check) -> dict:
+        with self.database.transaction() as connection:
+            session_check(connection)
+            category_id, pivot, slicers, copies = self._category_metadata(connection, query)
+            view = _normalize_category(raw, pivot, slicers, copies, strict=True)
+            updated_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            connection.execute(
+                "INSERT INTO pp_category_dashboard_views"
+                "(category_id,user_id,sheet,pivot_name,view_json,updated_at) "
+                "VALUES(?,?,?,?,?,?) ON CONFLICT(category_id,user_id,sheet,pivot_name) "
+                "DO UPDATE SET view_json=excluded.view_json,updated_at=excluded.updated_at",
+                (category_id, query.user_id, query.sheet, query.pivot,
+                 json.dumps(view, sort_keys=True, separators=(",", ":")), updated_at),
+            )
+        return _response(query.pivot, view, updated_at)
+
     def _metadata(self, connection, query):
         copy = connection.execute(
             "SELECT * FROM pp_copies WHERE id=?", (query.copy_id,)
@@ -75,6 +112,26 @@ class DashboardViewService:
         slicers = [item for item in snapshot.sheets[query.sheet].get("slicers", [])
                    if item["pivot_cache_id"] == pivot["cache_id"]]
         return pivot, slicers
+
+    def _category_metadata(self, connection, query):
+        base, copies = authorized_category_copies(connection, query.copy_id, query.user_id)
+        if base is None:
+            raise AppError(404, "not_found", "Category dashboard not found")
+        if any(copy["template_id"] != base["template_id"] for copy in copies):
+            raise AppError(
+                409, "incompatible_templates", "Category copies use incompatible templates"
+            )
+        snapshot = self.templates.get(connection, base["template_id"])
+        if not isinstance(query.sheet, int) or not 0 <= query.sheet < len(snapshot.sheets):
+            raise AppError(422, "invalid", "Pivot sheet is invalid")
+        pivots = [item for item in snapshot.sheets[query.sheet].get("pivots", [])
+                  if item["name"] == query.pivot]
+        if len(pivots) != 1:
+            raise AppError(404, "not_found", "Pivot table not found")
+        pivot = pivots[0]
+        slicers = [item for item in snapshot.sheets[query.sheet].get("slicers", [])
+                   if item["pivot_cache_id"] == pivot["cache_id"]]
+        return base["category_id"], pivot, slicers, copies
 
 
 def _response(name, view, updated_at):
@@ -96,6 +153,12 @@ def _default_view(pivot, slicers):
     return {"page": page, "slicers": filters, "collapsed": []}
 
 
+def _default_category_view(pivot, slicers):
+    view = _default_view(pivot, slicers)
+    view["slicers"].append({"name": COPY_SLICER, "field": -1, "items": None})
+    return view
+
+
 def _normalize(raw, pivot, slicers):
     if not isinstance(raw, dict) or set(raw) != {"page", "slicers", "collapsed"}:
         raise AppError(422, "invalid", "Dashboard view is invalid")
@@ -111,6 +174,50 @@ def _normalize(raw, pivot, slicers):
     )
     collapsed = _collapsed(raw["collapsed"], pivot)
     return {"page": pages, "slicers": filters, "collapsed": collapsed}
+
+
+def _normalize_category(raw, pivot, slicers, copies, strict):
+    if not isinstance(raw, dict) or set(raw) != {"page", "slicers", "collapsed"}:
+        raise AppError(422, "invalid", "Dashboard view is invalid")
+    if not isinstance(raw["slicers"], list):
+        raise AppError(422, "invalid", "Dashboard filters are invalid")
+    copy_filters = [item for item in raw["slicers"]
+                    if isinstance(item, dict) and item.get("name") == COPY_SLICER]
+    imported = [item for item in raw["slicers"]
+                if not (isinstance(item, dict) and item.get("name") == COPY_SLICER)]
+    if len(copy_filters) > 1:
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    normalized = _normalize({**raw, "slicers": imported}, pivot, slicers)
+    copy_filter = copy_filters[0] if copy_filters else {
+        "name": COPY_SLICER, "field": -1, "items": None
+    }
+    normalized["slicers"].append(_normalize_copy_filter(copy_filter, copies, strict))
+    return normalized
+
+
+def _normalize_copy_filter(raw, copies, strict):
+    if (not isinstance(raw, dict) or set(raw) != {"name", "field", "items"}
+            or raw["name"] != COPY_SLICER or raw["field"] != -1):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    items = raw["items"]
+    if items is None:
+        return {"name": COPY_SLICER, "field": -1, "items": None}
+    if not isinstance(items, list):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    allowed, selected = {copy["id"] for copy in copies}, []
+    for item in items:
+        valid = (isinstance(item, dict) and set(item) == {"kind", "value"}
+                 and item["kind"] == "string" and isinstance(item["value"], str))
+        if not valid or (strict and item["value"] not in allowed):
+            raise AppError(422, "invalid", "Category copy filter is invalid")
+        if item["value"] in allowed and item["value"] not in selected:
+            selected.append(item["value"])
+    if not strict and items and not selected:
+        return {"name": COPY_SLICER, "field": -1, "items": None}
+    if strict and len(selected) != len(items):
+        raise AppError(422, "invalid", "Category copy filter is invalid")
+    return {"name": COPY_SLICER, "field": -1,
+            "items": [{"kind": "string", "value": value} for value in selected]}
 
 
 def _filters(raw, pivot, allowed_fields, slicers):

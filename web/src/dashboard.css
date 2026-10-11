@@ -11,12 +11,15 @@
 .dashboard-page-filter,
 .dashboard-slicer,
 .dashboard-outline,
-.dashboard-refresh {
+.dashboard-refresh,
+.dashboard-scope,
+.dashboard-mode-label {
   position: absolute;
   pointer-events: auto;
 }
 
-.dashboard-refresh {
+.dashboard-refresh,
+.dashboard-scope {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -25,6 +28,17 @@
   padding: 1px 4px;
   background: #f6fbff;
   color: #1f1f1f;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-mode-label {
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 5px;
+  background: #fff4ce;
+  color: #5f4700;
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

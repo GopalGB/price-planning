@@ -4,6 +4,7 @@ const EMU_TO_PX = 96 / 914400;
 const DEFAULT_FONT = "Calibri";
 const SOURCE_REFRESH_DELAY = 200;
 const PENDING_REFRESH_DELAY = 500;
+const CATEGORY_POLL_DELAY = 2000;
 const DEFAULT_SCROLL = {
   sheetViewStartRow: 0,
   sheetViewStartColumn: 0,
@@ -282,14 +283,14 @@ export function anchorViewportRect(anchor, geometry) {
 export function slicerModels(rendered, imported) {
   const metadata = new Map(imported.map((item) => [item.name, item]));
   return rendered.flatMap((slicer) => {
-    const source = metadata.get(slicer.name);
+    const source = metadata.get(slicer.name) ?? (slicer.anchor ? slicer : null);
     if (!source) return [];
     return [
       {
         ...slicer,
         anchor: source.anchor,
         columnCount: slicer.column_count ?? source.column_count,
-        rowHeightEmu: source.row_height_emu,
+        rowHeightEmu: slicer.row_height_emu ?? source.row_height_emu,
         items: slicer.items.map((item) => ({
           ...item,
           state: item.no_data
@@ -333,6 +334,18 @@ function includesSelector(items, selector) {
   return items?.some((item) => sameSelector(item, selector));
 }
 
+function revisionKey(revisions) {
+  return JSON.stringify(
+    revisions
+      .map((item) => [
+        item.copy_id ?? item.id,
+        item.input_revision,
+        item.calculated_revision,
+      ])
+      .sort((left, right) => String(left[0]).localeCompare(String(right[0]))),
+  );
+}
+
 function dashboardExtents(sheet, pivot, result) {
   let rows = sheet.rows ?? 0,
     columns = sheet.cols ?? 0;
@@ -344,20 +357,26 @@ function dashboardExtents(sheet, pivot, result) {
   include(r1, c1);
   include(r2, c2);
   for (const cell of result.cells ?? []) include(cell.r, cell.c);
-  for (const slicer of sheet.slicers ?? [])
+  for (const slicer of [
+    ...(sheet.slicers ?? []),
+    ...(result.slicers ?? []).filter((item) => item.anchor),
+  ])
     for (const point of [slicer.anchor.from, slicer.anchor.to])
       include(point.row, point.column);
   return { rows, columns };
 }
 
-function requestPath(copyId, sheet, name, resource) {
-  return `/copies/${encodeURIComponent(copyId)}/sheets/${sheet}/pivots/${encodeURIComponent(name)}/${resource}`;
+function requestPath(copyId, sheet, name, resource, scope = "copy") {
+  const category = scope === "category" ? "/category" : "";
+  return `/copies/${encodeURIComponent(copyId)}/sheets/${sheet}/pivots/${encodeURIComponent(name)}${category}/${resource}`;
 }
 
 export class DashboardController {
   constructor({
     api,
     copyId,
+    copyName,
+    categoryId,
     mutate,
     gridElement,
     worksheet,
@@ -365,12 +384,15 @@ export class DashboardController {
     focusGrid = () => {},
     fontFamily = () => DEFAULT_FONT,
     roleStyles = () => ({}),
+    onScopeChange = () => {},
     setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
     clearTimer = (id) => globalThis.clearTimeout(id),
   }) {
     Object.assign(this, {
       api,
       copyId,
+      copyName,
+      categoryId,
       mutate,
       gridElement,
       worksheet,
@@ -378,6 +400,7 @@ export class DashboardController {
       focusGrid,
       fontFamily,
       roleStyles,
+      onScopeChange,
       setTimer,
       clearTimer,
     });
@@ -387,6 +410,9 @@ export class DashboardController {
     this.viewQueue = Promise.resolve();
     this.confirmedViews = new Map();
     this.refreshTimer = null;
+    this.categoryPollTimer = null;
+    this.categoryPollGeneration = 0;
+    this.categoryRevisionKey = null;
     this.refreshing = false;
     this.sourceRevision = -1;
     this.ranges = [];
@@ -395,6 +421,8 @@ export class DashboardController {
     this.controls = [];
     this.scrolls = new Map();
     this.scroll = DEFAULT_SCROLL;
+    this.scope = "copy";
+    this.preferredScope = "copy";
   }
 
   async open(sheet) {
@@ -404,6 +432,8 @@ export class DashboardController {
     this.sheet = sheet;
     this.scroll = this.scrolls.get(sheet.index) ?? DEFAULT_SCROLL;
     this.pivot = sheet.pivots?.[0];
+    this.scope = this.pivot && this.categoryId ? this.preferredScope : "copy";
+    this.onScopeChange(this.readOnly());
     if (!this.pivot) return false;
     try {
       await this.viewQueue;
@@ -413,6 +443,7 @@ export class DashboardController {
         sheet.index,
         this.pivot.name,
         "view",
+        this.scope,
       );
       this.view = await this.api.request(path);
       if (token !== this.token) return false;
@@ -420,7 +451,14 @@ export class DashboardController {
       await this.refresh(token);
       return token === this.token;
     } catch (error) {
-      if (token === this.token) this.toast(error.message);
+      if (token === this.token) {
+        this.toast(error.message);
+        if (
+          this.scope === "category" &&
+          (error.status === 404 || error.error === "incompatible_templates")
+        )
+          return this.switchScope("copy");
+      }
       return false;
     }
   }
@@ -439,6 +477,7 @@ export class DashboardController {
       this.sheet.index,
       this.pivot.name,
       "refresh",
+      this.scope,
     );
     try {
       const result = await this.api.request(path, {
@@ -451,9 +490,21 @@ export class DashboardController {
       return true;
     } catch (error) {
       if (!this.currentRefresh(token, generation)) return false;
-      if (error.status === 409 && error.error === "calculation_pending") {
+      if (
+        error.status === 409 &&
+        ["calculation_pending", "category_calculation_pending"].includes(
+          error.error,
+        )
+      ) {
         this.retryRefresh(token, generation);
         return false;
+      }
+      if (
+        this.scope === "category" &&
+        (error.status === 404 || error.error === "incompatible_templates")
+      ) {
+        this.toast(error.message);
+        return this.switchScope("copy");
       }
       this.setRefreshing(false);
       this.toast(error.message);
@@ -469,6 +520,7 @@ export class DashboardController {
         this.sheet.index,
         this.pivot.name,
         "view",
+        this.scope,
       ),
       body = viewBody(clone(view));
     this.view = clone(view);
@@ -508,6 +560,7 @@ export class DashboardController {
       return false;
     this.sourceRevision = calculatedRevision;
     this.cancelRefreshTimer();
+    if (this.scope === "category") this.cancelCategoryPoll();
     const token = this.token,
       generation = ++this.refreshGeneration;
     this.setRefreshing(true);
@@ -516,6 +569,18 @@ export class DashboardController {
       return this.performRefresh(token, generation);
     }, SOURCE_REFRESH_DELAY);
     return true;
+  }
+
+  async switchScope(scope) {
+    if (!this.categoryId || !["copy", "category"].includes(scope)) return false;
+    if (scope === this.scope) return true;
+    this.preferredScope = scope;
+    this.sourceRevision = -1;
+    return this.open(this.sheet);
+  }
+
+  readOnly() {
+    return this.scope === "category";
   }
 
   currentRefresh(token, generation) {
@@ -539,6 +604,7 @@ export class DashboardController {
     this.cancelRefreshTimer();
     this.refreshGeneration++;
     this.setRefreshing(false);
+    this.cancelCategoryPoll();
   }
 
   setRefreshing(value) {
@@ -572,6 +638,7 @@ export class DashboardController {
     });
     this.mutate(this.matrix);
     this.renderControls();
+    this.trackCategory(result);
   }
 
   repaint() {
@@ -609,6 +676,7 @@ export class DashboardController {
     this.layer = null;
     this.controls = [];
     this.refreshButton = null;
+    this.scopeButton = null;
   }
 
   renderControls() {
@@ -622,6 +690,8 @@ export class DashboardController {
     this.renderSlicers();
     this.renderOutlines();
     this.renderRefresh();
+    this.renderScope();
+    this.renderModeLabel();
     this.position();
   }
 
@@ -633,6 +703,38 @@ export class DashboardController {
     this.refreshButton = button;
     this.setRefreshing(this.refreshing);
     this.addControl(button, cellAnchor(Math.max(0, row - 1), column));
+  }
+
+  renderScope() {
+    if (!this.categoryId) return;
+    const category = this.readOnly(),
+      button = controlButton(
+        category ? "Show this copy dashboard" : "Show category totals",
+        category ? "Copy dashboard" : "Category totals",
+      ),
+      [row, column] = this.pivot.location.bounds;
+    button.className = "dashboard-scope";
+    button.setAttribute("aria-pressed", String(category));
+    button.onclick = () => this.switchScope(category ? "copy" : "category");
+    this.scopeButton = button;
+    this.addControl(button, cellAnchor(Math.max(0, row - 1), column + 1));
+  }
+
+  renderModeLabel() {
+    if (!this.readOnly()) return;
+    const label = document.createElement("div"),
+      [row, column, , lastColumn] = this.pivot.location.bounds;
+    label.className = "dashboard-mode-label";
+    label.textContent = `Category totals · other cells show ${this.copyName ?? "this copy"}`;
+    label.setAttribute("role", "status");
+    this.addControl(
+      label,
+      rangeAnchor(
+        Math.max(0, row - 1),
+        column + 2,
+        Math.max(column + 3, lastColumn),
+      ),
+    );
   }
 
   renderPages() {
@@ -960,6 +1062,56 @@ export class DashboardController {
       worksheet.setColumnCount(extent.columns);
   }
 
+  trackCategory(result) {
+    if (this.scope !== "category") return;
+    this.categoryRevisionKey = revisionKey(result.pivot?.revisions ?? []);
+    this.scheduleCategoryPoll();
+  }
+
+  scheduleCategoryPoll() {
+    this.cancelCategoryPoll();
+    if (this.scope !== "category" || !this.categoryId) return;
+    const token = this.token,
+      generation = this.categoryPollGeneration;
+    this.categoryPollTimer = this.setTimer(() => {
+      this.categoryPollTimer = null;
+      return this.pollCategory(token, generation);
+    }, CATEGORY_POLL_DELAY);
+  }
+
+  async pollCategory(token, generation) {
+    try {
+      const response = await this.api.request(
+        `/copies?category=${encodeURIComponent(this.categoryId)}`,
+      );
+      if (!this.currentCategoryPoll(token, generation)) return false;
+      if (revisionKey(response.copies ?? []) !== this.categoryRevisionKey)
+        return this.refresh(token);
+      this.scheduleCategoryPoll();
+      return true;
+    } catch (error) {
+      if (!this.currentCategoryPoll(token, generation)) return false;
+      this.toast(error.message);
+      this.scheduleCategoryPoll();
+      return false;
+    }
+  }
+
+  currentCategoryPoll(token, generation) {
+    return (
+      token === this.token &&
+      this.scope === "category" &&
+      generation === this.categoryPollGeneration
+    );
+  }
+
+  cancelCategoryPoll() {
+    if (this.categoryPollTimer !== null)
+      this.clearTimer(this.categoryPollTimer);
+    this.categoryPollTimer = null;
+    this.categoryPollGeneration++;
+  }
+
   setScroll(value) {
     if (!this.sheet || (value?.unitId && value.unitId !== "planning"))
       return false;
@@ -1000,6 +1152,18 @@ function cellAnchor(row, column) {
   return {
     from: { row, column, row_offset: 0, column_offset: 0 },
     to: { row: row + 1, column: column + 1, row_offset: 0, column_offset: 0 },
+  };
+}
+
+function rangeAnchor(row, firstColumn, lastColumn) {
+  return {
+    from: { row, column: firstColumn, row_offset: 0, column_offset: 0 },
+    to: {
+      row: row + 1,
+      column: lastColumn + 1,
+      row_offset: 0,
+      column_offset: 0,
+    },
   };
 }
 

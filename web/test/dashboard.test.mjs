@@ -345,6 +345,7 @@ test("view writes serialize and stale refreshes cannot overwrite the latest sele
       },
     },
     copyId: "copy-a",
+    copyName: "Duplicate Plan",
     mutate: () => {},
     gridElement: null,
     worksheet: () => null,
@@ -760,6 +761,426 @@ test("planning grid rejects dashboard edits and reapplies derived cells after or
   grid.mutate = () => {};
   grid.paint();
   assert.equal(repaints, 1);
+});
+
+test("category totals switch routes independently and makes the workbook read only", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div"),
+    calls = [],
+    mutations = [];
+  const categoryView = {
+    ...structuredClone(baseView),
+    slicers: [
+      ...structuredClone(baseView.slicers),
+      { name: "__pp_copy__", field: -1, items: null },
+    ],
+  };
+  const categoryResult = {
+    ...result([]),
+    pivot: { ...result([]).pivot, scope: "category", revisions: [] },
+    slicers: [
+      {
+        name: "__pp_copy__",
+        field: -1,
+        caption: "Copy",
+        style: "SlicerStyleLight1",
+        column_count: 1,
+        row_height_emu: 241300,
+        anchor: {
+          from: { row: 16, column: 8 },
+          to: { row: 29, column: 11 },
+        },
+        items: [],
+      },
+    ],
+  };
+  const controller = new DashboardController({
+    api: {
+      request: async (path, options) => {
+        calls.push({ path, options });
+        if (path.endsWith("/category/view")) return categoryView;
+        if (path.endsWith("/category/refresh")) return categoryResult;
+        if (path.endsWith("/view")) return baseView;
+        return result([]);
+      },
+    },
+    copyId: "copy-a",
+    copyName: "Duplicate Plan",
+    categoryId: "category-a",
+    mutate: (matrix) => mutations.push(matrix),
+    gridElement: root,
+    worksheet: () => null,
+    toast: assert.fail,
+  });
+  t.after(() => controller.dispose());
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+  const categoryButton = findElement(
+    root.children.at(-1),
+    (item) => item.textContent === "Category totals",
+  );
+
+  await categoryButton.onclick();
+
+  assert.equal(controller.readOnly(), true);
+  assert.match(calls.at(-2).path, /\/category\/view$/);
+  assert.match(calls.at(-1).path, /\/category\/refresh$/);
+  assert.ok(
+    findElement(
+      root.children.at(-1),
+      (item) => item.textContent === "Copy dashboard",
+    ),
+  );
+  assert.ok(
+    findElement(root.children.at(-1), (item) =>
+      item.textContent?.includes("other cells show Duplicate Plan"),
+    ),
+  );
+  assert.ok(mutations.length >= 2);
+
+  const grid = Object.create(PlanningGrid.prototype);
+  Object.assign(grid, {
+    closed: false,
+    dashboard: controller,
+    socket: { readyState: 1 },
+    toast: assert.fail,
+  });
+  await assert.rejects(
+    grid.edit([{ sheet: 0, r: 0, c: 7, v: 5 }], "edit"),
+    /category totals are read only/i,
+  );
+  for (const action of ["paste", "fill"]) {
+    await assert.rejects(
+      grid.edit([{ sheet: 0, r: 0, c: 7, v: 5 }], action),
+      /category totals are read only/i,
+    );
+  }
+  await assert.rejects(grid.undo(), /category totals are read only/i);
+  await assert.rejects(
+    grid.validatedEdit(7, { target: { sheet: 0, r: 0, c: 7 } }),
+    /category totals are read only/i,
+  );
+
+  await controller.open({ index: 1, pivots: [], slicers: [] });
+  assert.equal(controller.readOnly(), false);
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+  assert.equal(controller.readOnly(), true);
+  assert.match(calls.at(-2).path, /\/category\/view$/);
+});
+
+test("category copy slicer uses its server anchor and preserves stable typed selection", async (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div"),
+    updates = [];
+  const controller = new DashboardController({
+    api: {},
+    copyId: "copy-a",
+    categoryId: "category-a",
+    mutate: () => {},
+    gridElement: root,
+    worksheet: () => null,
+    toast: assert.fail,
+  });
+  controller.scope = "category";
+  controller.sheet = { index: 0, slicers: [] };
+  controller.pivot = pivot;
+  controller.view = {
+    ...structuredClone(baseView),
+    slicers: [
+      ...structuredClone(baseView.slicers),
+      { name: "__pp_copy__", field: -1, items: null },
+    ],
+  };
+  controller.result = {
+    filters: { page: [] },
+    rows: [],
+    slicers: [
+      {
+        name: "__pp_copy__",
+        field: -1,
+        caption: "Copy",
+        style: "SlicerStyleLight1",
+        column_count: 1,
+        row_height_emu: 241300,
+        anchor: {
+          from: { row: 16, column: 8 },
+          to: { row: 29, column: 11 },
+        },
+        items: [
+          {
+            caption: "Duplicate Plan",
+            selector: { kind: "string", value: "copy-b" },
+            selected: true,
+            no_data: false,
+          },
+        ],
+      },
+    ],
+  };
+  controller.outlines = [];
+  controller.update = async (view) => updates.push(view);
+
+  controller.renderControls();
+  const copyFrame = findElement(
+      root.children.at(-1),
+      (item) => item.attributes?.["aria-label"] === "Copy",
+    ),
+    item = findElement(
+      copyFrame,
+      (entry) => entry.textContent === "Duplicate Plan",
+    );
+  assert.equal(copyFrame._dashboardAnchor.from.column, 8);
+  item.onclick();
+  assert.deepEqual(updates[0].slicers.at(-1).items, [
+    { kind: "string", value: "copy-b" },
+  ]);
+});
+
+test("category response grows native worksheet columns before positioning Copy slicer", (t) => {
+  dashboardDocument(t);
+  const root = new FakeDashboardElement("div");
+  let rows = 30,
+    columns = 8;
+  const worksheet = {
+      getMaxRows: () => rows,
+      getMaxColumns: () => columns,
+      setRowCount: (value) => {
+        rows = value;
+      },
+      setColumnCount: (value) => {
+        columns = value;
+      },
+      getSkeleton: () => ({
+        rowHeaderWidthAndMarginLeft: 46,
+        columnHeaderHeightAndMarginTop: 20,
+        scrollX: 0,
+        scrollY: 0,
+      }),
+      getZoom: () => 1,
+      getRange: (row, column) => {
+        if (row >= rows || column >= columns)
+          throw new RangeError("range exceeds native worksheet extent");
+        return {
+          getCellRect: () => ({
+            left: 46 + column * 64,
+            right: 46 + (column + 1) * 64,
+            top: 20 + row * 20,
+            bottom: 20 + (row + 1) * 20,
+          }),
+        };
+      },
+    },
+    controller = new DashboardController({
+      api: {},
+      copyId: "copy-a",
+      categoryId: "category-a",
+      mutate: () => {},
+      gridElement: root,
+      worksheet: () => worksheet,
+      toast: assert.fail,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+  t.after(() => controller.dispose());
+  controller.scope = "category";
+  controller.sheet = { index: 0, rows, cols: columns, slicers: [] };
+  controller.pivot = pivot;
+  controller.view = {
+    ...structuredClone(baseView),
+    slicers: [
+      ...structuredClone(baseView.slicers),
+      { name: "__pp_copy__", field: -1, items: null },
+    ],
+  };
+
+  controller.render({
+    ...result([]),
+    pivot: { ...result([]).pivot, scope: "category", revisions: [] },
+    slicers: [
+      {
+        name: "__pp_copy__",
+        field: -1,
+        caption: "Copy",
+        style: "SlicerStyleLight1",
+        column_count: 1,
+        row_height_emu: 241300,
+        anchor: {
+          from: { row: 16, column: 8 },
+          to: { row: 29, column: 11 },
+        },
+        items: [],
+      },
+    ],
+  });
+
+  assert.equal(columns, 12);
+  const frame = findElement(
+    root.children.at(-1),
+    (item) => item.attributes?.["aria-label"] === "Copy",
+  );
+  assert.equal(frame.hidden, false);
+  assert.equal(frame.style.left, "558px");
+});
+
+test("category polling refreshes another copy revision and ignores an out-of-order response", async (t) => {
+  dashboardDocument(t);
+  const timers = new Map(),
+    pendingPoll = deferred(),
+    calls = [];
+  let timerId = 0,
+    categoryRefreshes = 0,
+    deferPoll = false;
+  const categoryView = {
+      ...structuredClone(baseView),
+      slicers: [
+        ...structuredClone(baseView.slicers),
+        { name: "__pp_copy__", field: -1, items: null },
+      ],
+    },
+    categoryResult = (revision) => ({
+      ...result([]),
+      pivot: {
+        ...result([]).pivot,
+        scope: "category",
+        revisions: [
+          { copy_id: "copy-a", input_revision: 0, calculated_revision: 0 },
+          {
+            copy_id: "copy-b",
+            input_revision: revision,
+            calculated_revision: revision,
+          },
+        ],
+      },
+    });
+  const controller = new DashboardController({
+    api: {
+      request: async (path) => {
+        calls.push(path);
+        if (path === "/copies?category=category-a") {
+          if (deferPoll) return pendingPoll.promise;
+          return {
+            copies: [
+              { id: "copy-a", input_revision: 0, calculated_revision: 0 },
+              { id: "copy-b", input_revision: 1, calculated_revision: 1 },
+            ],
+          };
+        }
+        if (path.endsWith("/category/view")) return categoryView;
+        if (path.endsWith("/category/refresh")) {
+          categoryRefreshes++;
+          return categoryResult(categoryRefreshes > 1 ? 1 : 0);
+        }
+        if (path.endsWith("/view")) return baseView;
+        return result([]);
+      },
+    },
+    copyId: "copy-a",
+    categoryId: "category-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: assert.fail,
+    setTimer: (callback) => {
+      const id = ++timerId;
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  t.after(() => controller.dispose());
+  controller.preferredScope = "category";
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+
+  await [...timers.values()][0]();
+  assert.equal(categoryRefreshes, 2);
+  assert.equal(timers.size, 1);
+
+  deferPoll = true;
+  const late = [...timers.values()][0]();
+  await controller.switchScope("copy");
+  pendingPoll.resolve({
+    copies: [{ id: "copy-a", input_revision: 2, calculated_revision: 2 }],
+  });
+  await late;
+  assert.equal(controller.readOnly(), false);
+  assert.equal(categoryRefreshes, 2);
+  assert.match(calls.at(-1), /\/refresh$/);
+  assert.doesNotMatch(calls.at(-1), /\/category\/refresh$/);
+});
+
+test("category polling leaves read-only mode when category access is revoked", async (t) => {
+  dashboardDocument(t);
+  const timers = new Map();
+  let timerId = 0,
+    revoked = false;
+  const controller = new DashboardController({
+    api: {
+      request: async (path) => {
+        if (path === "/copies?category=category-a")
+          return {
+            copies: [
+              { id: "copy-a", input_revision: 1, calculated_revision: 1 },
+            ],
+          };
+        if (path.endsWith("/category/view"))
+          return {
+            ...structuredClone(baseView),
+            slicers: [
+              ...structuredClone(baseView.slicers),
+              { name: "__pp_copy__", field: -1, items: null },
+            ],
+          };
+        if (path.endsWith("/category/refresh")) {
+          if (revoked)
+            throw Object.assign(new Error("Category dashboard not found"), {
+              status: 404,
+            });
+          revoked = true;
+          return {
+            ...result([]),
+            pivot: {
+              ...result([]).pivot,
+              scope: "category",
+              revisions: [
+                {
+                  copy_id: "copy-a",
+                  input_revision: 0,
+                  calculated_revision: 0,
+                },
+              ],
+            },
+          };
+        }
+        if (path.endsWith("/view")) return baseView;
+        return result([]);
+      },
+    },
+    copyId: "copy-a",
+    categoryId: "category-a",
+    mutate: () => {},
+    gridElement: null,
+    worksheet: () => null,
+    toast: () => {},
+    setTimer: (callback) => {
+      const id = ++timerId;
+      timers.set(id, () => {
+        timers.delete(id);
+        return callback();
+      });
+      return id;
+    },
+    clearTimer: (id) => timers.delete(id),
+  });
+  t.after(() => controller.dispose());
+  controller.preferredScope = "category";
+  await controller.open({ index: 0, pivots: [pivot], slicers: [] });
+
+  await [...timers.values()][0]();
+
+  assert.equal(controller.readOnly(), false);
+  assert.equal(controller.preferredScope, "copy");
 });
 
 test("report filter checklist persists multi-selection and supports cancel clear and Escape focus", async (t) => {

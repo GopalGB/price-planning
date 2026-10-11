@@ -83,6 +83,8 @@ export class PlanningGrid {
     this.dashboard = new DashboardController({
       api,
       copyId: copy.id,
+      copyName: copy.name,
+      categoryId: copy.category_id,
       mutate: (matrix) => this.mutate(matrix),
       gridElement: $("grid"),
       worksheet: () => this.worksheet,
@@ -91,6 +93,7 @@ export class PlanningGrid {
         this.worksheet?.getRange(this.origin().r, this.origin().c).activate(),
       fontFamily: (pivot) => this.dashboardFont(pivot),
       roleStyles: (pivot) => this.dashboardStyles(pivot),
+      onScopeChange: (category) => this.dashboardScope(category),
     });
   }
   async start() {
@@ -148,10 +151,16 @@ export class PlanningGrid {
         event.row,
         event.column,
       );
-      if (this.copy.my_role === "viewer" || dashboard || !editableInput(cell)) {
+      const category = this.dashboard?.readOnly?.();
+      if (
+        category ||
+        this.copy.my_role === "viewer" ||
+        dashboard ||
+        !editableInput(cell)
+      ) {
         event.cancel = true;
         this.toast(
-          `${cellName({ r: event.row, c: event.column })}: ${this.copy.my_role === "viewer" ? "Viewer access is read only" : dashboard ? "Dashboard output is locked" : "Locked template cell"}`,
+          `${cellName({ r: event.row, c: event.column })}: ${category ? "Category totals are read only" : this.copy.my_role === "viewer" ? "Viewer access is read only" : dashboard ? "Dashboard output is locked" : "Locked template cell"}`,
         );
       } else
         this.cellDraft = {
@@ -655,6 +664,7 @@ export class PlanningGrid {
       {
         value: display,
         readOnly:
+          this.dashboard?.readOnly?.() ||
           this.copy.my_role === "viewer" ||
           Boolean(dashboard) ||
           !editableInput(cell),
@@ -686,7 +696,10 @@ export class PlanningGrid {
         $("formula-input"),
         {
           value: formulaDisplay(current, this.formulaText),
-          readOnly: this.copy.my_role === "viewer" || !editableInput(current),
+          readOnly:
+            this.dashboard?.readOnly?.() ||
+            this.copy.my_role === "viewer" ||
+            !editableInput(current),
         },
         document.activeElement === $("formula-input"),
       );
@@ -718,7 +731,12 @@ export class PlanningGrid {
   }
   validationControl(validation, selected) {
     $("validation-controls")?.remove();
-    if (this.copy.my_role === "viewer" || !validation) return;
+    if (
+      this.dashboard?.readOnly?.() ||
+      this.copy.my_role === "viewer" ||
+      !validation
+    )
+      return;
     const target = { ...selected },
       box = document.createElement("span");
     box.id = "validation-controls";
@@ -859,6 +877,8 @@ export class PlanningGrid {
   }
   async edit(cells, action) {
     if (this.closed) return false;
+    if (this.dashboard?.readOnly?.())
+      throw new Error("Category totals are read only");
     const locked = cells.find((cell) => this.dashboard?.locked(cell));
     if (locked)
       throw new Error(`${cellName(locked)}: Dashboard output is locked`);
@@ -908,6 +928,8 @@ export class PlanningGrid {
     );
   }
   async undo(redo = false) {
+    if (this.dashboard?.readOnly?.())
+      throw new Error("Category totals are read only");
     const entry = (
       redo ? this.controller.redoStack : this.controller.undoStack
     ).at(-1);
@@ -1301,14 +1323,7 @@ export class PlanningGrid {
       }
       this.copy.my_role = copy.my_role;
       this.controller.role = copy.my_role;
-      for (const id of [
-        "undo-button",
-        "redo-button",
-        "paste-button",
-        "fill-down",
-        "fill-right",
-      ])
-        $(id).disabled = copy.my_role === "viewer";
+      this.dashboardScope(this.dashboard?.readOnly?.());
       $("share-button").hidden = copy.my_role !== "owner";
       this.selectionInfo();
       if (this.socket.readyState !== 1) this.connect();
@@ -1317,6 +1332,25 @@ export class PlanningGrid {
       this.toast("Live access unavailable. Return to Copies.");
       this.dispose();
     }
+  }
+
+  dashboardScope(category) {
+    const readOnly = category || this.copy.my_role === "viewer";
+    for (const id of [
+      "undo-button",
+      "redo-button",
+      "paste-button",
+      "fill-down",
+      "fill-right",
+    ]) {
+      const control = $(id);
+      if (control) control.disabled = readOnly;
+    }
+    const exportLink = $("export-link"),
+      formula = $("formula-input");
+    if (exportLink) exportLink.hidden = category;
+    if (formula && category) formula.readOnly = true;
+    if (this.worksheet) this.selectionInfo();
   }
   sendPresence() {
     if (this.socket?.readyState === 1) {
