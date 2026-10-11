@@ -1,0 +1,7 @@
+{
+  "parity_sheets": ["BU RECAP", "Sales by Mkting Block", "Projections", "Fiscal Week Recap", "Dept OTD LY", "Coupon"],
+  "parity_sample": 2000,
+  "candidate_inputs": [],
+  "edit_values": [10, 20, 0, 15.5, 7],
+  "repeats": 20
+}

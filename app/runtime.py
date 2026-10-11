@@ -158,11 +158,16 @@ def re_safe_hostname(host):
     return bool(host) and all(c.isascii() and (c.isalnum() or c in '.-') for c in host)
 
 
-def apply_environment(cfg):
+def resolve_data_dir(cfg):
+    """DATA_DIR env beats settings data_dir; relative paths are under the repo root."""
     data = Path(os.environ.get('DATA_DIR', cfg['data_dir'])).expanduser()
     if not data.is_absolute():
         data = ROOT / data
-    data = data.resolve()
+    return data.resolve()
+
+
+def apply_environment(cfg):
+    data = resolve_data_dir(cfg)
     data.mkdir(parents=True, exist_ok=True)
     os.environ['DATA_DIR'] = str(data)
     origin, origins = resolve_addresses(cfg)

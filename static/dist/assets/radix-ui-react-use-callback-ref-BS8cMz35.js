@@ -1,0 +1,1 @@
+import{r as t}from"./react-WtT1zNtY.js";var o=Object.defineProperty,f=(r,e)=>o(r,"name",{value:e,configurable:!0});function s(r){const e=t.useRef(r);return t.useEffect(()=>{e.current=r}),t.useMemo(()=>((...n)=>{var u;return(u=e.current)==null?void 0:u.call(e,...n)}),[])}f(s,"useCallbackRef");export{s as u};

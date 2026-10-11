@@ -1,0 +1,39 @@
+{
+  "univer": "1.0.4",
+  "browser": "Ego Lite",
+  "heap_limit_mb": 1500,
+  "sheets": {
+    "grid_windowed": {
+      "heap_mb": 26,
+      "blocked": 1,
+      "blocked_cell_unchanged": true,
+      "number_saved": true,
+      "undo_restored": true,
+      "formulas": 0,
+      "pass": true
+    },
+    "tall_windowed": {
+      "heap_mb": 50,
+      "blocked": 1,
+      "blocked_cell_unchanged": true,
+      "number_saved": true,
+      "undo_restored": true,
+      "formulas": 0,
+      "pass": true
+    },
+    "grid_full": {
+      "heap_mb": 119,
+      "blocked": 1,
+      "blocked_cell_unchanged": true,
+      "number_saved": true,
+      "undo_restored": true,
+      "formulas": 0,
+      "pass": true
+    }
+  },
+  "pass": true,
+  "not_measured": [
+    "scroll fps (Ego background tab throttles rAF; measure in P3 with a visible window)",
+    "paste interception (BeforeClipboardPaste) and fill-handle interception: P3"
+  ]
+}
