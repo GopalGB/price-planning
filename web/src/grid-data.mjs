@@ -7,6 +7,35 @@ import {
   editableInput,
 } from "./model.mjs";
 export const GRID_DEFAULT_COLUMN_WIDTH = 64;
+export const GRID_DEFAULT_ROW_HEIGHT = 28;
+function viewOffset(sheet, key, sizes, hidden, defaultSize) {
+  const stop = sheet?.scroll?.[key] ?? 0;
+  let total = 0;
+  for (let index = 0; index < stop; index++) {
+    if ((hidden ?? []).includes(index)) continue;
+    total += sizes?.[index] ?? defaultSize;
+  }
+  return total;
+}
+export function sheetViewState(sheet) {
+  return {
+    zoom: sheet?.zoom ?? 1,
+    scrollX: viewOffset(
+      sheet,
+      "col",
+      sheet?.col_widths,
+      sheet?.hidden_cols,
+      GRID_DEFAULT_COLUMN_WIDTH,
+    ),
+    scrollY: viewOffset(
+      sheet,
+      "row",
+      sheet?.row_heights,
+      sheet?.hidden_rows,
+      GRID_DEFAULT_ROW_HEIGHT,
+    ),
+  };
+}
 export function inputFill(cell, style, enabled = true) {
   return enabled && editableInput(cell) && !style?.fill
     ? "#EAF2FB"
@@ -162,6 +191,7 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
     columnData[c] = { w };
   for (const c of sheet.hidden_cols ?? [])
     columnData[c] = { ...columnData[c], hd: 1 };
+  const view = sheetViewState(sheet);
   return {
     id: "planning",
     name: meta.template.name,
@@ -177,16 +207,21 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
         name: sheet.name,
         rowCount: sheet.rows,
         columnCount: sheet.cols,
-        defaultRowHeight: 28,
+        defaultRowHeight: GRID_DEFAULT_ROW_HEIGHT,
         defaultColumnWidth: GRID_DEFAULT_COLUMN_WIDTH,
         cellData,
         rowData,
         columnData,
+        tabColor: sheet.tab_color,
+        showGridlines: sheet.show_gridlines === false ? 0 : 1,
+        zoomRatio: view.zoom,
+        scrollLeft: view.scrollX,
+        scrollTop: view.scrollY,
         freeze: {
           xSplit: sheet.freeze?.cols ?? 0,
           ySplit: sheet.freeze?.rows ?? 0,
-          startRow: sheet.freeze?.rows ?? 0,
-          startColumn: sheet.freeze?.cols ?? 0,
+          startRow: sheet.freeze?.start_row ?? sheet.freeze?.rows ?? 0,
+          startColumn: sheet.freeze?.start_col ?? sheet.freeze?.cols ?? 0,
         },
         mergeData: (sheet.merges ?? []).map(
           ([startRow, startColumn, endRow, endColumn]) => ({

@@ -33,6 +33,7 @@ import {
   commandSelection,
   advanceDetail,
   commandUndo,
+  sheetViewState,
 } from "./grid-data.mjs";
 import {
   escapeHTML as e,
@@ -41,6 +42,11 @@ import {
   editorDisplay,
 } from "./views.mjs";
 const $ = (id) => document.getElementById(id);
+function initialSheet(meta) {
+  const visible = meta.sheets.filter((s) => !s.hidden);
+  const active = visible.find((s) => s.active);
+  return (active ?? visible[0] ?? meta.sheets[0]).index;
+}
 const DETAIL_REFRESH_LIMIT = 8;
 const COPY_SNAPSHOT_ATTEMPTS = 3;
 export class PlanningGrid {
@@ -49,7 +55,7 @@ export class PlanningGrid {
     this.styleMap = new Map(
       (meta.styles ?? []).map((style) => [String(style.id), style]),
     );
-    this.sheet = meta.sheets.find((s) => !s.hidden).index;
+    this.sheet = initialSheet(meta);
     this.store = new CellStore();
     this.cache = new RowCache(3);
     this.store.inputRevision = meta.input_revision;
@@ -176,7 +182,7 @@ export class PlanningGrid {
       }
     });
     this.on("Scroll", (event) => {
-      if (event.worksheet && event.worksheet !== this.worksheet) return;
+      if (!this.currentSheetEvent(event)) return;
       this.drawingScroll = {
         x: event.viewportScrollX ?? event.scrollX,
         y: event.viewportScrollY ?? event.scrollY,
@@ -185,13 +191,13 @@ export class PlanningGrid {
       this.renderDrawings();
     });
     this.on("SheetZoomChanged", (event) => {
-      if (event.worksheet && event.worksheet !== this.worksheet) return;
+      if (!this.currentSheetEvent(event)) return;
       this.drawingZoom = event.zoom;
+      this.syncZoomControl(event.zoom);
       this.renderDrawings();
     });
     this.on("SheetSkeletonChanged", (event) => {
-      if (!event.worksheet || event.worksheet === this.worksheet)
-        this.renderDrawings();
+      if (this.currentSheetEvent(event)) this.renderDrawings();
     });
     this.on("CellHover", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
@@ -406,6 +412,12 @@ export class PlanningGrid {
       this.internal--;
     }
   }
+  currentSheetEvent(event) {
+    if (event.worksheet) return event.worksheet === this.worksheet;
+    if (event.subUnitId !== undefined)
+      return event.subUnitId === `s${this.sheet}`;
+    return true;
+  }
   viewMatches(context) {
     return (
       !this.closed &&
@@ -457,8 +469,7 @@ export class PlanningGrid {
     this.store.cells.clear();
     this.store.resetBlocks();
     this.rendered.clear();
-    this.drawingScroll = { x: 0, y: 0 };
-    this.drawingZoom = 1;
+    this.applySheetView(index);
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     if (this.u.getActiveWorkbook()) this.u.disposeUnit("planning");
     this.internal++;
@@ -486,12 +497,33 @@ export class PlanningGrid {
     this.selectionInfo();
     return true;
   }
+  applySheetView(index) {
+    const view = sheetViewState(
+      this.meta.sheets.find((s) => s.index === index),
+    );
+    this.drawingScroll = { x: view.scrollX, y: view.scrollY };
+    this.drawingZoom = view.zoom;
+    this.syncZoomControl(view.zoom);
+  }
+  syncZoomControl(zoom) {
+    const select = $("zoom");
+    if (!select) return;
+    const label = `${Math.round((zoom ?? 1) * 100)}%`;
+    if (select.options && ![...select.options].some((o) => o.value === label)) {
+      const option = document.createElement("option");
+      option.value = option.textContent = label;
+      select.add(option);
+    }
+    select.value = label;
+  }
   tabs() {
     $("sheet-tabs").innerHTML = this.meta.sheets
       .filter((s) => !s.hidden || this.showHidden)
       .map(
         (s) =>
-          `<button data-sheet="${s.index}" role="tab" aria-selected="${s.index === this.sheet}">${e(s.name)}${s.hidden ? " (hidden)" : ""}</button>`,
+          `<button data-sheet="${s.index}" role="tab" aria-selected="${s.index === this.sheet}"` +
+          `${s.tab_color ? ` class="tab-color" style="--tab-color:${s.tab_color}"` : ""}>` +
+          `${e(s.name)}${s.hidden ? ` (${s.hidden})` : ""}</button>`,
       )
       .join("");
     $("sheet-tabs").onclick = (event) => {

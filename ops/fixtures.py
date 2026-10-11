@@ -4,8 +4,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 import base64
 from openpyxl import Workbook
-from openpyxl.formatting.rule import FormulaRule
+from openpyxl.comments import Comment
+from openpyxl.formatting.rule import CellIsRule, FormulaRule, Rule
 from openpyxl.styles import Font, PatternFill, Protection
+from openpyxl.styles.differential import DifferentialStyle
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 from openpyxl.workbook.defined_name import DefinedName
@@ -509,4 +511,145 @@ def _with_rules(data, rules=None):
         conditional = ET.Element(f"{{{CF_NS}}}conditionalFormatting", {"sqref": sqref})
         conditional.append(ET.fromstring(f'<cfRule xmlns="{CF_NS}" {body}</cfRule>'))
         root.append(conditional)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def make_fidelity(path):
+    """Create one synthetic workbook carrying every fidelity feature at once."""
+    book = Workbook()
+    rules = book.active
+    rules.title = "CF Rules"
+    for address, value in {
+        "A1": "Target", "B1": "Threshold", "C1": "Text", "D1": "Duplicate",
+        "E1": "Prefix", "F1": "Broken", "G1": "Plan",
+        "A2": 10, "A3": 2, "B2": 10, "B3": 1, "C2": "match literal",
+        "D2": "dup", "D3": "dup", "E2": "prefix-value", "F2": "#DIV/0!",
+        "G2": 4,
+    }.items():
+        rules[address] = value
+    rules["F2"].data_type = "e"
+    rules["A4"] = 0.25
+    rules["A4"].number_format = "0.00"
+    rules.conditional_formatting.add(
+        "A2:A3",
+        FormulaRule(formula=["$B2>5"],
+                    fill=PatternFill(patternType="solid", fgColor="FFFFC7CE")),
+    )
+    rules.conditional_formatting.add(
+        "B2:B3",
+        CellIsRule(operator="greaterThan", formula=["5"],
+                   fill=PatternFill(patternType="solid", fgColor="FFD9EAD3")),
+    )
+    for kind, area, text, fill in (
+        ("containsText", "C2:C3", "match", "FF9C6500"),
+        ("duplicateValues", "D2:D3", None, "FFEBF1DE"),
+        ("beginsWith", "E2:E3", "prefix", "FFCCFFFF"),
+    ):
+        extra = {"text": text} if text else {}
+        operator = kind if kind in {"containsText", "beginsWith"} else None
+        rules.conditional_formatting.add(
+            area,
+            Rule(
+                type=kind,
+                operator=operator,
+                dxf=DifferentialStyle(
+                    fill=PatternFill(patternType="solid", fgColor=fill),
+                ),
+                **extra,
+            ),
+        )
+    rules.conditional_formatting.add(
+        "F2:F3",
+        Rule(
+            type="containsErrors",
+            dxf=DifferentialStyle(font=Font(bold=True, color="FF9C0006")),
+        ),
+    )
+
+    drawings = book.create_sheet("Drawings")
+    drawings["A1"] = "Synthetic drawing sheet"
+    drawings["A3"] = "Picture, text box, macro and slicer sit on this sheet"
+
+    notes_one = book.create_sheet("Notes One")
+    notes_one["A1"] = "Hover the red marker"
+    notes_one["B2"] = "Annotated cell"
+    notes_one["B2"].comment = Comment(
+        "Synthetic note: confirm the price plan before release.", "Planner",
+    )
+    notes_two = book.create_sheet("Notes Two")
+    notes_two["A1"] = "Second note sheet"
+    notes_two["D4"] = "Second annotated cell"
+    notes_two["D4"].comment = Comment("Synthetic note on the second sheet.", "Reviewer")
+
+    tables = book.create_sheet("Tables")
+    for cell, value in {
+        "A1": "Region", "B1": "Price", "C1": "Status", "D1": "Sheet only",
+        "A2": "East", "B2": 10, "C2": "Keep", "D2": "Open",
+        "A3": "West", "B3": 20, "C3": "Drop", "D3": "Closed",
+        "A4": "North", "B4": 30, "C4": "Keep",
+        "F1": "Item", "G1": "Amount",
+        "F2": "One", "G2": 11, "F3": "Two", "G3": 22, "F4": "Three", "G4": 33,
+    }.items():
+        tables[cell] = value
+    tables.auto_filter.ref = "A1:D4"
+    for name, ref, style in (
+        ("Orders", "A1:C4", "TableStyleMedium2"),
+        ("PlanItems", "F1:G4", "TableStyleLight9"),
+    ):
+        table = Table(displayName=name, ref=ref)
+        table.tableStyleInfo = TableStyleInfo(
+            name=style, showFirstColumn=False, showLastColumn=False,
+            showRowStripes=True, showColumnStripes=False,
+        )
+        tables.add_table(table)
+
+    view = book.create_sheet("View Demo")
+    view.sheet_properties.tabColor = "FF107C41"
+    view.sheet_view.showGridLines = False
+    view.sheet_view.zoomScale = 125
+    view.freeze_panes = "D6"
+    view.column_dimensions["B"].width = 18
+    view.row_dimensions[2].height = 30
+    view.row_dimensions[5].hidden = True
+    view.column_dimensions["D"].hidden = True
+    view.merge_cells("B6:C7")
+    view["A1"] = "Sheet view"
+    view["B1"] = "Input"
+    view["B2"] = 24
+    view["B2"].protection = Protection(locked=False)
+    view["C2"] = "=B2*2"
+    view["B6"] = "Merged header"
+    view.protection.sheet = True
+    book.create_sheet("Hidden Demo").sheet_state = "hidden"
+    book.create_sheet("Very Hidden Demo").sheet_state = "veryHidden"
+    book.active = book.sheetnames.index("View Demo")
+    book.save(path)
+    _attach_fidelity_parts(path)
+
+
+def _attach_fidelity_parts(path):
+    """Add the drawing part and the frozen pane that openpyxl cannot express."""
+    with zipfile.ZipFile(path, "r") as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    members["xl/worksheets/sheet2.xml"] = _drawing_sheet(
+        members["xl/worksheets/sheet2.xml"]
+    )
+    members["xl/worksheets/_rels/sheet2.xml.rels"] = _sheet_drawing_rels()
+    members["xl/drawings/drawing1.xml"] = DRAWING_XML.encode()
+    members["xl/drawings/_rels/drawing1.xml.rels"] = DRAWING_RELS.encode()
+    members["xl/media/image1.png"] = TINY_PNG
+    members["xl/worksheets/sheet6.xml"] = _frozen_pane(
+        members["xl/worksheets/sheet6.xml"], 1, 2, "D6",
+    )
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in members.items():
+            archive.writestr(name, data)
+
+
+def _frozen_pane(data, columns, rows, top_left):
+    root = ET.fromstring(data)
+    for pane in root.iter(f"{{{CF_NS}}}pane"):
+        pane.set("xSplit", str(columns))
+        pane.set("ySplit", str(rows))
+        pane.set("topLeftCell", top_left)
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)

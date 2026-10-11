@@ -165,7 +165,9 @@ test("DrawingLayer renders pictures, text, view-only slicers, and accessible mac
 test("PlanningGrid redraws overlays from real Univer scroll and zoom events", () => {
   const events = {},
     calls = [],
+    zoomControl = { value: "", options: null },
     grid = Object.create(PlanningGrid.prototype);
+  globalThis.document = { getElementById: (id) => (id === "zoom" ? zoomControl : null) };
   Object.assign(grid, {
     on: (name, handler) => (events[name] = handler),
     u: { getFormula: () => ({ calculationStart: () => ({ dispose() {} }) }) },

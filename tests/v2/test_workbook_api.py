@@ -26,8 +26,14 @@ class WorkbookAPIContractTests(unittest.TestCase):
         self.assertEqual([sheet["name"] for sheet in body["sheets"]], ["Inputs", "Lookup", "Calc"])
         self.assertEqual(set(body["sheets"][0]), {"index", "name", "hidden", "rows", "cols", "freeze",
                                                    "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges",
-                                                   "has_conditional_formats"})
+                                                   "has_conditional_formats", "show_gridlines", "zoom", "scroll",
+                                                   "active"})
         self.assertFalse(body["sheets"][0]["has_conditional_formats"])
+        self.assertEqual(
+            (body["sheets"][0]["show_gridlines"], body["sheets"][0]["zoom"],
+             body["sheets"][0]["scroll"], body["sheets"][0]["active"]),
+            (True, 1.0, {"row": 0, "col": 0}, True),
+        )
 
         rows = self.client.get(f"/api/copies/{copy_id}/sheets/0/rows?start=1&count=2")
         self.assertEqual(rows.status_code, 200)

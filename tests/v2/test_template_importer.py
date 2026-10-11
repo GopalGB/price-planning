@@ -319,7 +319,8 @@ class TemplateImporterTests(unittest.TestCase):
             style = styles[block["1"]["1"]["s"]]
 
             self.assertEqual((visible["rows"], visible["cols"]), (9, 4))
-            self.assertEqual(visible["freeze"], {"rows": 2, "cols": 2})
+            self.assertEqual(visible["freeze"], {"rows": 2, "cols": 2, "start_row": 2, "start_col": 2})
+            self.assertEqual(visible["scroll"], {"row": 2, "col": 2})
             self.assertGreater(visible["col_widths"]["1"], 0)
             self.assertGreater(visible["row_heights"]["3"], 0)
             self.assertEqual(visible["hidden_rows"], [5])

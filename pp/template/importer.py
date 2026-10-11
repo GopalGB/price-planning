@@ -431,13 +431,16 @@ def _workbook_data(archive: zipfile.ZipFile) -> tuple[list[dict], list[dict]]:
     workbook = ET.fromstring(archive.read("xl/workbook.xml"))
     rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     targets = {item.get("Id"): item.get("Target") for item in rels}
+    view = workbook.find(f"{NS}bookViews/{NS}workbookView")
+    active_tab = int(view.get("activeTab", "0")) if view is not None and view.get("activeTab") else 0
     sheets = []
     for index, node in enumerate(workbook.findall(f"{NS}sheets/{NS}sheet")):
         target = targets[node.get(f"{RNS}id")].lstrip("/")
         state = node.get("state", "visible")
         sheets.append({"index": index, "name": node.get("name", ""),
                        "part": target if target.startswith("xl/") else f"xl/{target}",
-                       "hidden": False if state == "visible" else state})
+                       "hidden": False if state == "visible" else state,
+                       "active": index == active_tab})
     names = [{"name": node.get("name", ""), "formula": node.text or "",
               "local_sheet_id": int(node.get("localSheetId")) if node.get("localSheetId") else None,
               "hidden": node.get("hidden") in {"1", "true"}}
@@ -897,7 +900,9 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
                 "col_widths": {}, "row_heights": {}, "hidden_rows": [], "hidden_cols": [],
                 "col_styles": [], "row_styles": {}, "merges": [], "validations": [],
                 "conditional_formats": [], "has_conditional_formats": False,
-                "table_relationships": [], "sheet_filter": None}
+                "table_relationships": [], "sheet_filter": None,
+                "tab_color": None, "show_gridlines": True, "zoom": 1.0,
+                "scroll": {"row": 0, "col": 0}}
     metadata.pop("part")
     block_index, block_rows, protected = None, {}, False
     sheet_dir = context.destination / "sheets" / str(index)
@@ -962,9 +967,13 @@ def _sheet_metadata(element, metadata, protected, dxf_styles):
         metadata["cols"] = max(metadata["cols"], col2 + 1)
     elif element.tag == f"{NS}sheetProtection":
         protected = element.get("sheet") in {"1", "true"}
-    elif element.tag == f"{NS}pane" and element.get("state") == "frozen":
-        metadata["freeze"] = {"rows": int(float(element.get("ySplit", "0"))),
-                              "cols": int(float(element.get("xSplit", "0")))}
+    elif element.tag == f"{NS}tabColor":
+        metadata["tab_color"] = _canonical_color(element.get("rgb"))
+    elif element.tag == f"{NS}sheetView":
+        metadata["show_gridlines"] = element.get("showGridLines", "1") not in {"0", "false"}
+        metadata["zoom"] = _zoom(element.get("zoomScale"))
+    elif element.tag == f"{NS}pane":
+        _pane_metadata(element, metadata)
     elif element.tag == f"{NS}col":
         _column_metadata(element, metadata)
     elif element.tag == f"{NS}mergeCell" and element.get("ref"):
@@ -981,6 +990,34 @@ def _sheet_metadata(element, metadata, protected, dxf_styles):
     elif element.tag == f"{NS}drawing" and element.get(f"{RNS}id"):
         metadata["drawing_relationship"] = element.get(f"{RNS}id")
     return protected
+
+
+def _pane_metadata(element, metadata) -> None:
+    origin = _cell_ref(element.get("topLeftCell")) if element.get("topLeftCell") else None
+    if origin is not None:
+        metadata["scroll"] = {"row": origin[0], "col": origin[1]}
+    if element.get("state") != "frozen":
+        return
+    metadata["freeze"] = {"rows": _split(element.get("ySplit")),
+                          "cols": _split(element.get("xSplit"))}
+    if origin is not None:
+        metadata["freeze"].update({"start_row": origin[0], "start_col": origin[1]})
+
+
+def _split(value: str | None) -> int:
+    try:
+        return int(float(value or "0"))
+    except ValueError:
+        return 0
+
+
+def _zoom(value: str | None) -> float:
+    """OOXML stores zoomScale as a percentage; the client needs a ratio."""
+    try:
+        scale = float(value)
+    except (TypeError, ValueError):
+        return 1.0
+    return round(min(max(scale / 100, 0.1), 4.0), 2)
 
 
 def _table_filters(sheet_filter, tables):
