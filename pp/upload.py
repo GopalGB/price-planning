@@ -291,10 +291,10 @@ class UploadService:
         self.previews.close()
 
     def confirm(self, request):
-        preview = self.previews.take(request.token, request.user_id, request.session_hash)
         if (not isinstance(request.payload, dict)
                 or request.payload.get("mode") not in {"update", "new_copy"}):
             raise AppError(422, "invalid", "Choose update or new copy")
+        preview = self.previews.take(request.token, request.user_id, request.session_hash)
         if request.payload["mode"] == "update":
             return self._update(preview, request)
         return self._new_copy(preview, request)
@@ -352,11 +352,6 @@ class UploadService:
             return {"copy_id": preview["copy_id"], "copy": copy,
                     "accepted": 0, "operation": None}
         with self.database.transaction() as connection:
-            current = connection.execute(
-                "SELECT input_revision FROM pp_copies WHERE id=?", (preview["copy_id"],)
-            ).fetchone()
-            if current is None or current["input_revision"] != preview["current_revision"]:
-                raise AppError(409, "refresh_preview", "The copy changed; preview the upload again")
             ack, _, prepared = self.operations.apply_upload_in_transaction(
                 UploadOperationRequest(
                     connection, preview["copy_id"], request.user_id,

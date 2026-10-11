@@ -824,6 +824,43 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual([(row["row"], json.loads(row["value_json"])) for row in values],
                          [(1, 12), (2, 25)])
 
+    def test_unrelated_concurrent_edit_does_not_block_upload(self):
+        upload = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
+        preview = self.preview(self.owner, self.owner_csrf, upload)
+        self.assertEqual(preview.status_code, 200, preview.body)
+        concurrent = self.owner.post(f"/api/copies/{self.copy['id']}/ops", {
+            "op_id": "unrelated-race", "action": "edit", "cells": [
+                {"sheet": 0, "r": 2, "c": 1, "v": 99, "expected_version": 0},
+            ],
+        }, {"x-csrf-token": self.owner_csrf})
+        self.assertEqual(concurrent.status_code, 200, concurrent.body)
+
+        confirmed = self.confirm(
+            self.owner, self.owner_csrf, preview.json()["token"], {"mode": "update"},
+        )
+
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+        self.assertEqual(confirmed.json()["accepted"], 1)
+        with self.fixture.database.connect() as connection:
+            values = connection.execute(
+                "SELECT row,value_json FROM pp_overrides WHERE copy_id=? ORDER BY row",
+                (self.copy["id"],),
+            ).fetchall()
+        self.assertEqual([(row["row"], json.loads(row["value_json"])) for row in values],
+                         [(1, 12), (2, 99)])
+
+    def test_invalid_confirm_mode_does_not_consume_preview(self):
+        upload = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
+        preview = self.preview(self.owner, self.owner_csrf, upload)
+        token = preview.json()["token"]
+
+        invalid = self.confirm(self.owner, self.owner_csrf, token, {"mode": "invalid"})
+        confirmed = self.confirm(self.owner, self.owner_csrf, token, {"mode": "update"})
+
+        self.assertEqual(invalid.status_code, 422, invalid.body)
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+        self.assertEqual(confirmed.json()["accepted"], 1)
+
     def test_confirm_rechecks_versions_access_and_csrf(self):
         other, other_csrf, _ = self.fixture.signup("race@example.test", "Race Editor")
         self.owner.put(
@@ -845,7 +882,7 @@ class UploadAPITests(unittest.TestCase):
 
         stale = self.confirm(other, other_csrf, preview.json()["token"], {"mode": "update"})
         self.assertEqual(stale.status_code, 409, stale.body)
-        self.assertEqual(stale.json()["error"], "refresh_preview")
+        self.assertEqual(stale.json()["error"], "conflict")
 
         fresh = self.preview(other, other_csrf, upload)
         self.owner.put(
