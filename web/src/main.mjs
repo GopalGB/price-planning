@@ -283,6 +283,30 @@ $("logout-button").onclick = () =>
       showAuth();
     }),
   );
+async function applyBrand() {
+  let brand;
+  try {
+    brand = await api.request("/brand");
+  } catch {
+    return;
+  }
+  if (!brand?.name) return;
+  document.title = `${brand.name} Price Planning`;
+  for (const [key, value] of Object.entries(brand.colors || {}))
+    document.documentElement.style.setProperty(`--brand-${key}`, value);
+  // The bar turns brand-coloured only with a primary colour; a white logo needs it.
+  if (brand.colors?.primary) document.body.classList.add("branded");
+  if (brand.assets.includes("logo") && brand.colors?.primary) {
+    const logo = document.createElement("img");
+    Object.assign(logo, { src: "/brand/logo", alt: brand.name, className: "brand-logo" });
+    document.querySelector("#home-button .mark").replaceWith(logo);
+  }
+  for (const [asset, rel] of [["favicon", "icon"], ["touch_icon", "apple-touch-icon"]]) {
+    if (!brand.assets.includes(asset)) continue;
+    const link = Object.assign(document.createElement("link"), { rel, href: `/brand/${asset}` });
+    document.head.append(link);
+  }
+}
 async function bootstrap() {
   try {
     const result = await api.request("/me");
@@ -292,4 +316,5 @@ async function bootstrap() {
     showAuth();
   }
 }
+applyBrand();
 bootstrap();

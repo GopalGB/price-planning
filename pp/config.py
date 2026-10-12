@@ -25,6 +25,42 @@ class Config:
     cookie_secure: bool
     replay_window: int
     engine_memory_budget_mb: int
+    brand: dict | None = None
+
+
+BRAND_ASSETS = ("logo", "favicon", "touch_icon")
+BRAND_TYPES = {".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
+BRAND_COLORS = ("primary", "accent", "highlight")
+BRAND_MAX_BYTES = 1_000_000
+HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def _brand(root: Path, value: object) -> dict | None:
+    """Validate the optional company brand; assets must be small images inside brand.dir."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("brand must be an object")
+    name = value.get("name")
+    if not isinstance(name, str) or not 0 < len(name.strip()) <= 60:
+        raise ValueError("brand.name must be 1 to 60 characters")
+    directory = _path(root, value["dir"], "brand.dir") if "dir" in value else None
+    assets = {}
+    for key in BRAND_ASSETS:
+        file = value.get(key)
+        if file is None:
+            continue
+        valid = (directory is not None and isinstance(file, str) and Path(file).name == file
+                 and Path(file).suffix.lower() in BRAND_TYPES)
+        path = directory / file if valid else None
+        if path is None or not path.is_file() or path.stat().st_size > BRAND_MAX_BYTES:
+            raise ValueError(f"brand.{key} must be a PNG, SVG or ICO under 1 MB in brand.dir")
+        assets[key] = path
+    colors = value.get("colors", {})
+    if (not isinstance(colors, dict) or set(colors) - set(BRAND_COLORS)
+            or not all(isinstance(item, str) and HEX_COLOR.fullmatch(item) for item in colors.values())):
+        raise ValueError("brand.colors takes primary, accent and highlight as #RRGGBB")
+    return {"name": name.strip(), "assets": assets, "colors": dict(colors)}
 
 
 def _read_settings(root: Path, settings_path: str | Path | None = None) -> dict:
@@ -256,4 +292,5 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         candidates = sorted((root / "template").glob("*.xlsm"))
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
-                  origins, cookie_secure, replay_window, engine_memory)
+                  origins, cookie_secure, replay_window, engine_memory,
+                  _brand(root, settings.get("brand")))
