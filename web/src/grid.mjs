@@ -66,9 +66,13 @@ export class PlanningGrid {
       inputHighlight,
     });
     this.macroBusy = new Set();
-    // Values-only templates cannot recalculate, so every copy opens read only.
-    if (meta.calculation === "cached")
-      this.copy = { ...copy, my_role: "viewer" };
+    // Values-only templates save typed values but never recalculate, so say so where the role is shown.
+    if (meta.calculation === "cached" && copy.my_role !== "viewer") {
+      const status = document.getElementById("role-status");
+      if (status)
+        status.textContent =
+          "Values only · formulas keep Excel's saved results until opened in Excel";
+    }
     this.styleMap = new Map(
       (meta.styles ?? []).map((style) => [String(style.id), style]),
     );

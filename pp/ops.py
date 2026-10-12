@@ -187,10 +187,8 @@ class OperationService:
         return ack, True, prepared
 
     def _prepare(self, connection, copy, cells: list[dict]) -> list[dict]:
+        # A values-only template (no Excel here) still saves typed values; its formulas keep Excel's saved results
         snapshot = self.templates.get(connection, copy["template_id"])
-        if getattr(snapshot, "results", "engine") == "cached":
-            raise AppError(409, "calculation_paused",
-                           "Editing is paused: this template shows Excel's saved values until calculation is enabled")
         prepared, conflicts, seen = [], [], set()
         for cell in cells:
             coordinate = _coordinate(cell)

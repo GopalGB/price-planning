@@ -312,7 +312,7 @@ def _engine(settings) -> str:
 
 
 def _template_results(settings) -> str:
-    # "cached" shows Excel's saved results and pauses editing until the engine can hold the template.
+    # "cached" shows Excel's saved results and saves typed values without recalculating (no Excel here).
     value = os.environ.get("PP_TEMPLATE_RESULTS", settings.get("template_results", "engine"))
     if value not in ("engine", "cached"):
         raise ValueError("template_results must be 'engine' or 'cached'")

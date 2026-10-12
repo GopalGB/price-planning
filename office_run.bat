@@ -61,9 +61,12 @@ goto start_app
 
 :no_excel
 echo.
-echo Microsoft Excel is not installed on this computer, so the app opens VIEW-ONLY:
-echo every tab with Excel's saved numbers, no editing, macros or refresh.
-echo For the full app, run this on a computer with desktop Excel, or install Excel here.
+echo Excel automation is not available on this computer, so the app opens in VALUES MODE:
+echo you can type values into input cells; formulas keep Excel's saved numbers and
+echo recalculate when the copy is downloaded and opened in Excel. No macros or refresh.
+for %%D in ("%ProgramFiles%\Microsoft Office" "%ProgramFiles(x86)%\Microsoft Office") do if exist "%%~D" (
+  dir /s /b "%%~D\EXCEL.EXE" 2>nul | findstr /i "excel.exe" >nul && echo Excel is installed here but not registered for automation: ask IT to run an Office Quick Repair.
+)
 echo.
 set "PP_TEMPLATE_RESULTS=cached"
 :start_app

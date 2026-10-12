@@ -1,4 +1,4 @@
-"""A values-only template shows Excel's saved results and refuses edits."""
+"""A values-only template shows Excel's saved results and saves typed values without recalculating."""
 
 import json
 import unittest
@@ -32,23 +32,43 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
             import_template(self.fixture.source, data, "engine")
         engine.assert_called_once()
 
-    def test_edits_are_refused_and_the_workbook_reports_it(self):
+    def test_values_save_without_recalculation_and_formulas_stay_locked(self):
         client, csrf, _ = self.fixture.signup("values@example.test")
         _, copy = self.fixture.make_copy(client, csrf)
         self.fixture.snapshot.results = "cached"
         meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
-        response = client.post(f"/api/copies/{copy['id']}/ops", {
-            "op_id": "paused", "action": "edit",
+        before = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=8").json()
+        saved = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "typed", "action": "edit",
             "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
         }, {"x-csrf-token": csrf})
+        locked = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "template-cell", "action": "edit",
+            "cells": [{"sheet": 0, "r": 0, "c": 1, "v": 5, "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        typed_formula = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "typed-formula", "action": "edit",
+            "cells": [{"sheet": 0, "r": 2, "c": 1, "v": "=1+1", "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=8").json()
+
         self.assertEqual(meta["calculation"], "cached")
         template = client.get("/api/me").json()["template"]
         self.assertEqual((template["sheets"], template["calculation"]), (len(meta["sheets"]), "cached"))
-        rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=5").json()
-        self.assertEqual((meta["calculated_revision"], rows["calculated_revision"]),
-                         (meta["input_revision"], rows["input_revision"]))
-        self.assertEqual((response.status_code, response.json()["error"]),
-                         (409, "calculation_paused"))
+        self.assertEqual(saved.status_code, 200, saved.body)
+        self.assertEqual(rows["rows"]["1"]["1"]["v"], 12)
+        # nothing recalculates, so the calculated revision follows the typed one and the browser never waits
+        self.assertEqual((rows["input_revision"], rows["calculated_revision"]), (1, 1))
+        self.assertEqual(before["input_revision"], before["calculated_revision"])
+        self.assertEqual((locked.status_code, locked.json()["error"]), (422, "locked"))
+        self.assertEqual((typed_formula.status_code, typed_formula.json()["error"]), (422, "invalid"))
+        # the download carries the typed value, so Excel recalculates with it when the file is opened
+        import io
+        import openpyxl
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsm")
+        self.assertEqual(exported.status_code, 200)
+        workbook = openpyxl.load_workbook(io.BytesIO(exported.body), keep_vba=True)
+        self.assertEqual(workbook.worksheets[0].cell(2, 2).value, 12)
 
     def test_runtime_creates_copies_without_starting_the_engine(self):
         from pp.runtime import create_runtime
