@@ -510,6 +510,23 @@ class CachedStartupTests(unittest.TestCase):
 
             self.assertIn((0, 0, 1, 10), changes)
 
+    def test_formula_map_is_built_once_per_prepared_template(self):
+        from pp.engine import formualizer as module
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "map-cache.xlsx"
+            workbook = Workbook()
+            workbook.active["A1"] = 1
+            workbook.active["B1"] = "=A1*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet1.xml": {"B1": ("2", None)}})
+            cache = Path(temp) / "cache"
+            module.FormualizerAdapter.load(source, cache_dir=cache)
+            with mock.patch.object(module, "_formula_map", side_effect=AssertionError("map rebuilt")):
+                engine = module.FormualizerAdapter.load(source, cache_dir=cache)
+
+            self.assertIn((0, 0, 1, 4), engine.apply([(0, 0, 0, 2)]))
+
     def test_cached_dynamic_formula_recalculates_its_downstream_closure(self):
         from pp.engine.formualizer import FormualizerAdapter
 

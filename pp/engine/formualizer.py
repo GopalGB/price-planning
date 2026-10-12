@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
+import os
+import pickle
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -152,6 +155,33 @@ def _column_number(letters: str) -> int:
     for letter in letters.upper():
         value = value * 26 + ord(letter) - 64
     return value
+
+
+def _cached_formula_map(prepared: Path):
+    """Reuse the formula map of an immutable prepared template across every copy.
+
+    The map takes minutes on a large template. It sits beside the prepared
+    package in the engine cache and is keyed by this module's source, so a code
+    change can never reuse a map built by older parsing rules.
+    """
+    code = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:12]
+    path = prepared.with_name(f"{prepared.name}.map-{code}.pickle")
+    try:
+        with path.open("rb") as handle:
+            return pickle.load(handle)
+    except FileNotFoundError:
+        pass
+    except Exception:
+        path.unlink(missing_ok=True)
+    mapped = _formula_map(prepared)
+    pending = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with pending.open("wb") as handle:
+            pickle.dump(mapped, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(pending, path)
+    except OSError:
+        pending.unlink(missing_ok=True)
+    return mapped
 
 
 def _formula_map(path: Path):
@@ -542,7 +572,7 @@ class FormualizerEngine:
         try:
             path = Path(template_path)
             prepared = prepared_template(path, cache_dir)
-            mapped = _formula_map(prepared)
+            mapped = _cached_formula_map(prepared)
             (formula_cells, formulas, names, cached_values, native_formulas,
              opaque_formulas, trace_budget, settled) = mapped
             date1904 = _uses_1904_date_system(prepared)
