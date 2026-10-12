@@ -36,6 +36,27 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
         self.assertEqual((response.status_code, response.json()["error"]),
                          (409, "calculation_paused"))
 
+    def test_runtime_creates_copies_without_starting_the_engine(self):
+        from pp.runtime import create_runtime
+        from tests.v2.asgi_client import ASGIClient
+        from tests.v2.test_end_to_end import runtime_root
+        temporary, root = runtime_root()
+        self.addCleanup(temporary.cleanup)
+        settings = json.loads((root / "settings.json").read_text())
+        (root / "settings.json").write_text(json.dumps({**settings, "template_results": "cached"}))
+        with mock.patch("pp.engine.pool.EnginePool.apply", side_effect=AssertionError("engine must not run")):
+            runtime = create_runtime(root)
+            self.addCleanup(runtime.close)
+            client = ASGIClient(runtime.app)
+            client.post("/api/auth/signup", {"email": "rt@example.test", "name": "RT",
+                                             "password": "correct-horse-battery"})
+            csrf = client.get("/api/me").json()["csrf"]
+            category = client.post("/api/categories", {"name": "RT"}, {"x-csrf-token": csrf}).json()["category"]
+            response = client.post("/api/copies", {"category_id": category["id"], "name": "RT",
+                                                   "visibility": "private", "default_role": "viewer"},
+                                   {"x-csrf-token": csrf})
+        self.assertEqual(response.status_code, 201)
+
 
 if __name__ == "__main__":
     unittest.main()
