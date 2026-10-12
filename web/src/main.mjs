@@ -113,13 +113,13 @@ async function openCopy(copy) {
     `${categories.find((c) => c.id === copy.category_id)?.name ?? ""} / ${copy.name}`;
   const meta = await api.request(`/copies/${copy.id}/workbook`);
   if (visit !== navigation) return;
+  if (meta.calculation === "cached")
+    $("role-status").textContent = "Read only · Excel's saved values, editing paused";
   const { PlanningGrid } = await import("./grid.mjs");
   if (visit !== navigation) return;
   grid = new PlanningGrid({ api, copy, meta, user, toast, inputHighlight });
   await grid.start();
   if (visit !== navigation) return;
-  if (meta.calculation === "cached")
-    $("edit-status").textContent = "Read only: Excel's saved values, editing paused";
   const highlight = $("input-highlight");
   highlight.onclick = () => {
     const enabled = highlight.getAttribute("aria-pressed") !== "true";
