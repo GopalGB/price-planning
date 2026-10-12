@@ -166,7 +166,7 @@ class CurrentResults(dict):
 
 def _calculated_revision(snapshot, copy):
     # Saved Excel results are current for every revision of a values-only template.
-    return copy["input_revision"] if snapshot.results == "cached" else copy["calculated_revision"]
+    return copy["input_revision"] if getattr(snapshot, "results", "engine") == "cached" else copy["calculated_revision"]
 
 
 def _read_json(path: Path):

@@ -1,5 +1,18 @@
 # STATE
 
+## 2026-10-13 (Claude, production readiness)
+
+feat/v2-integration. CI fully green for the first time (tests 3.10/3.12, security, windows-offline x3).
+- Security: defusedxml for every workbook parse (pp, app, ops); bandit now scans pp; CI actions pinned;
+  nginx example forwards the live WebSocket only, 100 MB uploads. pip-audit clean, gitleaks clean.
+- Daily automatic backup while run_v2 serves (newest 7, "auto_backup": false turns it off).
+- Values mode (no Excel automation): typed values save, formulas stay locked. Ego Lite check found the save
+  chip stuck on "Calculating..."; fixed by an empty calc message in values mode (stored revisions stay honest
+  so the engine recalculates queued jobs once Excel works). Per-sheet zoom verified in Ego Lite.
+- Left for Sir: Office Quick Repair on the server, office_run.bat check 4/4, real edit+download test,
+  firewall port, merge PR #2 to main, repo back to private. Branch oc/editor-protection is unreviewed
+  worker output, not merged.
+
 ## 2026-10-12 (OpenCode runner, pp under bandit)
 
 fix/bandit-hardening at 9f330df. CI now scans the v2 server too: `bandit -r app ops pp -ll`, exit 0.

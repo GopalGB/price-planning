@@ -39,7 +39,8 @@ from .live import LiveHub, serve_live
 from .ops import OperationService
 from .pivot import PivotQuery, PivotService
 from .upload import ConfirmRequest, PreviewRequest, UploadDependencies, UploadService
-from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
+from .workbook_service import (CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService,
+                               _calculated_revision)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -471,7 +472,7 @@ def _macro_response(ack):
 async def _publish_macro(services, copy_id, revision, source, result, pivot_state):
     """Publish a committed macro like an edit; a failure here leaves the calc job for the normal replay."""
     await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("op", revision)))
-    await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services.database, copy_id)})
+    await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services, copy_id)})
     try:
         request = CalculationRequest(copy_id, revision, source, services.operations.revision_changes(copy_id, revision),
                                      pivot_state=pivot_state)
@@ -484,9 +485,13 @@ async def _publish_macro(services, copy_id, revision, source, result, pivot_stat
 async def _calculate_and_publish(services, copy_id, revision):
     event = _event(services.database, copy_id, ("op", revision))
     await services.hub.broadcast(copy_id, event)
-    state = _calc_state(services.database, copy_id)
+    state = _calc_state(services, copy_id)
     await services.hub.broadcast(copy_id, {"type": "calc_state", **state})
     if services.engine_pool is None:
+        if state["calculated_revision"] >= revision:
+            # values-only template: nothing recalculates, but browsers advance their rows on a calc message
+            await services.hub.broadcast(copy_id, {"type": "calc", "from_calculated_revision": revision - 1,
+                                                   "calculated_revision": revision, "changes": []})
         return
     try:
         source = services.workbooks.calculation_source(copy_id)
@@ -517,7 +522,7 @@ async def _calculate_baseline(services, copy, user_id):
             if published:
                 event = _event(services.database, copy["id"], ("calc", 0))
                 await services.hub.broadcast(copy["id"], event)
-                state = _calc_state(services.database, copy["id"])
+                state = _calc_state(services, copy["id"])
                 await services.hub.broadcast(copy["id"], {"type": "calc_state", **state})
         except Exception as exc:
             await asyncio.to_thread(services.calculations.failed, copy["id"], 0, type(exc).__name__)
@@ -906,10 +911,13 @@ def _event(database, copy_id, key):
     return json.loads(row["payload_json"])
 
 
-def _calc_state(database, copy_id):
-    with database.connect() as connection:
-        row = connection.execute("SELECT input_revision,calculated_revision FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
-    return dict(row)
+def _calc_state(services, copy_id):
+    with services.database.connect() as connection:
+        row = connection.execute("SELECT input_revision,calculated_revision,template_id FROM pp_copies WHERE id=?",
+                                 (copy_id,)).fetchone()
+        snapshot = services.workbooks.templates.get(connection, row["template_id"])
+    # same rule as rows and workbook reads: a values-only template is always current
+    return {"input_revision": row["input_revision"], "calculated_revision": _calculated_revision(snapshot, row)}
 
 
 async def _app_error(request, exc: AppError):

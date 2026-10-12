@@ -90,6 +90,33 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
                                                    "visibility": "private", "default_role": "viewer"},
                                    {"x-csrf-token": csrf})
         self.assertEqual(response.status_code, 201)
+        copy_id = response.json()["copy"]["id"]
+        edit = client.post(f"/api/copies/{copy_id}/ops", {
+            "op_id": "typed", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 15, "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        self.assertEqual(edit.status_code, 200, edit.body)
+        # the live calc_state message must report it calculated, or the browser shows "Calculating..."
+        # forever (seen in Ego Lite 2026-10-13); the stored job stays queued so that once Excel works
+        # the engine recalculates this copy instead of skipping it
+        from pp.server import _calc_state
+        self.assertEqual(_calc_state(runtime.app.state.services, copy_id),
+                         {"input_revision": 1, "calculated_revision": 1})
+        with runtime.database.connect() as connection:
+            pending = connection.execute("SELECT COUNT(*) FROM pp_calc_jobs WHERE copy_id=? AND status='pending'",
+                                         (copy_id,)).fetchone()[0]
+        self.assertGreaterEqual(pending, 1)
+        # the browser advances its loaded rows only on a calc message, so values mode sends an empty one
+        import asyncio
+        from pp.server import _calculate_and_publish
+        services, sent = runtime.app.state.services, []
+
+        async def capture(copy, message):
+            sent.append(message)
+        with mock.patch.object(services.hub, "broadcast", side_effect=capture):
+            asyncio.run(_calculate_and_publish(services, copy_id, 1))
+        self.assertIn({"type": "calc", "from_calculated_revision": 0, "calculated_revision": 1, "changes": []},
+                      sent)
         with mock.patch("pp.engine.pool.EnginePool.apply") as engine:
             restarted = create_runtime(root)  # the queued baseline must not be recovered with the engine
         restarted.close()
