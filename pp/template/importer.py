@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 8
+IMPORT_VERSION = 9
 
 
 class TemplateImportError(Exception):
@@ -610,7 +610,9 @@ def _vml_buttons(root: ET.Element) -> list[dict]:
             continue
         macro = _macro_name(client.findtext(f"{EXCEL_VML}FmlaMacro"))
         style = "".join((shape.get("style") or "").split())
-        if not macro or "visibility:hidden" in style:
+        sizes = dict(part.split(":", 1) for part in style.split(";") if ":" in part)
+        zero = any(sizes.get(key, "1").rstrip("ptxin") in {"0", "0.0"} for key in ("width", "height"))
+        if not macro or "visibility:hidden" in style or zero:  # zero-size leftovers are invisible in Excel
             continue
         try:
             left, left_px, top, top_px, right, right_px, bottom, bottom_px = (

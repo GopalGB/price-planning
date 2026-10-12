@@ -63,6 +63,13 @@ VML_XML = """<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-m
    <x:FmlaMacro>'Book.xlsm'!Recalc</x:FmlaMacro>
   </x:ClientData>
  </v:shape>
+ <v:shape id="_x0000_s1028" type="#_x0000_t201" style="position:absolute;margin-left:0;width:0;height:0">
+  <v:textbox><div>Leftover</div></v:textbox>
+  <x:ClientData ObjectType="Button">
+   <x:Anchor>0, 0, 1, 0, 1, 0, 1, 0</x:Anchor>
+   <x:FmlaMacro>[0]!ZeroSize</x:FmlaMacro>
+  </x:ClientData>
+ </v:shape>
  <v:shape id="_x0000_s1026" type="#_x0000_t201" style="position:absolute;visibility:hidden">
   <v:textbox><div>Secret</div></v:textbox>
   <x:ClientData ObjectType="Button">
