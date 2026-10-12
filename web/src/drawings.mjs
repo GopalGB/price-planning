@@ -53,7 +53,12 @@ export function overlayPlacer(sheet, { geometry = null, scroll = null } = {}) {
     const origin = scrollOrigin(sheet, scroll);
     return (item) => {
       const rect = macroRect(sheet, item);
-      return { ...rect, left: rect.left - origin.x, top: rect.top - origin.y, zoom: 1 };
+      return {
+        ...rect,
+        left: rect.left - origin.x,
+        top: rect.top - origin.y,
+        zoom: 1,
+      };
     };
   }
   const marker = (point) => ({
@@ -78,7 +83,8 @@ export function overlayPlacer(sheet, { geometry = null, scroll = null } = {}) {
 // Unzoomed box plus a scale transform, so text and borders zoom like the grid.
 export function positionStyle(rect) {
   const zoom = rect.zoom || 1;
-  const scale = zoom === 1 ? "" : `;transform:scale(${zoom});transform-origin:0 0`;
+  const scale =
+    zoom === 1 ? "" : `;transform:scale(${zoom});transform-origin:0 0`;
   return `left:${px(rect.left)};top:${px(rect.top)};width:${px(rect.width / zoom)};height:${px(rect.height / zoom)}${scale}`;
 }
 
@@ -151,7 +157,10 @@ export function shapeStyle(shape, size) {
 }
 
 function shapeView(shape, rect) {
-  const size = { width: rect.width / rect.zoom, height: rect.height / rect.zoom },
+  const size = {
+      width: rect.width / rect.zoom,
+      height: rect.height / rect.zoom,
+    },
     box = shape.geom !== "downArrow",
     style = [positionStyle(rect), shapeStyle(shape, size)].join(";");
   const link = shape.link
@@ -161,7 +170,11 @@ function shapeView(shape, rect) {
 }
 
 // Pictures and shapes of one sheet, placed by `overlayPlacer`.
-export function drawingsView(meta, sheetIndex, { scroll = null, geometry = null } = {}) {
+export function drawingsView(
+  meta,
+  sheetIndex,
+  { scroll = null, geometry = null } = {},
+) {
   const sheet = meta.sheets.find((item) => item.index === sheetIndex);
   if (!sheet) return "";
   const place = overlayPlacer(sheet, { geometry, scroll });

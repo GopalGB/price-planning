@@ -26,7 +26,9 @@ export function macroButtonsView(
       const look = button.look
         ? `;${shapeStyle(button.look, { width: rect.width / rect.zoom, height: rect.height / rect.zoom })}`
         : "";
-      const label = button.look?.text ? textView(button.look.text) : e(button.label);
+      const label = button.look?.text
+        ? textView(button.look.text)
+        : e(button.label);
       return `<button type="button" class="macro-button${button.look ? " macro-shape" : ""}" data-macro="${e(button.id)}" style="${positionStyle(rect)}${look}" title="${e(button.label)}" ${disabled ? "disabled" : ""}>${label}</button>`;
     })
     .join("");

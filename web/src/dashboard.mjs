@@ -44,7 +44,9 @@ export function excelSelection(items, caption, additive) {
   const all = items.map((item) => item.caption);
   if (caption === null) return all;
   if (!additive) return [caption];
-  const current = items.filter((item) => item.selected).map((item) => item.caption);
+  const current = items
+    .filter((item) => item.selected)
+    .map((item) => item.caption);
   const next = current.includes(caption)
     ? current.filter((text) => text !== caption)
     : [...current, caption];
@@ -459,7 +461,9 @@ export class DashboardController {
     this.pivot = sheet.pivots?.[0];
     this.scope = this.pivot && this.categoryId ? this.preferredScope : "copy";
     this.onScopeChange(this.readOnly());
-    this.excelSlicers = (sheet.slicers ?? []).filter((item) => item.engine === "excel");
+    this.excelSlicers = (sheet.slicers ?? []).filter(
+      (item) => item.engine === "excel",
+    );
     if (!this.pivot) {
       this.renderExcelSlicers();
       return false;
@@ -1033,7 +1037,8 @@ export class DashboardController {
   slicerPick(slicer, item, event) {
     if (slicer.engine === "excel") {
       const additive =
-        this.multi.has(slicer.name) || Boolean(event?.ctrlKey || event?.metaKey);
+        this.multi.has(slicer.name) ||
+        Boolean(event?.ctrlKey || event?.metaKey);
       return this.pickExcel(
         slicer,
         excelSelection(slicer.items, item.caption, additive),
@@ -1059,8 +1064,15 @@ export class DashboardController {
     this.excelBusy.add(slicer.name);
     this.renderExcelSlicers();
     try {
-      const result = await runSlicer(this.api, this.copyId, slicer.cache, selected);
-      const stored = this.excelSlicers.find((item) => item.name === slicer.name);
+      const result = await runSlicer(
+        this.api,
+        this.copyId,
+        slicer.cache,
+        selected,
+      );
+      const stored = this.excelSlicers.find(
+        (item) => item.name === slicer.name,
+      );
       for (const item of stored.items)
         item.selected = result.selected.includes(item.caption);
       return true;

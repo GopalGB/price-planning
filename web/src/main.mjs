@@ -80,7 +80,10 @@ async function showHome() {
   $("logout-button").hidden = false;
   $("save-chip").textContent = user.name;
   $("save-chip").classList.remove("busy");
-  const [home, me] = await Promise.all([loadHome(api, categoryId), api.request("/me")]);
+  const [home, me] = await Promise.all([
+    loadHome(api, categoryId),
+    api.request("/me"),
+  ]);
   if (visit !== navigation) return;
   categories = home.categories;
   copies = home.copies;
@@ -139,7 +142,8 @@ async function openCopy(copy) {
   if (visit !== navigation) return;
   $("refresh-button").hidden = !meta.refreshable;
   if (meta.calculation === "cached") {
-    $("role-status").textContent = "Read only · Excel's saved values, editing paused";
+    $("role-status").textContent =
+      "Read only · Excel's saved values, editing paused";
     if ($("upload-button")) $("upload-button").hidden = true;
   }
   const { PlanningGrid } = await import("./grid.mjs");
@@ -452,12 +456,22 @@ async function applyBrand() {
   if (brand.colors?.primary) document.body.classList.add("branded");
   if (brand.assets.includes("logo") && brand.colors?.primary) {
     const logo = document.createElement("img");
-    Object.assign(logo, { src: "/brand/logo", alt: brand.name, className: "brand-logo" });
+    Object.assign(logo, {
+      src: "/brand/logo",
+      alt: brand.name,
+      className: "brand-logo",
+    });
     document.querySelector("#home-button .mark").replaceWith(logo);
   }
-  for (const [asset, rel] of [["favicon", "icon"], ["touch_icon", "apple-touch-icon"]]) {
+  for (const [asset, rel] of [
+    ["favicon", "icon"],
+    ["touch_icon", "apple-touch-icon"],
+  ]) {
     if (!brand.assets.includes(asset)) continue;
-    const link = Object.assign(document.createElement("link"), { rel, href: `/brand/${asset}` });
+    const link = Object.assign(document.createElement("link"), {
+      rel,
+      href: `/brand/${asset}`,
+    });
     document.head.append(link);
   }
 }

@@ -67,7 +67,8 @@ export class PlanningGrid {
     });
     this.macroBusy = new Set();
     // Values-only templates cannot recalculate, so every copy opens read only.
-    if (meta.calculation === "cached") this.copy = { ...copy, my_role: "viewer" };
+    if (meta.calculation === "cached")
+      this.copy = { ...copy, my_role: "viewer" };
     this.styleMap = new Map(
       (meta.styles ?? []).map((style) => [String(style.id), style]),
     );
@@ -180,11 +181,17 @@ export class PlanningGrid {
     $("macro-layer").onclick = (event) => {
       const id = event.target.closest?.("button[data-macro]")?.dataset.macro;
       if (id !== undefined) this.pressMacro(id);
-      const link = linkTarget(this.meta, event.target.closest?.("[data-link-sheet]"));
+      const link = linkTarget(
+        this.meta,
+        event.target.closest?.("[data-link-sheet]"),
+      );
       if (link) this.attempt(() => this.followLink(link));
     };
     $("macro-layer").onkeydown = (event) => {
-      const link = linkTarget(this.meta, event.target.closest?.("[data-link-sheet]"));
+      const link = linkTarget(
+        this.meta,
+        event.target.closest?.("[data-link-sheet]"),
+      );
       if (link && (event.key === "Enter" || event.key === " ")) {
         event.preventDefault();
         this.attempt(() => this.followLink(link));
@@ -525,6 +532,10 @@ export class PlanningGrid {
       this.internal--;
     }
     this.worksheet = this.u.getActiveWorkbook().getSheetBySheetId(`s${index}`);
+    // Each switch builds a new workbook, so the sheet's zoom is restored here, per sheet like Excel
+    const zoom = this.zooms?.get(index) ?? 1;
+    if (zoom !== 1) this.worksheet.zoom(zoom);
+    $("zoom").value = `${Math.round(zoom * 100)}%`;
     const context = { sheet: index, worksheet: this.worksheet, generation };
     this.tabs();
     await this.loadBlock(0, true);
@@ -1529,6 +1540,7 @@ export class PlanningGrid {
   setZoom(zoom) {
     // The facade runs Univer's zoom command; the bare zoom operation left the grid unzoomed.
     // Overlays are placed again when the operation runs (see the command listener).
+    (this.zooms ??= new Map()).set(this.sheet, zoom);
     this.worksheet?.zoom(zoom);
   }
   dispose() {

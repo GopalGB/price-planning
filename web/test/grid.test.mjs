@@ -18,7 +18,7 @@ function gridHarness(responses, styles = []) {
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
 function navigationHarness(request) {
  const elements=new Map(),element=id=>{if(!elements.has(id))elements.set(id,{id,textContent:'',innerHTML:'',classList:{toggle:()=>{}},getRange:()=>{}});return elements.get(id);};
- globalThis.document={getElementById:element};const worksheets=[],makeWorksheet=sheet=>({sheet,activations:[],scrolls:[],getRange(r,c){return {activate:()=>this.activations.push([r,c])};},scrollToCell(r,c){this.scrolls.push([r,c]);}});
+ globalThis.document={getElementById:element};const worksheets=[],makeWorksheet=sheet=>({sheet,activations:[],scrolls:[],zooms:[],zoom(ratio){this.zooms.push(ratio);},getRange(r,c){return {activate:()=>this.activations.push([r,c])};},scrollToCell(r,c){this.scrolls.push([r,c]);}});
  let activeWorksheet=makeWorksheet(0),workbook={getSheetBySheetId:()=>activeWorksheet};worksheets.push(activeWorksheet);
  const grid=Object.create(PlanningGrid.prototype),store=new CellStore(),meta={template:{name:'Test'},styles:[],sheets:[{index:0,name:'One',rows:512,cols:3},{index:1,name:'Two',rows:512,cols:3}]};
  Object.assign(grid,{api:{request},copy:{id:'one',my_role:'editor'},meta,sheet:0,store,cache:new RowCache(3),closed:false,showHidden:false,worksheet:activeWorksheet,rendered:new Map(),selection:[{startRow:0,endRow:0,startColumn:1,endColumn:1}],generation:0,copyToken:0,goToToken:0,internal:0,toast:()=>{},mutate:()=>{},selectionInfo:async()=>{},u:{getActiveWorkbook:()=>workbook,disposeUnit:()=>{workbook=null;},createWorkbook:snapshot=>{activeWorksheet=makeWorksheet(Number(snapshot.sheetOrder[0].slice(1)));worksheets.push(activeWorksheet);workbook={getSheetBySheetId:()=>activeWorksheet};}}});
@@ -139,6 +139,13 @@ test('deferred go-to cannot activate a replacement worksheet after switching awa
  const {grid,worksheets}=navigationHarness(path=>path.includes('/sheets/0/rows?start=256')?distant.promise:Promise.resolve(rows));
  const moving=grid.goTo('B257');await Promise.resolve();await grid.switchSheet(1);await grid.switchSheet(0);const replacement=worksheets.at(-1);distant.resolve(rows);const result=await moving;
  assert.deepEqual(replacement.activations,[[1,1]]);assert.deepEqual(replacement.scrolls,[]);assert.equal(grid.store.get(0,256,1),undefined);assert.equal(result,false);
+});
+test('each sheet keeps its own zoom like Excel and the dropdown shows it',async()=>{
+ const rows={input_revision:0,calculated_revision:0,rows:{}},{grid,worksheets,elements}=navigationHarness(async()=>rows);
+ grid.setZoom(1.5);await grid.switchSheet(1);
+ assert.deepEqual(worksheets.at(-1).zooms,[]);assert.equal(elements.get('zoom').value,'100%');
+ await grid.switchSheet(0);
+ assert.deepEqual(worksheets.at(-1).zooms,[1.5]);assert.equal(elements.get('zoom').value,'150%');
 });
 test('missing operation timestamp hydrates from detail and stale detail cannot regress metadata',async()=>{
  const first=deferred(),second=deferred(),details=[first,second],requests=[],store=new CellStore({0:{1:{v:10,k:'i',ver:4,by:{name:'Old'},at:'2025-01-01T00:00:00.000Z'}}}),api={request:async path=>{requests.push(path);return details.shift().promise;}},grid=Object.create(PlanningGrid.prototype);
