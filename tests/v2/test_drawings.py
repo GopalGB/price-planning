@@ -82,6 +82,32 @@ class DrawingImportTests(unittest.TestCase):
         self.assertEqual(nav["text"]["paragraphs"], [{"align": "ctr", "runs": [
             {"t": "Go", "b": True, "i": False, "sz": 16.0, "color": "#FFFFFF", "font": None}]}])
 
+    def test_macro_shape_buttons_keep_the_shape_look(self):
+        from pp.template.colors import Palette
+        from pp.template.importer import _drawing_buttons
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("xl/drawings/drawing1.xml", DRAWING)
+        with zipfile.ZipFile(buffer) as archive:
+            buttons = _drawing_buttons(ET.fromstring(DRAWING), "xl/drawings/drawing1.xml", archive, Palette())
+        self.assertEqual([button["macro"] for button in buttons], ["Run"])
+        look = buttons[0]["look"]
+        self.assertEqual((look["geom"], look["fill"]), ("roundRect", "#4472C4"))
+        self.assertEqual(look["text"]["paragraphs"][0]["runs"][0]["t"], "b")
+        self.assertNotIn("link", look)
+
+    def test_shape_that_does_not_resize_with_cells_keeps_its_own_size(self):
+        from pp.template.drawings import anchor_box
+
+        drawing = ET.fromstring(DRAWING.replace("<xdr:twoCellAnchor>", '<xdr:twoCellAnchor editAs="oneCell">', 1)
+                                .replace('<xdr:spPr><a:prstGeom prst="rect"/>',
+                                         '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="952500" cy="476250"/></a:xfrm>'
+                                         '<a:prstGeom prst="rect"/>', 1))
+        anchor = next(iter(drawing))
+        self.assertEqual(anchor_box(anchor, anchor.find(f"{{{XDR}}}pic")),
+                         {"from": {"row": 1, "col": 2, "dx": 1.0, "dy": 0.0}, "size": {"w": 100.0, "h": 50.0}})
+
 
 if __name__ == "__main__":
     unittest.main()

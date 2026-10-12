@@ -1266,7 +1266,7 @@ function rangeAnchor(row, firstColumn, lastColumn) {
   };
 }
 
-function worksheetGeometry(worksheet, sheet, scroll) {
+export function worksheetGeometry(worksheet, sheet, scroll) {
   const skeleton = worksheet?.getSkeleton?.();
   if (!worksheet || !skeleton) return null;
   return {

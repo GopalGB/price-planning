@@ -1,65 +1,33 @@
 import { escapeHTML as e } from "./views.mjs";
 import { newOpId } from "./model.mjs";
-import { GRID_DEFAULT_COLUMN_WIDTH } from "./grid-data.mjs";
+import {
+  overlayPlacer,
+  positionStyle,
+  shapeStyle,
+  textView,
+} from "./drawings.mjs";
 
-const DEFAULT_ROW_HEIGHT = 28;
-
-// Sheet pixel offsets of rows and columns, skipping hidden ones, as the grid lays them out.
-function axes(sheet) {
-  const hiddenCols = new Set(sheet.hidden_cols ?? []),
-    hiddenRows = new Set(sheet.hidden_rows ?? []);
-  const start = (index, sizes, hidden, fallback) => {
-    let offset = 0;
-    for (let i = 0; i < index; i++)
-      if (!hidden.has(i)) offset += sizes[i] ?? fallback;
-    return offset;
-  };
-  return {
-    x: (col) =>
-      start(col, sheet.col_widths ?? {}, hiddenCols, GRID_DEFAULT_COLUMN_WIDTH),
-    y: (row) =>
-      start(row, sheet.row_heights ?? {}, hiddenRows, DEFAULT_ROW_HEIGHT),
-  };
-}
-
-export function macroRect(sheet, button) {
-  const { x, y } = axes(sheet);
-  const left = x(button.from.col) + button.from.dx,
-    top = y(button.from.row) + button.from.dy;
-  if (button.size)
-    return { left, top, width: button.size.w, height: button.size.h };
-  return {
-    left,
-    top,
-    width: Math.max(0, x(button.to.col) + button.to.dx - left),
-    height: Math.max(0, y(button.to.row) + button.to.dy - top),
-  };
-}
-
-// Scroll state from Univer: the sheet pixel position of the viewport's top-left corner.
-export function scrollOrigin(sheet, scroll) {
-  if (!scroll) return { x: 0, y: 0 };
-  const { x, y } = axes(sheet);
-  return {
-    x: x(scroll.sheetViewStartColumn ?? 0) + (scroll.offsetX ?? 0),
-    y: y(scroll.sheetViewStartRow ?? 0) + (scroll.offsetY ?? 0),
-  };
-}
+export { macroRect, scrollOrigin } from "./drawings.mjs";
 
 export function macroButtonsView(
   meta,
   sheetIndex,
-  { scroll = null, copyRole, busy = new Set() } = {},
+  { scroll = null, geometry = null, copyRole, busy = new Set() } = {},
 ) {
   const sheet = meta.sheets.find((item) => item.index === sheetIndex);
   if (!sheet) return "";
-  const origin = scrollOrigin(sheet, scroll);
+  const place = overlayPlacer(sheet, { geometry, scroll });
   return (meta.buttons ?? [])
     .filter((button) => button.sheet === sheetIndex)
     .map((button) => {
-      const rect = macroRect(sheet, button);
+      const rect = place(button);
       const disabled = copyRole === "viewer" || busy.has(button.id);
-      return `<button type="button" class="macro-button" data-macro="${e(button.id)}" style="left:${rect.left - origin.x}px;top:${rect.top - origin.y}px;width:${rect.width}px;height:${rect.height}px" title="${e(button.label)}" ${disabled ? "disabled" : ""}>${e(button.label)}</button>`;
+      // A button drawn as a template shape keeps the shape's look; form buttons look like Excel's.
+      const look = button.look
+        ? `;${shapeStyle(button.look, { width: rect.width / rect.zoom, height: rect.height / rect.zoom })}`
+        : "";
+      const label = button.look?.text ? textView(button.look.text) : e(button.label);
+      return `<button type="button" class="macro-button${button.look ? " macro-shape" : ""}" data-macro="${e(button.id)}" style="${positionStyle(rect)}${look}" title="${e(button.label)}" ${disabled ? "disabled" : ""}>${label}</button>`;
     })
     .join("");
 }

@@ -37,8 +37,22 @@ def _anchor_point(node: ET.Element) -> dict:
             "dy": _emu_pixels(node.findtext(f"{DRAWING_XDR}rowOff"))}
 
 
-def anchor_box(anchor: ET.Element) -> dict:
-    """Where an anchor sits: a start cell plus an end cell or a pixel size."""
+def _extent(shape: ET.Element | None) -> dict | None:
+    xfrm = next(shape.iter(f"{DRAWING_A}xfrm"), None) if shape is not None else None
+    ext = xfrm.find(f"{DRAWING_A}ext") if xfrm is not None else None
+    return {"w": _emu_pixels(ext.get("cx")), "h": _emu_pixels(ext.get("cy"))} if ext is not None else None
+
+
+def anchor_box(anchor: ET.Element, shape: ET.Element | None = None) -> dict:
+    """Where an anchor sits: a start cell plus an end cell or a pixel size.
+
+    A two-cell anchor that does not resize with cells (editAs oneCell/absolute) keeps the shape's own size,
+    as Excel draws it when rows or columns under it are hidden or resized.
+    """
+    if anchor.tag == f"{DRAWING_XDR}twoCellAnchor" and anchor.get("editAs") in {"oneCell", "absolute"}:
+        size = _extent(shape)
+        if size:
+            return {"from": _anchor_point(anchor.find(f"{DRAWING_XDR}from")), "size": size}
     if anchor.tag == f"{DRAWING_XDR}absoluteAnchor":
         pos, ext = anchor.find(f"{DRAWING_XDR}pos"), anchor.find(f"{DRAWING_XDR}ext")
         start = {"row": 0, "col": 0, "dx": _emu_pixels(pos.get("x")), "dy": _emu_pixels(pos.get("y"))}
@@ -181,7 +195,7 @@ def _link(shape: ET.Element, rels: dict) -> dict | None:
     return {"sheet": sheet, "cell": cell.replace("$", "")}
 
 
-def _shape(shape: ET.Element, palette: Palette, rels: dict) -> dict | None:
+def shape_look(shape: ET.Element, palette: Palette, rels: dict) -> dict | None:
     props = shape.find(f"{DRAWING_XDR}spPr")
     geometry = props.find(f"{DRAWING_A}prstGeom") if props is not None else None
     adjust = geometry.find(f"{DRAWING_A}avLst/{DRAWING_A}gd") if geometry is not None else None
@@ -207,9 +221,9 @@ def drawing_objects(root: ET.Element, part: str, archive: zipfile.ZipFile, palet
                 continue
             try:
                 item = (_picture(shape, archive, rels) if shape.tag == f"{DRAWING_XDR}pic"
-                        else _shape(shape, palette, rels))
+                        else shape_look(shape, palette, rels))
                 if item:
-                    found.append({**anchor_box(anchor), **item})
+                    found.append({**anchor_box(anchor, shape), **item})
             except (AttributeError, TypeError, ValueError):  # a malformed object is left out, not the template
                 continue
     return found

@@ -40,7 +40,11 @@ import {
   advanceDetail,
   commandUndo,
 } from "./grid-data.mjs";
-import { DashboardController, importedRoleStyles } from "./dashboard.mjs";
+import {
+  DashboardController,
+  importedRoleStyles,
+  worksheetGeometry,
+} from "./dashboard.mjs";
 import {
   escapeHTML as e,
   syncFormula,
@@ -1456,10 +1460,17 @@ export class PlanningGrid {
     const scroll = this.u
       .getActiveWorkbook()
       ?.getScrollStateBySheetId(`s${this.sheet}`);
+    let geometry = null;
+    try {
+      geometry = worksheetGeometry(this.worksheet, this.currentSheet(), scroll);
+    } catch {
+      geometry = null; // grid not laid out yet: summed sheet sizes until the next render
+    }
     layer.innerHTML =
-      drawingsView(this.meta, this.sheet, { scroll }) +
+      drawingsView(this.meta, this.sheet, { scroll, geometry }) +
       macroButtonsView(this.meta, this.sheet, {
         scroll,
+        geometry,
         copyRole: this.copy.my_role,
         busy: this.macroBusy,
       });
@@ -1500,8 +1511,6 @@ export class PlanningGrid {
     }
   }
   setZoom(zoom) {
-    const layer = $("macro-layer");
-    if (layer) layer.style.transform = `scale(${zoom})`;
     this.internal++;
     try {
       this.u.syncExecuteCommand("sheet.operation.set-zoom-ratio", {

@@ -21,8 +21,8 @@ from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .colors import Palette, indexed_palette, theme_colors
-from .drawings import (DRAWING_A, DRAWING_REL, DRAWING_XDR, VML_REL, _anchor_point, _emu_pixels,
-                       drawing_objects, sheet_drawing_parts)
+from .drawings import (DRAWING_A, DRAWING_REL, DRAWING_XDR, VML_REL, anchor_box, anchors, drawing_objects,
+                       related_parts, shape_look, sheet_drawing_parts)
 from .dashboard import DashboardUnsupported, read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
@@ -33,7 +33,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 14
+IMPORT_VERSION = 15
 
 
 class TemplateImportError(Exception):
@@ -574,25 +574,26 @@ def _macro_name(text: str | None) -> str:
     return (text or "").strip().rsplit("!", 1)[-1].strip()
 
 
-def _drawing_buttons(root: ET.Element) -> list[dict]:
+def _drawing_buttons(root: ET.Element, part: str, archive: zipfile.ZipFile, palette: Palette) -> list[dict]:
+    rels = related_parts(archive, part)
     buttons = []
-    for anchor in root:
-        if anchor.tag not in (f"{DRAWING_XDR}twoCellAnchor", f"{DRAWING_XDR}oneCellAnchor"):
-            continue
+    for anchor in anchors(root):
         for shape in anchor.iter():
             macro = _macro_name(shape.get("macro"))
             props = next(shape.iter(f"{DRAWING_XDR}cNvPr"), None)
             if not macro or (props is not None and props.get("hidden") in {"1", "true"}):
                 continue
             label = "".join(text.text or "" for text in shape.iter(f"{DRAWING_A}t")).strip()
-            if anchor.tag == f"{DRAWING_XDR}twoCellAnchor":
-                end = {"to": _anchor_point(anchor.find(f"{DRAWING_XDR}to"))}
-            else:
-                ext = anchor.find(f"{DRAWING_XDR}ext")
-                end = {"size": {"w": _emu_pixels(ext.get("cx")), "h": _emu_pixels(ext.get("cy"))}}
-            buttons.append({"from": _anchor_point(anchor.find(f"{DRAWING_XDR}from")), **end,
-                            "label": label or (props.get("name", "") if props is not None else ""),
-                            "macro": macro})
+            button = {**anchor_box(anchor, shape), "label": label or (props.get("name", "") if props is not None else ""),
+                      "macro": macro}
+            if shape.tag == f"{DRAWING_XDR}sp":  # drawn with the shape's own fill, line and text
+                try:
+                    look = shape_look(shape, palette, rels)
+                except (AttributeError, TypeError, ValueError):
+                    look = None
+                if look and (look["fill"] or look["line"]):  # a bare text shape keeps the plain button look
+                    button["look"] = {key: value for key, value in look.items() if key not in {"kind", "link"}}
+            buttons.append(button)
     return buttons
 
 
@@ -622,11 +623,12 @@ def _vml_buttons(root: ET.Element) -> list[dict]:
 
 
 def _button_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict]:
+    palette = Palette(theme_colors(archive))
     found = []
     for spec in sheet_specs:
         for rel_type, part in sheet_drawing_parts(archive, spec["part"]):
             root = ET.fromstring(archive.read(part))
-            extracted = _vml_buttons(root) if rel_type == VML_REL else _drawing_buttons(root)
+            extracted = _vml_buttons(root) if rel_type == VML_REL else _drawing_buttons(root, part, archive, palette)
             found.extend({"sheet": spec["index"], **button} for button in extracted)
     return [{"id": f"b{number}", **button} for number, button in enumerate(found)]
 

@@ -47,3 +47,26 @@ test("a shape link resolves to the sheet index by name", () => {
   assert.equal(linkTarget(meta, { dataset: { linkSheet: "Gone", linkCell: "A1" } }), null);
   assert.equal(linkTarget(meta, null), null);
 });
+
+test("with grid geometry, overlays use Univer cell positions, headers and zoom", async () => {
+  const { macroButtonsView } = await import("../src/macros.mjs");
+  const geometry = {
+    cellRect: (r, c) => ({ left: 40 + c * 64, right: 104 + c * 64, top: 20 + r * 20, bottom: 40 + r * 20 }),
+    zoom: 2,
+    headers: { left: 40, top: 20 },
+    freeze: { rows: 0, cols: 0 },
+    scroll: { viewportScrollX: 0, viewportScrollY: 0 },
+  };
+  const item = { id: "d9", sheet: 0, kind: "picture", from: { row: 1, col: 1, dx: 5, dy: 0 }, size: { w: 10, h: 10 }, src: "data:image/png;base64,CC" };
+  const html = drawingsView({ sheets: [sheet], drawings: [item] }, 0, { geometry });
+  assert.match(html, /style="left:218px;top:80px;width:10px;height:10px;transform:scale\(2\);transform-origin:0 0"/);
+  const button = {
+    id: "b0", sheet: 0, label: "Run", from: { row: 0, col: 0, dx: 0, dy: 0 }, to: { row: 1, col: 1, dx: 0, dy: 0 },
+    look: { geom: "roundRect", adjust: 0.5, fill: "#ED7D31", line: null, shadow: false,
+      text: { anchor: "ctr", wrap: true, inset: [0, 0, 0, 0], paragraphs: [{ align: "ctr", runs: [{ t: "Run", b: false, i: false, sz: 12, color: "#FFFFFF" }] }] } },
+  };
+  const buttons = macroButtonsView({ sheets: [sheet], buttons: [button] }, 0, { geometry, copyRole: "editor" });
+  // A1 to B2: 64 x 20 unzoomed, corners half of the shorter side
+  assert.match(buttons, /class="macro-button macro-shape"[^>]*style="left:80px;top:40px;width:64px;height:20px;transform:scale\(2\);transform-origin:0 0;background:#ED7D31;border-radius:10px"/);
+  assert.match(buttons, /<div class="sheet-shape-text"[^>]*><p style="text-align:center"><span[^>]*>Run<\/span>/);
+});
