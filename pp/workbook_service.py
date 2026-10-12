@@ -280,7 +280,7 @@ class WorkbookService:
             if effective_role(connection, copy_id, user_id) not in {"owner", "editor"}:
                 raise AppError(403, "forbidden", "Editor access is required")
             snapshot = self.templates.get(connection, copy["template_id"])
-        if button_id not in {button["id"] for button in snapshot.buttons}:
+        if not isinstance(button_id, str) or button_id not in {button["id"] for button in snapshot.buttons}:
             raise AppError(404, "unknown_button", "Macro button not found")
         # Track M3 replaces this with the office-server run.
         raise AppError(409, "macros_unavailable",

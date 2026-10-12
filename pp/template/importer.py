@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 7
+IMPORT_VERSION = 8
 
 
 class TemplateImportError(Exception):
