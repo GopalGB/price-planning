@@ -388,6 +388,28 @@ class ExcelOnlyDashboardTests(unittest.TestCase):
         meta = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))
         return next(sheet for sheet in meta["sheets"] if sheet["name"] == "Dashboard")
 
+    def test_pivot_reading_another_workbook_is_run_by_excel(self):
+        """The real template's cache names a sheet of an external workbook (worksheetSource r:id)."""
+        from pp.template.importer import import_template
+
+        def link_external(data):
+            root = ET.fromstring(data)
+            node = root.find(f"{MAIN}cacheSource/{MAIN}worksheetSource")
+            node.set("sheet", "OtherBookData")
+            node.set("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id", "rId9")
+            return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "linked.xlsm"
+            fixtures.make_dashboard(source, row_count=32)
+            rewrite_member(source, "xl/pivotCache/pivotCacheDefinition1.xml", link_external)
+            meta = json.loads((import_template(source, Path(temp) / "data") / "meta.json").read_text())
+        sheet = next(sheet for sheet in meta["sheets"] if sheet["name"] == "Dashboard")
+        self.assertEqual(sheet["pivots"], [])
+        self.assertEqual([pivot["name"] for pivot in sheet["excel_pivots"]], ["DashboardPivot"])
+        self.assertEqual({slicer["engine"] for slicer in sheet["slicers"]}, {"excel"})
+
     def test_external_pivot_leaves_python_pivots_empty_and_keeps_its_slicers_for_excel(self):
         TMP.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=TMP) as temp:

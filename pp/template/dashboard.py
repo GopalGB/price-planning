@@ -15,6 +15,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS
 
 MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 PACKAGE_REL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+R_ID = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
 X14 = "{http://schemas.microsoft.com/office/spreadsheetml/2009/9/main}"
 XDR = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
 XDR14 = "{http://schemas.microsoft.com/office/drawing/2010/slicer}"
@@ -375,7 +376,10 @@ def _read_pivot(archive, part, context):
     cache = _part_xml(archive, cache_parts[0])
     cache_id = _integer(root.get("cacheId"), "pivot cache id")
     source_node = cache.find(f"{MAIN}cacheSource")
-    if source_node is not None and source_node.get("type") == "external":
+    linked = source_node.find(f"{MAIN}worksheetSource") if source_node is not None else None
+    # Excel runs pivots fed by a connection or by a sheet of another workbook (worksheetSource r:id).
+    if source_node is not None and (source_node.get("type") == "external" or (
+            linked is not None and linked.get(R_ID))):
         return _external_pivot(root, cache, cache_id, number_formats)
     cache_fields = cache.findall(f"{MAIN}cacheFields/{MAIN}cacheField")
     source = _cache_source(cache, sheet_names)
