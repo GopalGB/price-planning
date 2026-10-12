@@ -76,3 +76,17 @@ online SQLite backup for rollback. Once v2 has migrated a data directory, do not
 run `run.bat` against that directory. V2 refuses a later startup if legacy tables
 have changed since migration. Keep legacy operation in a separate data directory
 or restore its backup into an empty directory before reverting to the legacy app.
+
+## Excel calculation engine (office server with Microsoft Excel)
+
+Large templates calculate in Microsoft Excel itself. In `settings.json` add `"engine": "excel"` (keep
+`template_results` unset). Each open copy gets its own hidden Excel with macros and events turned off;
+idle copies are closed by the memory budget (`engine_memory_budget_mb`, counts Excel's memory too).
+
+First check on the server, before inviting users (prints counts and timings only, no cell values):
+
+    .venv\Scripts\python ops\excel_smoke.py
+
+It must end with `PASS`. The first start builds the template caches in the background (a few
+minutes); edits made before that finish simply wait for them. Without Excel (this Mac), use
+`"template_results": "cached"` to show the template read only.
