@@ -49,10 +49,51 @@ class TemplateSnapshot:
         return f"{sheet}:{row}:{col}" in self.input_mask or self.cell(sheet, row, col)["k"] == "i"
 
     def implicit_cells(self, sheet: int, row: int) -> dict:
+        """Input cells of a row, including empty ones an unlocked row or column style makes editable."""
         if not 0 <= sheet < len(self.sheets) or not 0 <= row < self.sheets[sheet]["rows"]:
             return {}
-        return {str(col): record for col in range(self.sheets[sheet]["cols"])
-                if (record := self.cell(sheet, row, col))["k"] == "i"}
+        info = self.sheets[sheet]
+        stored = self.block(sheet, row // 256).get(str(row % 256), {})
+        cells = {col: record for col, record in stored.items()
+                 if record["k"] == "i" and int(col) < info["cols"]}
+        if not info.get("protected", False):
+            return cells
+        row_style = info.get("row_styles", {}).get(str(row))
+        # shortcut: unlocked row or column styles stop at the used width, not column 16384 (2M empty cells
+        # per window); typing far right of all data is refused there. Upgrade: send style spans to the client.
+        width = min(info["cols"], self._used_cols(sheet))
+        spans = ([(0, width - 1, row_style)] if row_style is not None else self._column_spans(sheet))
+        for first, last, style in spans:
+            last = min(last, width - 1)
+            if self.styles[style].get("locked", True):
+                continue
+            cells.update((str(col), {"v": None, "s": style, "k": "i"})
+                         for col in range(first, last + 1) if str(col) not in stored)
+        return cells
+
+    @lru_cache(maxsize=64)
+    def _used_cols(self, sheet: int) -> int:
+        """One past the rightmost stored cell, merge or styled column range that ends inside the sheet."""
+        info, used = self.sheets[sheet], 0
+        for path in (self.path / "sheets" / str(sheet)).glob("*.json"):
+            for cells in _read_json(path).values():
+                used = max([used, *(int(col) + 1 for col in cells)])
+        used = max([used, *(merge[3] + 1 for merge in info.get("merges", []) if len(merge) == 4)])
+        return max([used, *(last + 1 for _, last, _ in info.get("col_styles", []) if last < info["cols"] - 1)])
+
+    @lru_cache(maxsize=64)
+    def _column_spans(self, sheet: int) -> tuple:
+        """Column style ranges clipped to the sheet; the first range listing a column wins, as in _default_style."""
+        info, spans, covered = self.sheets[sheet], [], []
+        for first, last, style in info.get("col_styles", []):
+            pieces = [(max(first, 0), min(last, info["cols"] - 1))]
+            for done_first, done_last in covered:
+                pieces = [part for start, stop in pieces for part in (
+                    (start, min(stop, done_first - 1)), (max(start, done_last + 1), stop))
+                    if part[0] <= part[1]]
+            spans += [(start, stop, style) for start, stop in pieces if start <= stop]
+            covered.append((first, last))
+        return tuple(spans)
 
     def _default_style(self, sheet, row, col):
         if not 0 <= sheet < len(self.sheets):
