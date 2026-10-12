@@ -1,8 +1,8 @@
 # STATE
 
-## 2026-10-12 (Claude, P6.5 refresh data)
+## 2026-10-12 12:20 IST (Claude, P6.5 refresh data)
 
-Branch feat/v2-pq-refresh (worktree PricePlanning-work/pq-refresh): "Refresh data" runs Excel's own
+Merged into feat/v2-integration at 7930bbe (648 Python OK, 121 web OK, guard 0). "Refresh data" runs Excel's own
 RefreshAll on the copy's private Excel, waits for the queries, and commits what changed as one `refresh`
 revision through the macro diff. `refreshable` (IMPORT_VERSION 10) comes from xl/connections.xml.
 Route POST /api/copies/{id}/refresh; web toolbar button shown only when refreshable.
