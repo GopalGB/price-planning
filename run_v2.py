@@ -11,7 +11,7 @@ import socket
 import uvicorn
 
 from pp.auto_backup import KEEP, AutoBackup
-from pp.config import _detected_ipv4, http_origin, load_config, resolve_database_path
+from pp.config import _detected_ipv4, http_origin, load_config
 from pp.runtime import create_runtime
 from pp.template.importer import import_template
 
@@ -115,7 +115,7 @@ def _start_auto_backup(config) -> AutoBackup | None:
     if not config.auto_backup:
         return None
     dest = ROOT / "backups"
-    auto_backup = AutoBackup(resolve_database_path(ROOT), dest).start()
+    auto_backup = AutoBackup(config.database_path, dest).start()  # the database the server opened
     print(f"Automatic backup: daily into {dest}, keeping the newest {KEEP}.", flush=True)
     return auto_backup
 
