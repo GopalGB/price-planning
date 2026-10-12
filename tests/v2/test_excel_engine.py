@@ -214,7 +214,7 @@ class ComHostTests(unittest.TestCase):
             host.close()
 
         self.assertEqual((app.Visible, app.DisplayAlerts, app.EnableEvents, app.AutomationSecurity,
-                          app.Calculation), (False, False, False, 3, -4135))
+                          app.Calculation), (False, False, False, 1, -4135))
         self.assertEqual(app.opened[1]["UpdateLinks"], 0)
         self.assertEqual(app.calculated, 1)
         self.assertEqual(block, [[5, None, None], [None, 7.0, "'1-2"]])
