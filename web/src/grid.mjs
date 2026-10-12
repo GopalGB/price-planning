@@ -14,6 +14,7 @@ import {
   formatNumber,
   createTextMeasurer,
   editableInput,
+  gridFontFamily,
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
 import {
@@ -38,6 +39,7 @@ import {
   advanceDetail,
   commandUndo,
 } from "./grid-data.mjs";
+import { DashboardController, importedRoleStyles } from "./dashboard.mjs";
 import {
   escapeHTML as e,
   syncFormula,
@@ -96,6 +98,21 @@ export class PlanningGrid {
       refresh: () => this.resync(),
       onDenied: () => this.refreshRole(),
     });
+    this.dashboard = new DashboardController({
+      api,
+      copyId: copy.id,
+      copyName: copy.name,
+      categoryId: copy.category_id,
+      mutate: (matrix) => this.mutate(matrix),
+      gridElement: $("grid"),
+      worksheet: () => this.worksheet,
+      toast,
+      focusGrid: () =>
+        this.worksheet?.getRange(this.origin().r, this.origin().c).activate(),
+      fontFamily: (pivot) => this.dashboardFont(pivot),
+      roleStyles: (pivot) => this.dashboardStyles(pivot),
+      onScopeChange: (category) => this.dashboardScope(category),
+    });
   }
   async start() {
     const { univer, univerAPI } = createUniver({
@@ -142,6 +159,8 @@ export class PlanningGrid {
       if (event.id === "sheet.operation.set-scroll") {
         this.scheduleVisible();
         this.renderMacros();
+        this.dashboard?.setScroll(event.params);
+        this.dashboard?.position();
       }
     });
     $("macro-layer").onclick = (event) => {
@@ -150,10 +169,21 @@ export class PlanningGrid {
     };
     this.on("BeforeSheetEditStart", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
-      if (this.copy.my_role === "viewer" || !editableInput(cell)) {
+      const dashboard = this.dashboard?.cell(
+        this.sheet,
+        event.row,
+        event.column,
+      );
+      const category = this.dashboard?.readOnly?.();
+      if (
+        category ||
+        this.copy.my_role === "viewer" ||
+        dashboard ||
+        !editableInput(cell)
+      ) {
         event.cancel = true;
         this.toast(
-          `${cellName({ r: event.row, c: event.column })}: ${this.copy.my_role === "viewer" ? "Viewer access is read only" : "Locked template cell"}`,
+          `${cellName({ r: event.row, c: event.column })}: ${category ? "Category totals are read only" : this.copy.my_role === "viewer" ? "Viewer access is read only" : dashboard ? "Dashboard output is locked" : "Locked template cell"}`,
         );
       } else
         this.cellDraft = {
@@ -180,12 +210,23 @@ export class PlanningGrid {
         this.sendPresence();
       }
     });
-    this.on("Scroll", () => this.scheduleVisible());
+    this.on("Scroll", (event) => {
+      this.scheduleVisible();
+      this.dashboard?.setScroll(event);
+      this.dashboard?.position();
+    });
     this.on("CellHover", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
-      $("grid").title = editableInput(cell)
-        ? `${cellName({ r: event.row, c: event.column })}: ${editorDisplay(cell) || "No edits recorded"}`
-        : "";
+      const dashboard = this.dashboard?.cell(
+        this.sheet,
+        event.row,
+        event.column,
+      );
+      $("grid").title = dashboard
+        ? `${cellName({ r: event.row, c: event.column })}: Dashboard output`
+        : editableInput(cell)
+          ? `${cellName({ r: event.row, c: event.column })}: ${editorDisplay(cell) || "No edits recorded"}`
+          : "";
     });
     this.disposables.push(
       this.u.getFormula().calculationStart(() => this.clientCalculations++),
@@ -350,6 +391,19 @@ export class PlanningGrid {
   currentSheet() {
     return this.meta.sheets.find((s) => s.index === this.sheet);
   }
+  dashboardFont(pivot) {
+    const [row, column] = pivot.location.bounds,
+      cell = this.store.get(this.sheet, row, column),
+      style = this.styleMap.get(String(cell?.s));
+    return gridFontFamily(style ?? {});
+  }
+  dashboardStyles(pivot) {
+    return importedRoleStyles(
+      pivot,
+      (row, column) => this.store.get(this.sheet, row, column),
+      (style) => this.styleMap.get(String(style)),
+    );
+  }
   growCalcExtents(changes) {
     let activeShape;
     for (const cell of changes ?? []) {
@@ -426,6 +480,7 @@ export class PlanningGrid {
     )
       return;
     const generation = ++this.generation;
+    this.dashboard?.dispose();
     this.sheet = index;
     this.detailKey = "";
     this.cache = new RowCache(3);
@@ -455,6 +510,8 @@ export class PlanningGrid {
     this.renderMacros();
     context.worksheet.getRange(1, 1).activate();
     this.selectionInfo();
+    await this.dashboard?.open(this.currentSheet());
+    if (!this.viewMatches(context)) return false;
     return true;
   }
   tabs() {
@@ -621,6 +678,7 @@ export class PlanningGrid {
       : `Saved · rev ${this.store.inputRevision}`;
     $("save-chip").classList.toggle("busy", busy);
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
+    this.dashboard?.repaint();
     this.selectionInfo();
   }
   refreshInputHighlight(enabled) {
@@ -631,7 +689,9 @@ export class PlanningGrid {
   async selectionInfo(force = false) {
     if (this.closed || !this.worksheet) return;
     const selected = this.origin(),
-      cell = this.store.get(selected.sheet, selected.r, selected.c),
+      dashboard = this.dashboard?.cell(selected.sheet, selected.r, selected.c),
+      cell =
+        dashboard ?? this.store.get(selected.sheet, selected.r, selected.c),
       key = `${this.sheet}:${selected.r}:${selected.c}`;
     if (advanceDetail(this, key, force)) $("validation-controls")?.remove();
     const display = formulaDisplay(cell, this.formulaText);
@@ -641,16 +701,23 @@ export class PlanningGrid {
       $("formula-input"),
       {
         value: display,
-        readOnly: this.copy.my_role === "viewer" || !editableInput(cell),
+        readOnly:
+          this.dashboard?.readOnly?.() ||
+          this.copy.my_role === "viewer" ||
+          Boolean(dashboard) ||
+          !editableInput(cell),
       },
       document.activeElement === $("formula-input"),
     );
-    $("formula-note").textContent = editableInput(cell)
-      ? cell.by
-        ? `Input · ${editorDisplay(cell)}`
-        : "Input cell"
-      : "Locked template cell";
+    $("formula-note").textContent = dashboard
+      ? "Dashboard output"
+      : editableInput(cell)
+        ? cell.by
+          ? `Input · ${editorDisplay(cell)}`
+          : "Input cell"
+        : "Locked template cell";
     this.stats();
+    if (dashboard) return;
     if (!cell) return;
     if (this.detailRequested) return;
     const token = this.selectionToken;
@@ -667,7 +734,10 @@ export class PlanningGrid {
         $("formula-input"),
         {
           value: formulaDisplay(current, this.formulaText),
-          readOnly: this.copy.my_role === "viewer" || !editableInput(current),
+          readOnly:
+            this.dashboard?.readOnly?.() ||
+            this.copy.my_role === "viewer" ||
+            !editableInput(current),
         },
         document.activeElement === $("formula-input"),
       );
@@ -684,7 +754,9 @@ export class PlanningGrid {
     try {
       for (const range of this.selection)
         for (const cell of rangeCells(range, this.sheet)) {
-          const stored = this.store.get(cell.sheet, cell.r, cell.c);
+          const stored =
+            this.dashboard?.cell(cell.sheet, cell.r, cell.c) ??
+            this.store.get(cell.sheet, cell.r, cell.c);
           if (stored) values.push(stored.v);
           else partial = true;
         }
@@ -697,7 +769,12 @@ export class PlanningGrid {
   }
   validationControl(validation, selected) {
     $("validation-controls")?.remove();
-    if (this.copy.my_role === "viewer" || !validation) return;
+    if (
+      this.dashboard?.readOnly?.() ||
+      this.copy.my_role === "viewer" ||
+      !validation
+    )
+      return;
     const target = { ...selected },
       box = document.createElement("span");
     box.id = "validation-controls";
@@ -838,6 +915,11 @@ export class PlanningGrid {
   }
   async edit(cells, action) {
     if (this.closed) return false;
+    if (this.dashboard?.readOnly?.())
+      throw new Error("Category totals are read only");
+    const locked = cells.find((cell) => this.dashboard?.locked(cell));
+    if (locked)
+      throw new Error(`${cellName(locked)}: Dashboard output is locked`);
     if (this.socket?.readyState !== 1) {
       this.toast("Wait for the live connection before editing");
       return false;
@@ -884,6 +966,8 @@ export class PlanningGrid {
     );
   }
   async undo(redo = false) {
+    if (this.dashboard?.readOnly?.())
+      throw new Error("Category totals are read only");
     const entry = (
       redo ? this.controller.redoStack : this.controller.undoStack
     ).at(-1);
@@ -990,7 +1074,12 @@ export class PlanningGrid {
       for (let r = start; r < start + count; r++) {
         const values = [];
         for (let c = range.startColumn; c <= range.endColumn; c++)
-          values.push(clipboardValue(data.rows[r]?.[c]?.v));
+          values.push(
+            clipboardValue(
+              this.dashboard?.cell(context.sheet, r, c)?.v ??
+                data.rows[r]?.[c]?.v,
+            ),
+          );
         lines.push(values.join("\t"));
       }
     }
@@ -1179,6 +1268,11 @@ export class PlanningGrid {
       this.growCalcExtents(message.changes);
     }
     this.controller.remote(message);
+    if (message.type === "calc" || message.type === "calc_state")
+      this.dashboard?.sourceChanged(
+        this.store.inputRevision,
+        this.store.calculatedRevision,
+      );
     if (message.type === "op" && message.at == null)
       await this.refreshOpDetails(message);
   }
@@ -1267,14 +1361,7 @@ export class PlanningGrid {
       }
       this.copy.my_role = copy.my_role;
       this.controller.role = copy.my_role;
-      for (const id of [
-        "undo-button",
-        "redo-button",
-        "paste-button",
-        "fill-down",
-        "fill-right",
-      ])
-        $(id).disabled = copy.my_role === "viewer";
+      this.dashboardScope(this.dashboard?.readOnly?.());
       $("share-button").hidden = copy.my_role !== "owner";
       this.selectionInfo();
       if (this.socket.readyState !== 1) this.connect();
@@ -1283,6 +1370,25 @@ export class PlanningGrid {
       this.toast("Live access unavailable. Return to Copies.");
       this.dispose();
     }
+  }
+
+  dashboardScope(category) {
+    const readOnly = category || this.copy.my_role === "viewer";
+    for (const id of [
+      "undo-button",
+      "redo-button",
+      "paste-button",
+      "fill-down",
+      "fill-right",
+    ]) {
+      const control = $(id);
+      if (control) control.disabled = readOnly;
+    }
+    const exportLink = $("export-link"),
+      formula = $("formula-input");
+    if (exportLink) exportLink.hidden = category;
+    if (formula && category) formula.readOnly = true;
+    if (this.worksheet) this.selectionInfo();
   }
   sendPresence() {
     if (this.socket?.readyState === 1) {
@@ -1385,12 +1491,14 @@ export class PlanningGrid {
       this.internal--;
     }
     this.renderMacros();
+    this.dashboard?.position();
   }
   dispose() {
     this.closed = true;
     clearTimeout(this.scrollTimer);
     clearTimeout(this.reconnectTimer);
     this.socket?.close();
+    this.dashboard?.dispose();
     document.removeEventListener("keydown", this.keyHandler, true);
     for (const d of [...this.disposables, ...this.highlights]) d.dispose();
     this.univer?.dispose();

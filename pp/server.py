@@ -21,6 +21,7 @@ from starlette.responses import FileResponse, JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 
 from .auth import AuthService, require_csrf, require_origin
+from .dashboard_views import DashboardViewQuery, DashboardViewService
 from .categories import CategoryService, MembershipChange
 from .calc_service import (
     CalculationPublication, CalculationService, PublicationBaseMismatch,
@@ -35,6 +36,7 @@ from .errors import AppError
 from .export.transfer import TransferRequest, export_transfer
 from .live import LiveHub, serve_live
 from .ops import OperationService
+from .pivot import PivotQuery, PivotService
 from .upload import ConfirmRequest, PreviewRequest, UploadDependencies, UploadService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
 
@@ -86,6 +88,8 @@ class Services:
         self.categories = CategoryService(context.database)
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
+        self.dashboard_views = DashboardViewService(context.database, templates)
+        self.pivots = PivotService(context.database, context.snapshot)
         self.operations = OperationService(context.database, templates)
         self.uploads = UploadService(UploadDependencies(
             context.database, templates, self.copies, self.operations,
@@ -123,6 +127,14 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/workbook", _workbook, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/rows", _rows, methods=["GET"]),
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/cell", _cell, methods=["GET"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/refresh",
+              _pivot_refresh, methods=["POST"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/view",
+              _dashboard_view, methods=["GET", "PUT"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/category/refresh",
+              _category_pivot_refresh, methods=["POST"]),
+        Route("/api/copies/{copy_id}/sheets/{sheet:int}/pivots/{name}/category/view",
+              _category_dashboard_view, methods=["GET", "PUT"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/macros", _macros, methods=["POST"]),
@@ -227,7 +239,11 @@ async def _copies(request: Request):
     services = _services(request)
     if request.method == "GET":
         user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
-        return JSONResponse({"copies": services.copies.list(user["id"], request.query_params.get("category"))})
+        copies = services.copies.list(user["id"], request.query_params.get("category"))
+        occupants = services.hub.occupants({copy["id"] for copy in copies})
+        for copy in copies:
+            copy["occupants"] = occupants.get(copy["id"], [])
+        return JSONResponse({"copies": copies})
     services, user, _ = _write_auth(request)
     body = await _body(request)
     copy = services.copies.create(user["id"], body, _session_check(request, services))
@@ -284,6 +300,56 @@ async def _cell(request: Request):
     query = CellQuery(request.path_params["copy_id"], user["id"],
                       request.path_params["sheet"], row, col)
     body = services.workbooks.cell(query)
+    return JSONResponse(body)
+
+
+async def _pivot_refresh(request: Request):
+    services, user = _read_auth(request)
+    require_origin(request.headers.get("origin"), services.config.allowed_origins)
+    query = PivotQuery(request.path_params["copy_id"], user["id"],
+                       request.path_params["sheet"], request.path_params["name"],
+                       await _body(request))
+    body = await asyncio.to_thread(services.pivots.refresh, query)
+    return JSONResponse(body)
+
+
+async def _dashboard_view(request: Request):
+    if request.method == "GET":
+        services, user = _read_auth(request)
+    else:
+        services, user, _ = _write_auth(request)
+    query = DashboardViewQuery(request.path_params["copy_id"], user["id"],
+                               request.path_params["sheet"], request.path_params["name"])
+    if request.method == "GET":
+        return JSONResponse(services.dashboard_views.get(query))
+    body = services.dashboard_views.update(
+        query, await _body(request), _session_check(request, services)
+    )
+    return JSONResponse(body)
+
+
+async def _category_pivot_refresh(request: Request):
+    services, user = _read_auth(request)
+    require_origin(request.headers.get("origin"), services.config.allowed_origins)
+    query = PivotQuery(request.path_params["copy_id"], user["id"],
+                       request.path_params["sheet"], request.path_params["name"],
+                       await _body(request))
+    body = await asyncio.to_thread(services.pivots.refresh_category, query)
+    return JSONResponse(body)
+
+
+async def _category_dashboard_view(request: Request):
+    if request.method == "GET":
+        services, user = _read_auth(request)
+    else:
+        services, user, _ = _write_auth(request)
+    query = DashboardViewQuery(request.path_params["copy_id"], user["id"],
+                               request.path_params["sheet"], request.path_params["name"])
+    if request.method == "GET":
+        return JSONResponse(services.dashboard_views.get_category(query))
+    body = services.dashboard_views.update_category(
+        query, await _body(request), _session_check(request, services)
+    )
     return JSONResponse(body)
 
 

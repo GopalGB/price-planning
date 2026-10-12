@@ -21,6 +21,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
+from .dashboard import read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
 
@@ -30,7 +31,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 10
+IMPORT_VERSION = 11
 
 
 class TemplateImportError(Exception):
@@ -447,6 +448,10 @@ def _sheet_metadata(element, metadata, protected):
         metadata["cols"] = max(metadata["cols"], col2 + 1)
     elif element.tag == f"{NS}sheetProtection":
         protected = element.get("sheet") in {"1", "true"}
+    elif element.tag == f"{NS}sheetFormatPr" and element.get("defaultRowHeight"):
+        metadata["default_row_height"] = _positive_height(
+            element.get("defaultRowHeight")
+        )
     elif element.tag == f"{NS}pane" and element.get("state") == "frozen":
         metadata["freeze"] = {"rows": int(float(element.get("ySplit", "0"))),
                               "cols": int(float(element.get("xSplit", "0")))}
@@ -457,6 +462,16 @@ def _sheet_metadata(element, metadata, protected):
     elif element.tag == f"{NS}dataValidation":
         metadata["validations"].append(_validation(element))
     return protected
+
+
+def _positive_height(raw):
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as error:
+        raise TemplateImportError("default row height is invalid") from error
+    if not math.isfinite(value) or value <= 0:
+        raise TemplateImportError("default row height is invalid")
+    return value
 
 
 def _column_metadata(element, metadata):
@@ -668,10 +683,12 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
             sheet_specs, names = _workbook_data(archive)
+            dashboard = read_dashboard_metadata(archive, sheet_specs)
             metadata, protected = [], set()
             context = SheetContext(archive, database, unlocked, staging)
             for spec in sheet_specs:
                 info, is_protected = _sheet_pass(context, spec)
+                info.update(dashboard[spec["index"]])
                 metadata.append(info)
                 if is_protected:
                     protected.add(spec["index"])

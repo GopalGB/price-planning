@@ -42,6 +42,30 @@ test("Copies home escapes user copy names and exposes open and fork actions", ()
   assert.equal(escapeHTML('"<>'), "&quot;&lt;&gt;");
   assert.match(html, /id="upload-home"/);
 });
+test("Copies home shows live occupants and edit counts without trusting names", () => {
+  const html = homeView(
+    [{ id: "a", name: "Category A", role: "member" }],
+    [
+      {
+        id: "c",
+        name: "Plan",
+        owner: { name: "Owner" },
+        visibility: "private",
+        my_role: "viewer",
+        members: [],
+        parent: null,
+        last_edit: { by: { name: "Editor" }, at: "2026-10-11T10:00:00Z" },
+        edit_count: 2,
+        occupants: [{ id: "u", name: "<img src=x onerror=alert(1)>" }],
+      },
+    ],
+    "a",
+  );
+  assert.match(html, /Live now/);
+  assert.match(html, /2 edits/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt; is editing/);
+  assert.ok(!html.includes("<img src=x"));
+});
 test("viewer workspace shows read-only role, export and external formula bar", () => {
   const html = workspaceView({ id: "c", name: "Test", my_role: "viewer" });
   assert.match(html, /Viewer/);
@@ -231,6 +255,60 @@ test("shared navigation loads the unfiltered endpoint and renders accessible cop
   assert.deepEqual(paths, ["/categories", "/copies"]);
   assert.match(html, /Category B plan/);
   assert.match(html, /data-shared[^>]*aria-current="true"/);
+});
+test("copy polling updates while the same home visit is active and stops after navigation", async () => {
+  const { startCopyPolling } = await import("../src/views.mjs");
+  const scheduled = [],
+    applied = [];
+  let active = true,
+    requests = 0;
+  const api = {
+    request: async () => ({ copies: [{ id: String(++requests) }] }),
+  };
+  const stop = startCopyPolling(api, {
+    categoryId: "a",
+    onCopies: (value) => applied.push(value),
+    isCurrent: () => active,
+    schedule: (callback) => (scheduled.push(callback), callback),
+    cancel: () => {},
+    delay: 1,
+  });
+  await scheduled.shift()();
+  assert.deepEqual(applied, [[{ id: "1" }]]);
+  assert.equal(scheduled.length, 1);
+  active = false;
+  await scheduled.shift()();
+  assert.deepEqual(applied, [[{ id: "1" }]]);
+  assert.equal(scheduled.length, 0);
+  stop();
+});
+test("cancelling copy polling rejects an in-flight response from an old page", async () => {
+  const { startCopyPolling } = await import("../src/views.mjs");
+  const scheduled = [],
+    applied = [],
+    cancelled = [];
+  let resolve;
+  const api = {
+    request: () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  };
+  const stop = startCopyPolling(api, {
+    categoryId: null,
+    onCopies: (value) => applied.push(value),
+    isCurrent: () => true,
+    schedule: (callback) => (scheduled.push(callback), callback),
+    cancel: (timer) => cancelled.push(timer),
+    delay: 1,
+  });
+  const running = scheduled.shift()();
+  stop();
+  resolve({ copies: [{ id: "late" }] });
+  await running;
+  assert.deepEqual(applied, []);
+  assert.equal(scheduled.length, 0);
+  assert.equal(cancelled.length, 1);
 });
 test("live painting preserves focused formula draft and updates unfocused display", async () => {
   const { syncFormula } = await import("../src/views.mjs");

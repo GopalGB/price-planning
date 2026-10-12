@@ -42,8 +42,10 @@ test("remote calc grows live and future sheet extents before painting", async (t
       1: { v: 1, s: 0, k: "f" },
     },
   });
+  store.inputRevision = 1;
   const worksheet = worksheetBounds(1, 2);
-  const mutations = [];
+  const mutations = [],
+    dashboardRevisions = [];
   const grid = Object.create(PlanningGrid.prototype);
   Object.assign(grid, {
     meta: {
@@ -63,6 +65,12 @@ test("remote calc grows live and future sheet extents before painting", async (t
     inputHighlight: false,
     wsReceived: { op: 0, calc: 0 },
     selectionInfo() {},
+    dashboard: {
+      repaint() {},
+      sourceChanged(inputRevision, calculatedRevision) {
+        dashboardRevisions.push([inputRevision, calculatedRevision]);
+      },
+    },
     mutate(change) {
       mutations.push({
         change,
@@ -103,6 +111,7 @@ test("remote calc grows live and future sheet extents before painting", async (t
     [5, 4],
   );
   assert.equal(store.get(1, 4, 3), undefined);
+  assert.deepEqual(dashboardRevisions, [[1, 1]]);
   assert.equal(mutations.length, 1);
   assert.deepEqual([mutations[0].rows, mutations[0].columns], [2, 3]);
   assert.equal(mutations[0].change[1][1].v, 2);
@@ -111,5 +120,5 @@ test("remote calc grows live and future sheet extents before painting", async (t
     () => buildOp(store, [{ sheet: 0, r: 1, c: 1, v: 7 }]),
     /locked or not loaded/,
   );
-  assert.equal(elements.get("save-chip").textContent, "Saved · rev 0");
+  assert.equal(elements.get("save-chip").textContent, "Saved · rev 1");
 });

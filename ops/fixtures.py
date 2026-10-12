@@ -1,8 +1,15 @@
 # ops/fixtures.py
 """Deterministic synthetic workbooks. No company data. Used by CI and by the Univer gate."""
 from pathlib import Path
+import runpy
+
 from openpyxl import Workbook
 from openpyxl.styles import Protection
+
+
+make_dashboard = runpy.run_path(
+    str(Path(__file__).with_name("fixtures") / "dashboard.py")
+)["make_dashboard"]
 
 def make_semantic(path):
     wb = Workbook()

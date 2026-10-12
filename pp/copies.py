@@ -187,11 +187,15 @@ def _copy(connection, row, role):
         "SELECT h.at,u.id,u.name FROM pp_history h JOIN pp_users u ON u.id=h.actor_id WHERE h.copy_id=? ORDER BY h.id DESC LIMIT 1",
         (row["id"],),
     ).fetchone()
+    edit_count = connection.execute(
+        "SELECT COUNT(*) FROM pp_history WHERE copy_id=?", (row["id"],)
+    ).fetchone()[0]
     return {"id": row["id"], "name": row["name"], "category_id": row["category_id"],
             "owner": dict(owner), "visibility": row["visibility"], "default_role": row["default_role"],
             "my_role": role, "input_revision": row["input_revision"],
             "calculated_revision": row["calculated_revision"], "parent": parent,
             "last_edit": {"by": {"id": edit["id"], "name": edit["name"]}, "at": edit["at"]} if edit else None,
+            "edit_count": edit_count,
             "members": [dict(member) for member in members]}
 
 
