@@ -327,6 +327,29 @@ class UploadAPITests(unittest.TestCase):
                 self.assertEqual(response.status_code, 422, response.body)
                 self.assertEqual(response.json()["error"], expected)
 
+    def test_unknown_template_hash_on_a_new_copy_is_a_client_error(self):
+        def rewrite_property(data, name, value):
+            root = ET.fromstring(data)
+            item = next(node for node in root if node.get("name") == name)
+            next(iter(item)).text = value
+            return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+        def tamper(content):
+            return rewrite_property(
+                rewrite_property(content, "CopyId", "00000000-0000-4000-8000-000000000000"),
+                "TemplateHash", "0" * 64,
+            )
+
+        data = _rewrite_zip(
+            self.exported, self.fixture.root,
+            lambda name, content: tamper(content) if name == "docProps/custom.xml" else content,
+        )
+
+        response = self.preview_home(self.owner, self.owner_csrf, data, self.category["id"])
+
+        self.assertEqual(response.status_code, 422, response.body)
+        self.assertEqual(response.json()["error"], "different_template")
+
     def test_subset_export_can_be_uploaded_back_to_its_copy(self):
         subset = self.owner.get(
             f"/api/copies/{self.copy['id']}/export.xlsx?sheets=Inputs"

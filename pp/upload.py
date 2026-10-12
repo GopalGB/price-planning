@@ -351,7 +351,15 @@ class UploadService:
         if member is None:
             raise AppError(404, "not_found", "Choose a copy you can access")
         if model.provenance is not None:
-            return self.templates.get(connection, model.provenance["template_hash"])
+            template_hash = model.provenance["template_hash"]
+            try:
+                return self.templates.get(connection, template_hash)
+            except AppError as exc:
+                if exc.code != "template_missing":
+                    raise
+                raise AppError(
+                    422, "different_template", "This workbook uses a different template",
+                ) from exc
         return self.templates.current(connection)
 
     def _identify(self, model, snapshot, copy):
