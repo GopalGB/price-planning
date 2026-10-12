@@ -1262,6 +1262,46 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual([(row["row"], json.loads(row["value_json"])) for row in values],
                          [(1, 12), (2, 25)])
 
+    def test_undo_then_redo_then_undo_keeps_the_upload_lineage(self):
+        def value():
+            response = self.owner.get(f"/api/copies/{self.copy['id']}/sheets/0/cell?r=1&c=1")
+            self.assertEqual(response.status_code, 200, response.body)
+            return response.json()["v"]
+
+        upload = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
+        preview = self.preview(self.owner, self.owner_csrf, upload, "lineage.xlsx")
+        self.assertEqual(preview.status_code, 200, preview.body)
+        confirmed = self.confirm(
+            self.owner, self.owner_csrf, preview.json()["token"], {"mode": "update"}
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+        source_op_id = confirmed.json()["op_id"]
+        self.assertEqual(value(), 12)
+
+        undo = self.owner.post(
+            f"/api/copies/{self.copy['id']}/ops",
+            {"op_id": "lineage-undo", "action": "undo", "source_op_id": source_op_id},
+            {"x-csrf-token": self.owner_csrf},
+        )
+        self.assertEqual(undo.status_code, 200, undo.body)
+        self.assertEqual(value(), 10)
+
+        redo = self.owner.post(
+            f"/api/copies/{self.copy['id']}/ops",
+            {"op_id": "lineage-redo", "action": "undo", "source_op_id": "lineage-undo"},
+            {"x-csrf-token": self.owner_csrf},
+        )
+        self.assertEqual(redo.status_code, 200, redo.body)
+        self.assertEqual(value(), 12)
+
+        again = self.owner.post(
+            f"/api/copies/{self.copy['id']}/ops",
+            {"op_id": "lineage-undo-2", "action": "undo", "source_op_id": source_op_id},
+            {"x-csrf-token": self.owner_csrf},
+        )
+        self.assertEqual(again.status_code, 409, again.body)
+        self.assertEqual(value(), 12)
+
     def test_unrelated_concurrent_edit_does_not_block_upload(self):
         upload = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
         preview = self.preview(self.owner, self.owner_csrf, upload)
