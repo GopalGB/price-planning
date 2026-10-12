@@ -163,6 +163,13 @@ export class PlanningGrid {
         this.selectionInfo();
         this.sendPresence();
       }
+      if (event.id === "sheet.operation.set-zoom-ratio")
+        // Univer lays out the zoomed sheet on its next render; place overlays after it
+        requestAnimationFrame(() => {
+          if (this.closed) return;
+          this.renderMacros();
+          this.dashboard?.position();
+        });
       if (event.id === "sheet.operation.set-scroll") {
         this.scheduleVisible();
         this.renderMacros();
@@ -1457,16 +1464,15 @@ export class PlanningGrid {
       layer.innerHTML = "";
       return;
     }
-    const scroll = this.u
-      .getActiveWorkbook()
-      ?.getScrollStateBySheetId(`s${this.sheet}`);
-    let geometry = null;
+    let scroll = null;
     try {
-      geometry = worksheetGeometry(this.worksheet, this.currentSheet(), scroll);
+      scroll = this.u
+        .getActiveWorkbook()
+        ?.getScrollStateBySheetId(`s${this.sheet}`);
     } catch {
-      geometry = null; // grid not laid out yet: summed sheet sizes until the next render
+      scroll = null; // Univer's scroll service is not ready on the first paint of a sheet
     }
-    layer.innerHTML =
+    const view = (geometry) =>
       drawingsView(this.meta, this.sheet, { scroll, geometry }) +
       macroButtonsView(this.meta, this.sheet, {
         scroll,
@@ -1474,6 +1480,16 @@ export class PlanningGrid {
         copyRole: this.copy.my_role,
         busy: this.macroBusy,
       });
+    // An overlay must never stop the grid: if Univer's geometry is not ready, use summed sheet sizes.
+    try {
+      layer.innerHTML = view(
+        worksheetGeometry(this.worksheet, this.currentSheet(), scroll),
+      );
+      delete layer.dataset.overlayError;
+    } catch (error) {
+      layer.dataset.overlayError = String(error?.message ?? error);
+      layer.innerHTML = view(null);
+    }
   }
   async followLink({ sheet, cell }) {
     if (sheet !== this.sheet) await this.switchSheet(sheet);
@@ -1511,18 +1527,9 @@ export class PlanningGrid {
     }
   }
   setZoom(zoom) {
-    this.internal++;
-    try {
-      this.u.syncExecuteCommand("sheet.operation.set-zoom-ratio", {
-        unitId: "planning",
-        subUnitId: `s${this.sheet}`,
-        zoomRatio: zoom,
-      });
-    } finally {
-      this.internal--;
-    }
-    this.renderMacros();
-    this.dashboard?.position();
+    // The facade runs Univer's zoom command; the bare zoom operation left the grid unzoomed.
+    // Overlays are placed again when the operation runs (see the command listener).
+    this.worksheet?.zoom(zoom);
   }
   dispose() {
     this.closed = true;
