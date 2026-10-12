@@ -4,6 +4,7 @@ import argparse
 import ipaddress
 import json
 import logging
+import os
 from pathlib import Path
 import socket
 
@@ -85,6 +86,29 @@ def _port_in_use(port: int) -> bool:
         return False
 
 
+def _free_port(port: int, tries: int = 50) -> int | None:
+    return next((candidate for candidate in range(port, min(port + tries, 65536))
+                 if not _port_in_use(candidate)), None)
+
+
+def _move_off_busy_port() -> bool:
+    """Use the next free port when the configured one is taken; False when none is free.
+
+    The choice is made before the runtime exists, so the derived browser origins use the port actually served.
+    """
+    config = load_config(ROOT)
+    port = _free_port(config.port)
+    if port is None:
+        return False
+    if port != config.port:
+        if json.loads((ROOT / "settings.json").read_text(encoding="utf-8")).get("allowed_origins"):
+            return False  # fixed origins name the configured port; moving would lock every browser out
+        print(f"Port {config.port} is already in use by another program, so this app uses port {port}.",
+              flush=True)
+        os.environ["PP_PORT"] = str(port)
+    return True
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Price Planning v2 backend")
     parser.add_argument("--import-template", action="store_true",
@@ -99,6 +123,10 @@ def main(argv=None) -> int:
         import_template(config.template_path, config.data_dir, _import_results(config))
         return 0
     _create_first_start_settings(ROOT)
+    if not _move_off_busy_port():
+        print(f"Port {load_config(ROOT).port} is already in use by another program. "
+              f"Change \"port\" in {ROOT / 'settings.json'} (for example to 8765) and start again.", flush=True)
+        return 1
     runtime = create_runtime(ROOT)
     try:
         if _port_in_use(runtime.config.port):

@@ -268,7 +268,9 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
     bind = settings.get("bind", "127.0.0.1")
     if not isinstance(bind, str) or not bind:
         raise ValueError("bind must be a non-empty string")
-    port = _positive(settings.get("port", 8000), "port", 65535)
+    # PP_PORT: run_v2 moves to the next free port when the configured one is taken
+    port = _positive(int(os.environ["PP_PORT"]) if os.environ.get("PP_PORT", "").isdigit()
+                     else settings.get("port", 8000), "port", 65535)
     data_dir = _data_dir(root, settings)
     database_path = resolve_database_path(root, settings_path)
     max_workers = _positive(settings.get("max_workers", 1), "max_workers", 128)

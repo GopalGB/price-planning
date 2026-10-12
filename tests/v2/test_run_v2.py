@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import os
 import json
 import socket
 import subprocess
@@ -244,23 +245,55 @@ class RunnerContractTests(unittest.TestCase):
         self.assertFalse(real._port_in_use(port))
         self.assertFalse(runner._port_in_use(port))
 
-    def test_occupied_port_refuses_to_start_with_an_actionable_message(self):
-        """Another app on the port (e.g. the legacy v1 server on 8000) must not be shadowed."""
+    def start_with_busy_ports(self, busy, settings=None):
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
-            runner, root, runtime = self.runner_module(), Path(temp), self.runtime()
-            runner._port_in_use = lambda port: port == 8000
+            runner, root = self.runner_module(), Path(temp)
+            if settings is not None:
+                (root / "settings.json").write_text(json.dumps(settings))
+            runner._port_in_use = lambda port: port in busy
+
+            def runtime(_root):
+                made = self.runtime()
+                made.config.port = int(os.environ.get("PP_PORT", made.config.port))
+                return made
+
             output = io.StringIO()
-            with mock.patch.object(runner, "ROOT", root), mock.patch.object(
-                runner, "create_runtime", return_value=runtime
+            with mock.patch.dict(os.environ), mock.patch.object(runner, "ROOT", root), mock.patch.object(
+                runner, "create_runtime", side_effect=runtime
             ), mock.patch.object(
                 runner, "_detected_ipv4", return_value=set(), create=True
             ), mock.patch.object(runner.uvicorn, "run") as serve, contextlib.redirect_stdout(output):
-                self.assertEqual(runner.main([]), 1)
+                code = runner.main([])
+            return code, serve, output.getvalue()
 
-            serve.assert_not_called()
-            self.assertIn("Port 8000 is already in use", output.getvalue())
-            self.assertIn("settings.json", output.getvalue())
-            self.assertNotIn("Share with your team", output.getvalue())
+    def test_occupied_port_moves_to_the_next_free_one(self):
+        """Another app on the port (e.g. the legacy v1 server on 8000) is never shadowed: use the next free port."""
+        code, serve, output = self.start_with_busy_ports({8000, 8001})
+        self.assertEqual(code, 0)
+        self.assertEqual(serve.call_args.kwargs["port"], 8002)
+        self.assertIn("so this app uses port 8002", output)
+
+    def test_moved_port_is_the_one_the_browser_origins_name(self):
+        from pp.config import load_config
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp, mock.patch.dict(os.environ, {"PP_PORT": "8002"}):
+            (Path(temp) / "settings.json").write_text(json.dumps({"bind": "0.0.0.0", "port": 8000}))
+            config = load_config(temp)
+        self.assertEqual(config.port, 8002)
+        self.assertIn("http://localhost:8002", config.allowed_origins)
+        self.assertFalse(any(origin.endswith(":8000") for origin in config.allowed_origins))
+
+    def test_no_free_port_or_fixed_origins_refuse_with_an_actionable_message(self):
+        for busy, settings in ((set(range(8000, 8050)), None),
+                               ({8000}, {"bind": "0.0.0.0", "port": 8000,
+                                         "allowed_origins": ["http://planning.example:8000"]})):
+            with self.subTest(settings=settings):
+                code, serve, output = self.start_with_busy_ports(busy, settings)
+                self.assertEqual(code, 1)
+                serve.assert_not_called()
+                self.assertIn("Port 8000 is already in use", output)
+                self.assertIn("settings.json", output)
+                self.assertNotIn("Share with your team", output)
 
     def test_existing_server_settings_are_never_overwritten(self):
         """Replacing a configured server setting on restart would be data loss."""
