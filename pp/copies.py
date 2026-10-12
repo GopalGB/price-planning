@@ -76,6 +76,11 @@ class CopyService:
                 "SELECT ?,sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?",
                 (fork_id, copy_id),
             )
+            connection.execute(  # the fork starts with the parent's slicer selections and refresh flag
+                "INSERT INTO pp_pivot_state(copy_id,state_json,revision) "
+                "SELECT ?,state_json,? FROM pp_pivot_state WHERE copy_id=?",
+                (fork_id, parent["input_revision"], copy_id),
+            )
             _queue_baseline(connection, fork_id, now)
             row = connection.execute("SELECT * FROM pp_copies WHERE id=?", (fork_id,)).fetchone()
             return _copy(connection, row, "owner")

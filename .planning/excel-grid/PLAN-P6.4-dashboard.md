@@ -58,3 +58,30 @@ below apply to such Excel-only pivots; the D2 UI reuses the merged slicer frames
 Mac: all suites green; slicers drawn on Coupon with the template's selections; read-only here.
 Office server: `excel_smoke.py --slicers` PASS (set each slicer to one item and back, pivot cells
 published, replay on a fresh engine equal); in the browser a slicer click updates the pivot.
+
+## Status 2026-10-12 (built on feat/v2-dash-engine)
+
+Decisions 1, 2, 4 and the slicer metadata, UI and smoke check of 3 are built and tested on the Mac with fakes.
+Not run here: real Excel (COM paths are tested with fake COM objects; `ops/excel_smoke.py --slicers` must be run on
+the office server and print PASS).
+
+Deviations, each on purpose:
+- Slicer metadata lives in each sheet's `meta.json` entry (`slicers`, IMPORT_VERSION 12), not a new `slicers.json`;
+  the existing dashboard metadata already travels there. Items carry `caption` (the Excel item text), not `text`.
+- Added `excel_pivots: [{name, location, page_count}]` per sheet: the Excel-only pivot's output area, so the cell rules
+  treat it as computed even if its cells are unlocked. Not in the plan; without it an override could sit on a pivot cell.
+- An Excel-only pivot is never in the Python pivot list (`pivots` stays empty), and `slicers_for_pivot` ignores
+  `engine: "excel"` slicers.
+- A slicer request whose selection is already stored answers `changed: 0` without running Excel (the plan said "if
+  nothing changed"; this is the same result without the Excel call).
+- A successful Refresh with no cell changes now commits one revision (it stores `refreshed: true` the first time).
+- Ctrl/Cmd-click and the multi-select button both toggle an Excel slicer item; a toggle that would empty the selection
+  selects all (Excel needs one item).
+- Excel's pivot output cells are never written by an edit or a replay (`apply` drops them); a fork copies the state.
+
+Known limits: an exported .xlsm keeps the template's saved pivot values until Excel refreshes them on open. Other open
+browsers see a slicer change after a reload (the change is a normal revision event; the slicer panel is not pushed live).
+
+Checks: Python 734 OK (full discover before the last test additions; the new modules pass on their own), web 157 OK,
+ruff clean, content guard 0. Bundle rebuilt.
+

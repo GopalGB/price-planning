@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import {
   DashboardController,
   anchorViewportRect,
+  excelSelection,
   importedRoleStyles,
   pivotMutation,
   selectSlicer,
@@ -1676,4 +1677,106 @@ test("dashboard repaint does not resolve facade geometry before controls exist",
   });
 
   assert.doesNotThrow(() => controller.repaint());
+});
+
+const excelItems = () => [
+  { caption: "A", cache_index: 0, selected: true, no_data: false },
+  { caption: "B", cache_index: 1, selected: false, no_data: false },
+  { caption: "C", cache_index: 2, selected: false, no_data: true },
+];
+
+test("an Excel slicer click selects one item, Ctrl-click toggles, clear selects all", () => {
+  const items = excelItems();  // only A is selected
+  assert.deepEqual(excelSelection(items, "B", false), ["B"]);
+  assert.deepEqual(excelSelection(items, "B", true), ["A", "B"]);
+  const two = [{ ...items[0] }, { ...items[1], selected: true }, { ...items[2] }];
+  assert.deepEqual(excelSelection(two, "A", true), ["B"]);  // A and B selected: Ctrl-click A drops it
+  assert.deepEqual(excelSelection(items, null, false), ["A", "B", "C"]);
+});
+
+test("Ctrl-click that would empty an Excel selection selects every item instead", () => {
+  assert.deepEqual(excelSelection(excelItems(), "A", true), ["A", "B", "C"]);
+});
+
+function excelSlicer() {
+  return {
+    name: "Slicer_Region",
+    cache: "Slicer_Region",
+    caption: "Region",
+    engine: "excel",
+    style: "SlicerStyleLight1",
+    column_count: 1,
+    row_height_emu: 241300,
+    anchor: {
+      from: { row: 16, column: 2, row_offset: 0, column_offset: 0 },
+      to: { row: 29, column: 3, row_offset: 0, column_offset: 0 },
+    },
+    items: excelItems(),
+  };
+}
+
+function excelController(t, { api, canEdit = () => true, messages = [] }) {
+  dashboardDocument(t);
+  const sheet = { index: 0, name: "Dashboard", pivots: [], slicers: [excelSlicer()] };
+  const grid = new FakeDashboardElement("div");
+  const controller = new DashboardController({
+    api,
+    copyId: "copy-1",
+    mutate: () => {},
+    gridElement: grid,
+    worksheet: () => null,
+    toast: assert.fail,
+    canEdit,
+    message: (title, text) => messages.push([title, text]),
+  });
+  return { controller, sheet, grid };
+}
+
+test("an Excel slicer on a sheet without a cell pivot is drawn and a click posts its selection", async (t) => {
+  const requests = [];
+  const api = {
+    request: async (path, options) => {
+      requests.push({ path, options });
+      return { selected: ["B"] };
+    },
+  };
+  const { controller, sheet, grid } = excelController(t, { api });
+
+  assert.equal(await controller.open(sheet), false);
+  const layer = grid.children[0];
+  const itemButton = findElement(layer, (element) => element.tag === "button" && element.textContent === "B");
+  assert.ok(itemButton, "the Excel slicer item is drawn");
+
+  await itemButton.onclick({ ctrlKey: false, metaKey: false });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].path, "/copies/copy-1/slicers");
+  assert.deepEqual(
+    { cache: requests[0].options.body.cache, selected: requests[0].options.body.selected },
+    { cache: "Slicer_Region", selected: ["B"] },
+  );
+  assert.deepEqual(sheet.slicers[0].items.map((item) => item.selected), [false, true, false]);
+});
+
+test("viewers see Excel slicers disabled and a refused change shows the server message", async (t) => {
+  const messages = [];
+  const requests = [];
+  const api = {
+    request: async (path) => {
+      requests.push(path);
+      throw new Error("Slicers change on the office server, where the app uses Microsoft Excel.");
+    },
+  };
+  const viewer = excelController(t, { api, canEdit: () => false, messages });
+  await viewer.controller.open(viewer.sheet);
+  const viewerButton = findElement(viewer.grid.children[0], (element) => element.tag === "button" && element.textContent === "B");
+  assert.equal(viewerButton.disabled, true);
+
+  const editor = excelController(t, { api, messages });
+  await editor.controller.open(editor.sheet);
+  const editorButton = findElement(editor.grid.children[0], (element) => element.tag === "button" && element.textContent === "B");
+  await editorButton.onclick({});
+
+  assert.deepEqual(requests, ["/copies/copy-1/slicers"]);
+  assert.deepEqual(messages, [["Slicer", "Slicers change on the office server, where the app uses Microsoft Excel."]]);
 });

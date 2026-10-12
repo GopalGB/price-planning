@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 from .authorization import effective_role
 from .errors import AppError, ErrorPayload
+from .pivot_state import write_state
 from .values import validate_value
 from .workbook_service import TemplateCatalog
 
@@ -101,15 +102,17 @@ class OperationService:
         raise AppError(409, "op_id_reused", "This operation identifier was already used")
 
     def apply_macro(self, copy_id: str, actor_id: str, payload: dict, messages: list,
-                    contents: list, expected_revision: int, action: str = "macro") -> dict | None:
+                    contents: list, expected_revision: int, action: str = "macro",
+                    pivot_state: dict | None = None) -> dict | None:
         with self.database.transaction() as connection:
             return self.apply_macro_in_transaction(
-                connection, copy_id, actor_id, payload, messages, contents, expected_revision, action)
+                connection, copy_id, actor_id, payload, messages, contents, expected_revision, action, pivot_state)
 
     def apply_macro_in_transaction(self, connection, copy_id, actor_id, payload, messages, contents,
-                                   expected_revision, action="macro"):
+                                   expected_revision, action="macro", pivot_state=None):
         """Commit what a template macro wrote as one trusted operation (no version or input checks).
 
+        ``pivot_state`` (slicers, refresh) is stored with the revision even when no cell changed.
         Returns None when nothing was written (no contents, or only blanks over template blanks).
         """
         op_id = _operation_id(payload)
@@ -131,11 +134,13 @@ class OperationService:
             version = current["version"] if current else 0
             cells.append({"sheet": sheet, "row": row, "col": col, "value": value,
                           "before": before, "version": version + 1})
-        if not cells:
+        if not cells and pivot_state is None:
             return None
         ack = {"op_id": op_id, "input_revision": expected_revision, "accepted": len(cells),
                "messages": list(messages)}
         self._commit(connection, OperationCommit(copy, actor_id, op_id, action, _payload_hash(payload), ack, cells))
+        if pivot_state is not None:
+            write_state(connection, copy_id, pivot_state, expected_revision)
         return ack
 
     def revisions(self, copy_id: str) -> dict:

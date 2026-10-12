@@ -109,3 +109,12 @@ could not be reached) appear in the dialog. Check it with:
 
 It refreshes on a fresh Excel, replays the recorded contents on a second fresh Excel, and prints counts,
 timings and Excel's peak memory only. It must end with `PASS`.
+
+Excel-only pivots and their slicers (the template's pivot fed by Power Query) get their own check:
+
+    .venv\Scripts\python ops\excel_smoke.py --slicers
+
+For each Excel slicer it selects one item with data on a fresh Excel, restores all items, then a second
+fresh Excel applies the final stored state and must read the same pivot cells. It prints slicer numbers
+(never item texts), counts, timings and the mismatched pivot-cell count. It must end with `PASS`. Slicer
+clicks in the browser change the pivot in this Excel; on the Mac they answer 409 `slicers_unavailable`.

@@ -372,3 +372,75 @@ class DashboardImportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExcelOnlyDashboardTests(unittest.TestCase):
+    """A pivot fed by a Power Query connection: Excel runs it, the app keeps its slicers."""
+
+    def import_external(self, workspace, rewrite=None):
+        from pp.template.importer import import_template
+
+        source = workspace / "external.xlsm"
+        fixtures.make_dashboard(source, row_count=32, external=True)
+        if rewrite is not None:
+            rewrite_member(source, "xl/pivotCache/pivotCacheDefinition1.xml", rewrite)
+        snapshot = import_template(source, workspace / "data")
+        meta = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))
+        return next(sheet for sheet in meta["sheets"] if sheet["name"] == "Dashboard")
+
+    def test_external_pivot_leaves_python_pivots_empty_and_keeps_its_slicers_for_excel(self):
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            sheet = self.import_external(Path(temp))
+
+        self.assertEqual(sheet["pivots"], [])
+        self.assertEqual(sheet["excel_pivots"], [{
+            "name": "DashboardPivot", "page_count": 3,
+            "location": {"ref": "A5:F14", "bounds": [4, 0, 13, 5],
+                         "first_header_row": 1, "first_data_row": 2, "first_data_col": 1},
+        }])
+        slicers = sheet["slicers"]
+        self.assertEqual(sorted(len(slicer["items"]) for slicer in slicers), [10, 52, 78, 769])
+        self.assertEqual({slicer["engine"] for slicer in slicers}, {"excel"})
+        for slicer in slicers:
+            self.assertEqual(set(slicer["anchor"]), {"from", "to"})
+            self.assertTrue(all(set(item) == {"cache_index", "selected", "no_data", "caption"}
+                                for item in slicer["items"]))
+            self.assertTrue(all(item["caption"] for item in slicer["items"]))
+        ten = next(slicer for slicer in slicers if len(slicer["items"]) == 10)
+        self.assertEqual([item["selected"] for item in ten["items"]], [True] + [False] * 9)
+        self.assertTrue(ten["items"][0]["caption"].endswith(" 01"))
+        seventy_eight = next(slicer for slicer in slicers if len(slicer["items"]) == 78)
+        self.assertTrue(all(item["selected"] for item in seventy_eight["items"]))
+
+    def test_excel_pivot_output_area_is_not_input_even_when_its_cells_are_unlocked(self):
+        from pp.workbook_service import TemplateSnapshot
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            from pp.template.importer import import_template
+
+            workspace = Path(temp)
+            source = workspace / "external.xlsm"
+            fixtures.make_dashboard(source, row_count=32, external=True)
+            snapshot = TemplateSnapshot(import_template(source, workspace / "data"))
+            sheet = next(index for index, item in enumerate(snapshot.sheets) if item["name"] == "Dashboard")
+            # force the cells into the input mask as an unlocked style would: the output area still wins
+            snapshot.input_mask = frozenset(snapshot.input_mask | {f"{sheet}:4:0", f"{sheet}:1:0", f"{sheet}:20:0"})
+            self.assertFalse(snapshot.is_input(sheet, 4, 0))   # pivot body
+            self.assertFalse(snapshot.is_input(sheet, 1, 0))   # report filter above the body
+            self.assertTrue(snapshot.is_input(sheet, 20, 0))   # outside the pivot: an ordinary input
+
+    def test_slicer_metadata_that_cannot_be_read_is_dropped_and_the_import_still_succeeds(self):
+        def drop_shared_items(data):
+            root = ET.fromstring(data)
+            for field in root.findall(f"{MAIN}cacheFields/{MAIN}cacheField"):
+                for shared in field.findall(f"{MAIN}sharedItems"):
+                    field.remove(shared)
+            return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            sheet = self.import_external(Path(temp), drop_shared_items)
+
+        self.assertEqual((sheet["pivots"], sheet["slicers"]), ([], []))

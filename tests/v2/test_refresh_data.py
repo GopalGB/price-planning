@@ -206,6 +206,15 @@ class RefreshEndpointTests(unittest.TestCase):
         self.assertEqual(second.json(), first.json())
         self.assertEqual(len(self.pool.requests), 1)
 
+    def test_first_refresh_stores_the_refreshed_flag_and_later_ones_carry_it_to_the_engine(self):
+        self.refresh("refresh-a")
+        self.refresh("refresh-b")
+
+        workbooks = self.fixture.app.state.services.workbooks
+        self.assertEqual(workbooks.pivot_state(self.copy_id), {"slicers": {}, "refreshed": True})
+        self.assertEqual([request.pivot_state for request in self.pool.requests if request.macro == REFRESH_ALL],
+                         [{"slicers": {}, "refreshed": False}, {"slicers": {}, "refreshed": True}])
+
     def test_refresh_is_refused_for_a_template_without_connections(self):
         fixture = APIFixture(builder=write_button_fixture)
         self.addCleanup(fixture.close)

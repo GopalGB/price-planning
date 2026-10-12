@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 from pathlib import Path
@@ -30,7 +30,8 @@ from .copies import CopyService, ShareChange
 from .db import token_hash
 from .engine.excel import REFRESH_ALL
 from .engine.formualizer import EngineError, MacroTimeout
-from .engine.pool import CalculationRequest, MacroRequest
+from .engine.pool import CalculationRequest, MacroRequest, SlicerRequest
+from .pivot_state import with_refreshed, with_selection
 from .config import BRAND_TYPES
 from .errors import AppError
 from .export.transfer import TransferRequest, export_transfer
@@ -138,6 +139,7 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/macros", _macros, methods=["POST"]),
+        Route("/api/copies/{copy_id}/slicers", _slicers, methods=["POST"]),
         Route("/api/copies/{copy_id}/refresh", _refresh, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
@@ -381,8 +383,11 @@ async def _macros(request: Request):
     button, op_id = payload.get("button"), payload.get("op_id")
     engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
     macro = services.workbooks.macro_request(copy_id, user["id"], button, op_id, engine_kind)
-    return await _run_excel_action(services, copy_id, user["id"], {"op_id": op_id, "button": button},
-                                   macro, "macro", _MACRO_FAILURES)
+    body = await _run_excel_action(
+        services, copy_id, user["id"], {"op_id": op_id, "button": button}, "macro", _MACRO_FAILURES,
+        lambda revision, source, changes, base, stored: services.engine_pool.run_macro(MacroRequest(
+            copy_id, revision, source, changes, base, macro, pivot_state=stored)))
+    return JSONResponse(body)
 
 
 async def _refresh(request: Request):
@@ -391,52 +396,85 @@ async def _refresh(request: Request):
     op_id = payload.get("op_id")
     engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
     services.workbooks.refresh_request(copy_id, user["id"], op_id, engine_kind)
-    return await _run_excel_action(services, copy_id, user["id"], {"op_id": op_id, "action": "refresh"},
-                                   REFRESH_ALL, "refresh", _REFRESH_FAILURES)
+    body = await _run_excel_action(
+        services, copy_id, user["id"], {"op_id": op_id, "action": "refresh"}, "refresh", _REFRESH_FAILURES,
+        lambda revision, source, changes, base, stored: services.engine_pool.run_macro(MacroRequest(
+            copy_id, revision, source, changes, base, REFRESH_ALL, pivot_state=stored)),
+        plan=lambda stored: None if stored["refreshed"] else with_refreshed(stored))
+    return JSONResponse(body)
+
+
+async def _slicers(request: Request):
+    services, user, _ = _write_auth(request)
+    copy_id, payload = request.path_params["copy_id"], await _body(request)
+    op_id, cache = payload.get("op_id"), payload.get("cache")
+    engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
+    selected = services.workbooks.slicer_request(copy_id, user["id"], op_id, cache, payload.get("selected"),
+                                                 engine_kind)
+    body = await _run_excel_action(
+        services, copy_id, user["id"], {"op_id": op_id, "cache": cache, "selected": selected}, "slicer",
+        _SLICER_FAILURES,
+        lambda revision, source, changes, base, stored: services.engine_pool.run_slicer(SlicerRequest(
+            copy_id, revision, source, changes, base, cache, selected, pivot_state=stored)),
+        plan=lambda stored: with_selection(stored, cache, selected), skip_unchanged=True)
+    return JSONResponse({**body, "selected": selected})
 
 
 _MACRO_FAILURES = ("The macro ran too long and was stopped.", "The macro did not finish in Excel.")
 _REFRESH_FAILURES = ("The refresh ran too long and was stopped.", "The refresh did not finish in Excel.")
+_SLICER_FAILURES = ("The slicer change ran too long and was stopped.", "The slicer change did not finish in Excel.")
 
 
-async def _run_excel_action(services, copy_id, user_id, operation, macro, action, failures):
-    """Run a template macro (or REFRESH_ALL) in Excel and commit what it wrote as one revision."""
+async def _run_excel_action(services, copy_id, user_id, operation, action, failures, call, plan=None,
+                            skip_unchanged=False):
+    """Run one Excel action (a macro, a refresh or a slicer change) and commit what it wrote as one revision.
+
+    ``call(revision, source, changes, base, stored)`` runs it on the copy's engine with the stored pivot state.
+    ``plan(stored)`` returns the pivot state the action stores, or None when it stores none. With
+    ``skip_unchanged``, an action whose plan changes nothing is answered without running Excel.
+    """
     async with services.hub.pipeline(copy_id):
         replay = services.operations.macro_replay(copy_id, user_id, operation)
         if replay is not None:
-            return JSONResponse(_macro_response(replay))
+            return _macro_response(replay)
         state = services.operations.revisions(copy_id)
         revision = state["input_revision"] + 1
         source = services.workbooks.calculation_source(copy_id)
         changes = services.operations.revision_changes(copy_id, state["input_revision"])
+        stored = services.workbooks.pivot_state(copy_id)
+        target = plan(stored) if plan is not None else None
+        if target == stored:
+            target = None
+        unchanged = {"messages": [], "changed": 0, "input_revision": state["input_revision"]}
+        if skip_unchanged and target is None:
+            return unchanged
         try:
-            result = await asyncio.to_thread(services.engine_pool.run_macro, MacroRequest(
-                copy_id, revision, source, changes, state["calculated_revision"], macro))
+            result = await asyncio.to_thread(call, revision, source, changes, state["calculated_revision"], stored)
         except MacroTimeout as exc:
             raise AppError(502, "macro_failed", failures[0]) from exc
         except EngineError as exc:
             raise AppError(502, "macro_failed", failures[1]) from exc
         ack = None
-        if result["contents"]:
+        if result["contents"] or target is not None:
             ack = await asyncio.to_thread(services.operations.apply_macro, copy_id, user_id, operation,
-                                          result["messages"], result["contents"], revision, action)
+                                          result["messages"], result["contents"], revision, action, target)
         if ack is None:
-            return JSONResponse({"messages": result["messages"], "changed": 0,
-                                 "input_revision": state["input_revision"]})
-        await _publish_macro(services, copy_id, revision, source, result)
-    return JSONResponse(_macro_response(ack))
+            return {"messages": result["messages"], "changed": 0, "input_revision": state["input_revision"]}
+        await _publish_macro(services, copy_id, revision, source, result, target or stored)
+    return _macro_response(ack)
 
 
 def _macro_response(ack):
     return {"messages": ack["messages"], "changed": ack["accepted"], "input_revision": ack["input_revision"]}
 
 
-async def _publish_macro(services, copy_id, revision, source, result):
+async def _publish_macro(services, copy_id, revision, source, result, pivot_state):
     """Publish a committed macro like an edit; a failure here leaves the calc job for the normal replay."""
     await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("op", revision)))
     await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services.database, copy_id)})
     try:
-        request = CalculationRequest(copy_id, revision, source, services.operations.revision_changes(copy_id, revision))
+        request = CalculationRequest(copy_id, revision, source, services.operations.revision_changes(copy_id, revision),
+                                     pivot_state=pivot_state)
         if await _publish_result(services, request, result):
             await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
     except Exception as exc:
@@ -454,7 +492,8 @@ async def _calculate_and_publish(services, copy_id, revision):
         source = services.workbooks.calculation_source(copy_id)
         changes = services.operations.revision_changes(copy_id, revision)
         request = CalculationRequest(
-            copy_id, revision, source, changes, state["calculated_revision"]
+            copy_id, revision, source, changes, state["calculated_revision"],
+            pivot_state=services.workbooks.pivot_state(copy_id),
         )
         published = await _run_calculation(services, request)
         if published:
@@ -471,7 +510,8 @@ async def _calculate_baseline(services, copy, user_id):
             source = services.workbooks.calculation_source(copy["id"])
             changes = services.operations.revision_changes(copy["id"], 0)
             request = CalculationRequest(
-                copy["id"], 0, source, changes, copy["calculated_revision"]
+                copy["id"], 0, source, changes, copy["calculated_revision"],
+                pivot_state=services.workbooks.pivot_state(copy["id"]),
             )
             published = await _run_calculation(services, request)
             if published:
@@ -497,9 +537,7 @@ async def _publish_result(services, request, result):
     try:
         return await asyncio.to_thread(services.calculations.complete, publication)
     except PublicationBaseMismatch:
-        replay = CalculationRequest(
-            request.copy_id, request.revision, request.template_path, request.changes
-        )
+        replay = replace(request)
         result = await asyncio.to_thread(services.engine_pool.apply, replay)
         publication = CalculationPublication.from_result(
             request.copy_id, request.revision, result

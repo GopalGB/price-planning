@@ -189,6 +189,8 @@ def _metadata(snapshot, sheet, name):
 def slicers_for_pivot(slicers, pivot):
     """Slicers Excel connects to this pivot: by pivot table name, or by cache when undeclared."""
     def connected(slicer):
+        if slicer.get("engine") == "excel":  # Excel's own pivot; the cell-based service never drives it
+            return False
         names = {item["name"] for item in slicer["pivot_tables"]}
         return pivot["name"] in names if names else slicer["pivot_cache_id"] == pivot["cache_id"]
 

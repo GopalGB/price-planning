@@ -10,7 +10,10 @@ from pathlib import Path
 
 from .authorization import effective_role
 from .errors import AppError
+from .pivot_state import read_state
 from .template.importer import IMPORT_VERSION
+
+SLICER_MESSAGE = "Slicers change on the office server, where the app uses Microsoft Excel."
 
 
 class TemplateSnapshot:
@@ -55,11 +58,14 @@ class TemplateSnapshot:
     def _pivot_output(self, sheet: int, row: int, col: int) -> bool:
         if not 0 <= sheet < len(self.sheets):
             return False
-        for pivot in self.sheets[sheet].get("pivots", []):
-            first_row, first_col, last_row, last_col = pivot["location"]["bounds"]
+        outputs = [(pivot["location"], len(pivot.get("page_fields", [])))
+                   for pivot in self.sheets[sheet].get("pivots", [])]
+        outputs += [(pivot["location"], pivot["page_count"])  # Excel's own pivots (P6.4)
+                    for pivot in self.sheets[sheet].get("excel_pivots", [])]
+        for location, page_count in outputs:
+            first_row, first_col, last_row, last_col = location["bounds"]
             if first_row <= row <= last_row and first_col <= col <= last_col:
                 return True
-            page_count = len(pivot.get("page_fields", []))
             page_row = max(0, first_row - page_count - 1)
             if page_row <= row < page_row + page_count and first_col <= col <= first_col + 1:
                 return True
@@ -234,6 +240,7 @@ class WorkbookService:
             copy = self._copy(connection, copy_id, user_id)
             snapshot = self.templates.get(connection, copy["template_id"])
             extents = _result_extents(connection, copy_id)
+            pivot_state = read_state(connection, copy_id)
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
                    "rows": _visible_extent(item, extents, 0),
                    "cols": _visible_extent(item, extents, 1),
@@ -243,7 +250,7 @@ class WorkbookService:
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                    "merges": item["merges"], "pivots": deepcopy(item.get("pivots", [])),
-                   "slicers": deepcopy(item.get("slicers", []))} for item in snapshot.sheets]
+                   "slicers": _slicers_with_state(item.get("slicers", []), pivot_state)} for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
@@ -332,6 +339,28 @@ class WorkbookService:
             raise AppError(404, "unknown_button", "Macro button not found")
         _require_excel(snapshot, engine_kind)
         return button["macro"]
+
+    def slicer_request(self, copy_id: str, user_id: str, op_id, cache, selected, engine_kind: str | None) -> list[str]:
+        """Authorize a slicer change and return its validated item texts (clients never name pivots)."""
+        snapshot = self._press_access(copy_id, user_id, op_id)
+        slicer = next((item for sheet in snapshot.sheets for item in sheet.get("slicers", [])
+                       if item.get("engine") == "excel" and item["cache"] == cache), None)
+        if slicer is None:
+            raise AppError(404, "unknown_slicer", "Slicer not found")
+        _require_excel(snapshot, engine_kind, "slicers_unavailable", SLICER_MESSAGE)
+        if not isinstance(selected, list) or not all(isinstance(text, str) for text in selected):
+            raise AppError(422, "invalid", "Selected items must be a list of item texts")
+        chosen = list(dict.fromkeys(selected))
+        if not chosen:
+            raise AppError(422, "empty_selection", "Select at least one item")
+        captions = {item["caption"] for item in slicer["items"]}
+        if any(text not in captions for text in chosen):
+            raise AppError(422, "unknown_item", "Slicer item not found")
+        return chosen
+
+    def pivot_state(self, copy_id: str) -> dict:
+        with self.database.connect() as connection:
+            return read_state(connection, copy_id)
 
     def refresh_request(self, copy_id: str, user_id: str, op_id, engine_kind: str | None) -> None:
         """Authorize a data refresh of a template that has connections, on the Excel engine."""
@@ -533,10 +562,21 @@ def _spill_input_metadata(snapshot, coordinate, input_record):
     return metadata
 
 
-def _require_excel(snapshot, engine_kind: str | None) -> None:
+def _require_excel(snapshot, engine_kind: str | None, code: str = "macros_unavailable",
+                   message: str = "Macros run on the office server, where the app uses Microsoft Excel.") -> None:
     if engine_kind != "excel" or snapshot.results == "cached":
-        raise AppError(409, "macros_unavailable",
-                       "Macros run on the office server, where the app uses Microsoft Excel.")
+        raise AppError(409, code, message)
+
+
+def _slicers_with_state(slicers, state):
+    """Excel slicers show the copy's stored selection; the rest keep the template's own."""
+    output = []
+    for slicer in deepcopy(slicers):
+        if slicer.get("engine") == "excel" and slicer["cache"] in state["slicers"]:
+            selected = set(state["slicers"][slicer["cache"]])
+            slicer["items"] = [{**item, "selected": item["caption"] in selected} for item in slicer["items"]]
+        output.append(slicer)
+    return output
 
 
 def _check_overrides(connection, snapshot, copy_id, rows):
@@ -555,7 +595,7 @@ def _macro_wrote(connection, copy_id, coordinate):
             (copy_id, *coordinate),
         ).fetchone()
         if latest is not None:
-            return latest["action"] in {"macro", "refresh"}
+            return latest["action"] in {"macro", "refresh", "slicer"}
         parent = connection.execute("SELECT parent_copy_id FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
         copy_id = parent["parent_copy_id"] if parent is not None else None
     return False

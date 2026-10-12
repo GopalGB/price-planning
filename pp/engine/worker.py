@@ -19,6 +19,7 @@ MISSING = object()
 class WorkerBatch:
     changes: list[tuple]
     base_revision: int | None = None
+    pivot_state: dict | None = None  # {"slicers": {cache: [items]}, "refreshed": bool}, applied after a fresh load
 
 
 class WarmCopy:
@@ -34,20 +35,37 @@ class WarmCopy:
 
     def apply(self, revision: int, template_path: str, changes: list[tuple] | WorkerBatch) -> dict:
         batch = changes if isinstance(changes, WorkerBatch) else WorkerBatch(changes)
-        calculated, reset = self._sync(template_path, batch.changes)
+        calculated, reset = self._sync(template_path, batch.changes, batch.pivot_state)
         return self._result(revision, batch, reset, calculated)
 
     def run_macro(self, revision: int, template_path: str, changes: list[tuple], base_revision: int | None,
-                  macro: str, timeout: float = 600) -> dict:
+                  macro: str, timeout: float = 600, pivot_state: dict | None = None) -> dict:
         """Sync the desired state, run the template macro in Excel and fold what it wrote into the state."""
         if self.kind != "excel":
             raise EngineError("template macros need the Excel engine")
-        batch = WorkerBatch(changes, base_revision)
-        calculated, reset = self._sync(template_path, batch.changes)
+        batch = WorkerBatch(changes, base_revision, pivot_state)
+        calculated, reset = self._sync(template_path, batch.changes, pivot_state)
         if macro == REFRESH_ALL:
             outcome = self.engine.refresh_data(timeout)
         else:
             outcome = self.engine.run_macro(macro, timeout)
+        self._fold(outcome)
+        result = self._result(revision, batch, reset, calculated + outcome["changes"])
+        return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
+
+    def run_slicer(self, revision: int, template_path: str, changes: list[tuple], base_revision: int | None,
+                   cache: str, selected: list[str], pivot_state: dict | None = None) -> dict:
+        """Select the items of one Excel slicer; the pivot output it changes is recorded like a macro's."""
+        if self.kind != "excel":
+            raise EngineError("slicers need the Excel engine")
+        batch = WorkerBatch(changes, base_revision, pivot_state)
+        calculated, reset = self._sync(template_path, batch.changes, pivot_state)
+        outcome = self.engine.set_slicer(cache, selected)
+        self._fold(outcome)
+        result = self._result(revision, batch, reset, calculated + outcome["changes"])
+        return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
+
+    def _fold(self, outcome: dict) -> None:
         for coordinate, value in outcome["before"].items():
             if coordinate not in self.baseline:
                 self.baseline[coordinate] = value
@@ -55,10 +73,8 @@ class WarmCopy:
             self.overrides[(sheet, row, col)] = value
             if value is None:
                 self.cleared = self.cleared | {(sheet, row, col)}
-        result = self._result(revision, batch, reset, calculated + outcome["changes"])
-        return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
 
-    def _sync(self, template_path: str, changes: list[tuple]) -> tuple[list, bool]:
+    def _sync(self, template_path: str, changes: list[tuple], pivot_state: dict | None = None) -> tuple[list, bool]:
         reset = self._load(template_path)
         desired = {(sheet, row, col): value for sheet, row, col, value in changes}
         cleared = frozenset(coordinate for coordinate, value in desired.items() if value is None)
@@ -85,6 +101,8 @@ class WarmCopy:
         calculated = self.engine.apply(updates)
         self.overrides = desired
         self.cleared = cleared
+        if reset and self.kind == "excel" and _has_pivot_state(pivot_state):
+            calculated = calculated + self.engine.restore_pivots(pivot_state)["changes"]
         return calculated, reset
 
     def _result(self, revision: int, batch: WorkerBatch, reset: bool, changes: list, **extra) -> dict:
@@ -151,6 +169,10 @@ class WarmCopy:
                 self.engine.recalculate(roots)
 
 
+def _has_pivot_state(state) -> bool:
+    return bool(state) and (bool(state.get("refreshed")) or bool(state.get("slicers")))
+
+
 def _different(before, after):
     if before is MISSING or after is MISSING:
         return before is not after
@@ -170,15 +192,21 @@ def _engine_bytes():
 
 
 def _serve(copy: WarmCopy, request: tuple) -> dict:
-    """Requests: (revision, path, changes[, base_revision]) or ("macro", revision, path, changes, base, macro, timeout)."""
+    """Requests: (revision, path, changes[, base_revision[, pivot_state]]), ("macro", revision, path, changes,
+    base, macro, timeout[, pivot_state]) or ("slicer", revision, path, changes, base, cache, selected[, pivot_state])."""
     if request[0] == "macro":
-        _, revision, template_path, changes, base_revision, macro, timeout = request
-        return copy.run_macro(revision, template_path, changes, base_revision, macro, timeout)
+        _, revision, template_path, changes, base_revision, macro, timeout, *rest = request
+        return copy.run_macro(revision, template_path, changes, base_revision, macro, timeout,
+                              rest[0] if rest else None)
+    if request[0] == "slicer":
+        _, revision, template_path, changes, base_revision, cache, selected, *rest = request
+        return copy.run_slicer(revision, template_path, changes, base_revision, cache, selected,
+                               rest[0] if rest else None)
     if len(request) == 3:
         revision, template_path, changes = request
         return copy.apply(revision, template_path, WorkerBatch(changes))
-    revision, template_path, changes, base_revision = request
-    return copy.apply(revision, template_path, WorkerBatch(changes, base_revision))
+    revision, template_path, changes, base_revision, *rest = request
+    return copy.apply(revision, template_path, WorkerBatch(changes, base_revision, rest[0] if rest else None))
 
 
 def worker_loop(connection, copy_id: str, engine: str = "formualizer") -> None:

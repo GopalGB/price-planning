@@ -198,10 +198,12 @@ def _cache_fields():
     return "".join(fields)
 
 
-def _pivot_cache(row_count):
+def _pivot_cache(row_count, external=False):
+    source = ('<cacheSource type="external" connectionId="1"/>' if external else
+              f'<cacheSource type="worksheet"><worksheetSource ref="A1:S{row_count + 1}" sheet="SourceData"/></cacheSource>')
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <pivotCacheDefinition xmlns="{MAIN}" xmlns:x14="{X14}" saveData="0" refreshOnLoad="1" recordCount="{row_count}">
-  <cacheSource type="worksheet"><worksheetSource ref="A1:S{row_count + 1}" sheet="SourceData"/></cacheSource>
+  {source}
   <cacheFields count="19">{_cache_fields()}</cacheFields>
   <extLst><ext uri="{{725AE2AE-9491-48be-B2B4-4EB974FC3084}}"><x14:pivotCacheDefinition pivotCacheId="1"/></ext></extLst>
 </pivotCacheDefinition>'''.encode()
@@ -313,12 +315,12 @@ def _drawing():
             f'xmlns:a="{DRAWING}" xmlns:xdr14="{XDR14}">{"".join(anchors)}</xdr:wsDr>').encode()
 
 
-def _new_parts(row_count):
+def _new_parts(row_count, external=False):
     parts = {
         "xl/worksheets/_rels/sheet1.xml.rels": _sheet_relationships(),
         "xl/pivotTables/pivotTable1.xml": _pivot_table(),
         "xl/pivotTables/_rels/pivotTable1.xml.rels": _pivot_relationships(),
-        "xl/pivotCache/pivotCacheDefinition1.xml": _pivot_cache(row_count),
+        "xl/pivotCache/pivotCacheDefinition1.xml": _pivot_cache(row_count, external),
         "xl/slicers/slicer1.xml": _slicers(),
         "xl/drawings/drawing1.xml": _drawing(),
     }
@@ -329,7 +331,7 @@ def _new_parts(row_count):
     return parts
 
 
-def _inject_dashboard_parts(path, row_count):
+def _inject_dashboard_parts(path, row_count, external=False):
     replacements = {
         "[Content_Types].xml": _content_types,
         "xl/workbook.xml": _workbook_xml,
@@ -337,7 +339,7 @@ def _inject_dashboard_parts(path, row_count):
         "xl/worksheets/sheet1.xml": _dashboard_sheet,
         "xl/styles.xml": _styles,
     }
-    new_parts = _new_parts(row_count)
+    new_parts = _new_parts(row_count, external)
     handle = tempfile.NamedTemporaryFile(dir=path.parent, suffix=".xlsm", delete=False)
     temporary = Path(handle.name)
     handle.close()
@@ -353,11 +355,14 @@ def _inject_dashboard_parts(path, row_count):
         temporary.unlink(missing_ok=True)
 
 
-def make_dashboard(path, row_count=98_700):
-    """Write a synthetic 19-field dashboard workbook with no cached source records."""
+def make_dashboard(path, row_count=98_700, external=False):
+    """Write a synthetic 19-field dashboard workbook with no cached source records.
+
+    ``external=True`` makes the pivot cache a Power Query connection (the real template's shape).
+    """
     if not isinstance(row_count, int) or isinstance(row_count, bool) or row_count < 1:
         raise ValueError("row_count must be a positive integer")
     path = Path(path)
     _write_base(path, row_count)
-    _inject_dashboard_parts(path, row_count)
+    _inject_dashboard_parts(path, row_count, external)
     return {"source": {"sheet": "SourceData", "ref": f"A1:S{row_count + 1}"}}

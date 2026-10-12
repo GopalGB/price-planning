@@ -11,6 +11,14 @@ feat/v2-integration at 595808a, pushed (Sir's y; gate clean; no office files on 
   saved values (security/malformed parts still fail). 8765 back up, Coupon opens.
 - Running: Excel-only pivot + slicers (PLAN-P6.4 revision) on feat/v2-dash-engine.
 
+## 2026-10-12 (Claude, P6.4 pivots and slicers on the Excel engine, feat/v2-dash-engine)
+
+Excel-only pivots (Power Query source) now keep their slicers: imported as `engine: "excel"` slicers with items and
+selection (IMPORT_VERSION 12). Pivot output cells are Excel's, published and never overrides. A slicer click posts
+`POST /api/copies/{id}/slicers`, runs in the copy's Excel, commits one `slicer` revision and stores the selection per
+copy (`pp_pivot_state`); fresh engines re-apply it. Office check still to run: `ops\excel_smoke.py --slicers` (PASS).
+Plan: .planning/excel-grid/PLAN-P6.4-dashboard.md (status section lists the deviations).
+
 ## 2026-10-12 12:20 IST (Claude, P6.5 refresh data)
 
 Merged into feat/v2-integration at 7930bbe (648 Python OK, 121 web OK, guard 0). "Refresh data" runs Excel's own

@@ -1,4 +1,5 @@
 import { styleData } from "./grid-data.mjs";
+import { runSlicer } from "./macros.mjs";
 
 const EMU_TO_PX = 96 / 914400;
 const DEFAULT_FONT = "Calibri";
@@ -35,6 +36,19 @@ export function selectSlicer(view, name, selector, multi, selected = []) {
     filter.items = current.filter((item) => !sameSelector(item, selector));
   else filter.items = [...current, selector];
   return next;
+}
+
+// The item texts an Excel slicer sends for one click: a plain click selects one item, Ctrl/Cmd-click
+// toggles it, and a cleared filter (caption null) or a toggle that empties the selection selects all.
+export function excelSelection(items, caption, additive) {
+  const all = items.map((item) => item.caption);
+  if (caption === null) return all;
+  if (!additive) return [caption];
+  const current = items.filter((item) => item.selected).map((item) => item.caption);
+  const next = current.includes(caption)
+    ? current.filter((text) => text !== caption)
+    : [...current, caption];
+  return next.length ? all.filter((text) => next.includes(text)) : all;
 }
 
 export function viewToPivotOptions(view, pivot) {
@@ -390,6 +404,8 @@ export class DashboardController {
     fontFamily = () => DEFAULT_FONT,
     roleStyles = () => ({}),
     onScopeChange = () => {},
+    canEdit = () => true,
+    message = () => {},
     setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
     clearTimer = (id) => globalThis.clearTimeout(id),
   }) {
@@ -406,9 +422,13 @@ export class DashboardController {
       fontFamily,
       roleStyles,
       onScopeChange,
+      canEdit,
+      message,
       setTimer,
       clearTimer,
     });
+    this.excelSlicers = [];
+    this.excelBusy = new Set();
     this.token = 0;
     this.refreshGeneration = 0;
     this.viewGeneration = 0;
@@ -439,7 +459,11 @@ export class DashboardController {
     this.pivot = sheet.pivots?.[0];
     this.scope = this.pivot && this.categoryId ? this.preferredScope : "copy";
     this.onScopeChange(this.readOnly());
-    if (!this.pivot) return false;
+    this.excelSlicers = (sheet.slicers ?? []).filter((item) => item.engine === "excel");
+    if (!this.pivot) {
+      this.renderExcelSlicers();
+      return false;
+    }
     try {
       await this.viewQueue;
       if (token !== this.token) return false;
@@ -942,15 +966,45 @@ export class DashboardController {
     for (const slicer of slicerModels(
       this.result.slicers,
       this.sheet.slicers ?? [],
-    )) {
-      const frame = document.createElement("section");
-      frame.className = "dashboard-slicer";
-      frame.dataset.style = slicer.style;
-      frame.setAttribute("role", "group");
-      frame.setAttribute("aria-label", slicer.caption);
-      frame.append(this.slicerHeader(slicer), this.slicerItems(slicer));
-      this.addControl(frame, slicer.anchor);
-    }
+    ))
+      this.addControl(this.slicerFrame(slicer), slicer.anchor);
+  }
+
+  // Excel slicers of a sheet whose pivot Excel runs (no cell-based pivot to draw them with).
+  renderExcelSlicers() {
+    this.disposeControls();
+    if (!this.gridElement || !globalThis.document || !this.excelSlicers.length)
+      return;
+    this.layer = document.createElement("div");
+    this.layer.className = "dashboard-layer";
+    this.layer.addEventListener("keydown", (event) => this.controlKey(event));
+    this.gridElement.append(this.layer);
+    for (const slicer of slicerModels(this.excelSlicers, this.excelSlicers))
+      this.addControl(this.slicerFrame(slicer), slicer.anchor);
+    this.position();
+  }
+
+  slicerFrame(slicer) {
+    const frame = document.createElement("section");
+    frame.className = "dashboard-slicer";
+    frame.dataset.style = slicer.style;
+    frame.setAttribute("role", "group");
+    frame.setAttribute("aria-label", slicer.caption);
+    frame.setAttribute("aria-busy", String(this.excelBusy.has(slicer.name)));
+    frame.append(this.slicerHeader(slicer), this.slicerItems(slicer));
+    return frame;
+  }
+
+  slicerRedraw(slicer) {
+    if (slicer.engine === "excel") this.renderExcelSlicers();
+    else this.renderControls();
+  }
+
+  excelLocked(slicer) {
+    return (
+      slicer.engine === "excel" &&
+      (this.excelBusy.has(slicer.name) || !this.canEdit())
+    );
   }
 
   slicerHeader(slicer) {
@@ -964,12 +1018,59 @@ export class DashboardController {
       this.multi.has(slicer.name)
         ? this.multi.delete(slicer.name)
         : this.multi.add(slicer.name);
-      this.renderControls();
+      this.slicerRedraw(slicer);
     };
     clear.onclick = () =>
-      this.update(selectSlicer(this.view, slicer.name, null, false));
+      slicer.engine === "excel"
+        ? this.pickExcel(slicer, excelSelection(slicer.items, null, false))
+        : this.update(selectSlicer(this.view, slicer.name, null, false));
+    if (this.excelLocked(slicer)) multi.disabled = clear.disabled = true;
     header.append(caption, multi, clear);
     return header;
+  }
+
+  // Excel slicers send the item texts to the server; the personal pivot view keeps its own filters.
+  slicerPick(slicer, item, event) {
+    if (slicer.engine === "excel") {
+      const additive =
+        this.multi.has(slicer.name) || Boolean(event?.ctrlKey || event?.metaKey);
+      return this.pickExcel(
+        slicer,
+        excelSelection(slicer.items, item.caption, additive),
+      );
+    }
+    const selected = slicer.items
+      .filter((entry) => entry.selected)
+      .map((entry) => entry.selector);
+    return this.update(
+      selectSlicer(
+        this.view,
+        slicer.name,
+        item.selector,
+        this.multi.has(slicer.name),
+        selected,
+      ),
+    );
+  }
+
+  async pickExcel(slicer, selected) {
+    if (this.excelBusy.has(slicer.name) || !this.canEdit()) return false;
+    const sheet = this.sheet;
+    this.excelBusy.add(slicer.name);
+    this.renderExcelSlicers();
+    try {
+      const result = await runSlicer(this.api, this.copyId, slicer.cache, selected);
+      const stored = this.excelSlicers.find((item) => item.name === slicer.name);
+      for (const item of stored.items)
+        item.selected = result.selected.includes(item.caption);
+      return true;
+    } catch (error) {
+      this.message("Slicer", error.message);
+      return false;
+    } finally {
+      this.excelBusy.delete(slicer.name);
+      if (this.sheet === sheet && !this.pivot) this.renderExcelSlicers();
+    }
   }
 
   slicerItems(slicer) {
@@ -991,20 +1092,8 @@ export class DashboardController {
     button.setAttribute("role", "option");
     button.setAttribute("aria-selected", String(item.selected));
     if (item.no_data) button.setAttribute("aria-disabled", "true");
-    button.onclick = () => {
-      const selected = slicer.items
-        .filter((entry) => entry.selected)
-        .map((entry) => entry.selector);
-      this.update(
-        selectSlicer(
-          this.view,
-          slicer.name,
-          item.selector,
-          this.multi.has(slicer.name),
-          selected,
-        ),
-      );
-    };
+    button.disabled = this.excelLocked(slicer);
+    button.onclick = (event) => this.slicerPick(slicer, item, event);
     return button;
   }
 
