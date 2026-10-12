@@ -117,6 +117,7 @@ async function openCopy(copy) {
     `${categories.find((c) => c.id === copy.category_id)?.name ?? ""} / ${copy.name}`;
   const meta = await api.request(`/copies/${copy.id}/workbook`);
   if (visit !== navigation) return;
+  $("refresh-button").hidden = !meta.refreshable;
   if (meta.calculation === "cached") {
     $("role-status").textContent = "Read only · Excel's saved values, editing paused";
     if ($("upload-button")) $("upload-button").hidden = true;
@@ -159,6 +160,7 @@ async function openCopy(copy) {
     grid.setZoom(parseInt(event.target.value, 10) / 100);
   $("hidden-button").onclick = () => grid.toggleHidden();
   $("download-button").onclick = () => downloadModal(meta);
+  $("refresh-button").onclick = () => safe(grid.refreshData());
   $("upload-button").onclick = () => uploadModal(activeCopy);
   $("name-box").onkeydown = (event) => {
     if (event.key === "Enter") safe(grid.goTo(event.target.value));

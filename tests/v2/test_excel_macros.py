@@ -302,6 +302,32 @@ class ComHostTests(unittest.TestCase):
         self.assertEqual(str(raised.exception), "macro timed out")
         self.assertEqual(killed, [EXCEL_PID])
 
+    def test_refresh_all_waits_for_queries_under_the_dialog_watcher(self):
+        gui, killed = FakeGui(), []
+        app = MacroApp(gui, lambda app, name: None)
+        app.refresh_impl = lambda app: run_showing_dialog(app, "RefreshAll")
+        host = self.com_host(app, gui, killed)
+
+        messages = host.refresh_all(5)
+
+        self.assertEqual(messages, ["Done: 3 rows\nSaved"])
+        self.assertEqual(app.calls, ["RefreshAll", "CalculateUntilAsyncQueriesDone"])
+        self.assertEqual(killed, [])
+
+    def test_refresh_that_runs_past_the_limit_gets_excel_killed(self):
+        from pp.engine.formualizer import MacroTimeout
+
+        gui, killed = FakeGui(), []
+        app = MacroApp(gui, lambda app, name: None)
+        app.refresh_impl = wait_until_killed
+        host = self.com_host(app, gui, killed)
+
+        with self.assertRaises(MacroTimeout):
+            host.refresh_all(0.3)
+
+        self.assertEqual(killed, [EXCEL_PID])
+        self.assertNotIn("CalculateUntilAsyncQueriesDone", app.calls)
+
     def test_com_error_from_run_is_a_macro_failure(self):
         gui, killed = FakeGui(), []
         app = MacroApp(gui, lambda app, name: fail(app, name))
@@ -336,6 +362,8 @@ class MacroApp:
 
     def __init__(self, gui, run):
         self.gui, self.run_impl = gui, run
+        self.refresh_impl = lambda app: None
+        self.calls = []
         self.sheets, self.killed = {}, threading.Event()
         self.Workbooks = SimpleNamespace(Open=self.open)
 
@@ -343,6 +371,7 @@ class MacroApp:
         self.opened = Path(path)
         return SimpleNamespace(Name=Path(path).name,
                                Worksheets=lambda name: self.sheets.setdefault(name, FakeExcelSheet()),
+                               RefreshAll=lambda: (self.calls.append("RefreshAll"), self.refresh_impl(self)),
                                Close=lambda SaveChanges: None)
 
     def Run(self, name):
@@ -351,6 +380,9 @@ class MacroApp:
 
     def Calculate(self):
         pass
+
+    def CalculateUntilAsyncQueriesDone(self):
+        self.calls.append("CalculateUntilAsyncQueriesDone")
 
     def Quit(self):
         pass

@@ -30,7 +30,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 9
+IMPORT_VERSION = 10
 
 
 class TemplateImportError(Exception):
@@ -652,6 +652,13 @@ def _button_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict
     return [{"id": f"b{number}", **button} for number, button in enumerate(found)]
 
 
+def _has_data_connections(archive: zipfile.ZipFile) -> bool:
+    """True when the workbook has at least one Power Query or other data connection Excel can refresh."""
+    if "xl/connections.xml" not in archive.namelist():
+        return False
+    return ET.fromstring(archive.read("xl/connections.xml")).find(f"{NS}connection") is not None
+
+
 def _import_archive(source: CapturedSource, staging: Path, results: str = "engine") -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
@@ -673,6 +680,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
                 LOGGER.info("Template import progress: sheet %d/%d", len(metadata), len(sheet_specs))
             database.commit()
             buttons = _button_data(archive, sheet_specs)
+            refreshable = _has_data_connections(archive)
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
         if results == "engine":  # "cached" and "saved" keep Excel's saved results
@@ -683,7 +691,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
                     "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,
-                    "defined_names": names})
+                    "defined_names": names, "refreshable": refreshable})
         _write_json(staging / "progress.json", {"complete": True,
                     "sheets_completed": len(metadata), "sheets_total": len(metadata)})
     finally:

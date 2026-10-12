@@ -1,5 +1,16 @@
 # STATE
 
+## 2026-10-12 (Claude, P6.5 refresh data)
+
+Branch feat/v2-pq-refresh (worktree PricePlanning-work/pq-refresh): "Refresh data" runs Excel's own
+RefreshAll on the copy's private Excel, waits for the queries, and commits what changed as one `refresh`
+revision through the macro diff. `refreshable` (IMPORT_VERSION 10) comes from xl/connections.xml.
+Route POST /api/copies/{id}/refresh; web toolbar button shown only when refreshable.
+- Tests: new tests/v2/test_refresh_data.py (17) plus COM refresh tests in test_excel_macros.py; web 121 OK;
+  ruff clean; content guard 0. Bundle rebuilt (static/dist).
+- Not run here: a real RefreshAll (no Excel on the Mac). Office check: `ops\excel_smoke.py --refresh`, must print PASS.
+- Plan: .planning/excel-grid/PLAN-P6.5-refresh.md. Old feat/v2-refresh (pqtools) stays superseded.
+
 ## 2026-10-12 11:45 IST (Claude)
 
 Branch feat/v2-integration at c530436 (unpushed; Sir runs `git push`, answers y).

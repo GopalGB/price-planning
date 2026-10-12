@@ -38,6 +38,7 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
    buttons: [{id, sheet, from: {row, col, dx, dy}, to: {row, col, dx, dy} | size: {w, h}, label, macro}]}
    (macro buttons of the template; `from`/`to` are zero-based cells with pixel offsets, `size` for one-cell anchors;
    snapshots imported before buttons existed have `buttons: []` until the template is reimported)
+  `refreshable: bool` is true when the template has data connections (Power Query) that "Refresh data" can run.
    styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, font_name, border: {t,r,b,l}}]}`
 - `GET /api/copies/{id}/sheets/{sheet}/rows?start={r}&count={n<=500}` ->
   `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, input?, input_value?, ver?, by?, at?}}}}`
@@ -73,6 +74,13 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   Microsoft Excel.") when there is no Excel engine or the template is `cached`; 502 `macro_failed` with
   "The macro did not finish in Excel." or, past the 600 s limit, "The macro ran too long and was stopped."
   (nothing is committed on 502). If the server dies after the commit, the normal calculation replay publishes it.
+- `POST /api/copies/{id}/refresh {op_id}` (owner/editor; viewers 403, same CSRF and pipeline rules as macros). Runs
+  Excel's own `RefreshAll` on the copy's private Excel, waits for the background queries, and records what it wrote
+  exactly like a macro: one revision with history action `refresh`. Response, replay and `op_id` rules are the
+  same as for macros: `200 {messages, changed, input_revision}`.
+  Errors: 409 `refresh_unavailable` ("This template has no data connections to refresh.") when `refreshable` is
+  false; 409 `macros_unavailable` when there is no Excel engine; 502 `macro_failed` with "The refresh did not
+  finish in Excel." or "The refresh ran too long and was stopped." (nothing committed).
 - Rows and cells: an override on a non-input cell shows its value with the cell's own kind (`k` stays `c`/`f`) and no
   `ver`/`by`/`at`; a formula override is never sent as a value (its published result is shown). On an input,
   `input_value` is the formula text with `input_formula: true`.

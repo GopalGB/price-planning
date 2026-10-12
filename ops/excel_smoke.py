@@ -10,6 +10,9 @@ no overlay. Prints no cell values.
 
 --macros runs every template button on a fresh engine, then proves a second fresh engine that
 applies only the recorded contents reads identical values everywhere. Prints counts and timings only.
+
+--refresh runs Excel's RefreshAll on a fresh engine, then replays the recorded contents on a second
+fresh engine and compares every value. Needs a template with data connections. Counts only.
 """
 
 import argparse
@@ -75,6 +78,44 @@ def check_macros(snapshot, open_engine, report=print):
     return failures
 
 
+def check_refresh(snapshot, open_engine, report=print):
+    """RefreshAll on a fresh engine, then a fresh replay of its contents; returns the number of failures."""
+    start = time.time()
+    engine = open_engine(snapshot.source_path)
+    try:
+        outcome = engine.refresh_data()
+        seconds = time.time() - start
+        expected = full_read(engine, snapshot)
+        peak_mb = engine.memory_bytes() // 2**20
+    except EngineError as exc:
+        report(f"refresh did not finish ({type(exc).__name__})")
+        report("FAIL (1)")
+        return 1
+    finally:
+        engine.close()
+    report(f"refresh: {seconds:.1f} s, messages {len(outcome['messages'])}, "
+           f"contents {len(outcome['contents'])}, published {len(outcome['changes'])}, "
+           f"Excel peak {peak_mb} MB")
+    try:
+        start = time.time()
+        replay = open_engine(snapshot.source_path)
+        try:
+            replay.apply(outcome["contents"])
+            actual = full_read(replay, snapshot)
+        finally:
+            replay.close()
+    except EngineError as exc:
+        report(f"  replay did not finish ({type(exc).__name__})")
+        report("FAIL (1)")
+        return 1
+    mismatched = sum(1 for cell in expected.keys() | actual.keys()
+                     if not exactly_equal(expected.get(cell), actual.get(cell)))
+    report(f"  replay: {time.time() - start:.1f} s, mismatched cells {mismatched}")
+    failures = bool(mismatched)
+    report("PASS" if not failures else f"FAIL ({failures})")
+    return failures
+
+
 def _run_on_fresh(snapshot, open_engine, button):
     start = time.time()
     engine = open_engine(snapshot.source_path)
@@ -97,6 +138,7 @@ def main():
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--edits", type=int, default=3)
     parser.add_argument("--macros", action="store_true", help="run the template buttons instead of edits")
+    parser.add_argument("--refresh", action="store_true", help="refresh the data connections instead of edits")
     args = parser.parse_args()
     config = load_config(Path(args.root))
     snapshot = TemplateSnapshot(import_template(config.template_path, config.data_dir, "saved"))
@@ -105,6 +147,11 @@ def main():
     print(f"caches ready in {time.time() - start:.1f} s", flush=True)
     if args.macros:
         return 1 if check_macros(snapshot, ExcelEngine.load) else 0
+    if args.refresh:
+        if not snapshot.refreshable:
+            print("This template has no data connections to refresh.")
+            return 1
+        return 1 if check_refresh(snapshot, ExcelEngine.load) else 0
     start = time.time()
     engine = ExcelEngine.load(snapshot.source_path)
     print(f"Excel opened in {time.time() - start:.1f} s; Excel peak memory "

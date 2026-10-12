@@ -35,6 +35,7 @@ COM_ERROR_BASE = -2146828288
 XL_CELL_TYPE_FORMULAS = -4123
 NO_CELLS = -2146827284  # SpecialCells found no cells (0x800A03EC)
 DIALOG_CLASS = "#32770"
+REFRESH_ALL = "RefreshAll"  # the macro name the server sends to refresh data instead of running a button
 EXCEL_ERRORS = {2000: "#NULL!", 2007: "#DIV/0!", 2015: "#VALUE!", 2023: "#REF!", 2029: "#NAME?",
                 2036: "#NUM!", 2042: "#N/A", 2043: "#GETTING_DATA", 2045: "#SPILL!",
                 2047: "#BLOCKED!", 2048: "#UNKNOWN!", 2049: "#FIELD!", 2050: "#CALC!"}
@@ -86,6 +87,7 @@ class ExcelHost:
     def formula_areas(self, sheet: int) -> list[tuple[int, int, int, int]]: ...
     def used_range(self, sheet: int) -> tuple[int, int, int, int] | None: ...
     def run_macro(self, name: str, timeout: float) -> list[str]: ...
+    def refresh_all(self, timeout: float) -> list[str]: ...
     def memory_bytes(self) -> int: ...
     def close(self) -> None: ...
 
@@ -171,7 +173,19 @@ class ComExcelHost(ExcelHost):
         return (top, left, top + rows - 1, left + cols - 1)
 
     def run_macro(self, name, timeout):
-        """Run a workbook macro; a watcher thread presses OK on its dialogs and enforces the limit."""
+        """Run a workbook macro under the dialog watcher and the time limit."""
+        return self._watched(lambda: self.app.Run(f"'{self.book.Name}'!{name}"), timeout)
+
+    def refresh_all(self, timeout):
+        """Excel's own RefreshAll on this copy, then wait for the background queries to finish."""
+        def refresh():
+            self.book.RefreshAll()
+            self.app.CalculateUntilAsyncQueriesDone()
+
+        return self._watched(refresh, timeout)
+
+    def _watched(self, action, timeout):
+        """Run an Excel action; a watcher thread presses OK on its dialogs and kills Excel past the limit."""
         dialogs, done, timed_out = [], threading.Event(), threading.Event()
         deadline = time.monotonic() + timeout
 
@@ -188,7 +202,7 @@ class ComExcelHost(ExcelHost):
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         try:
-            self.app.Run(f"'{self.book.Name}'!{name}")
+            action()
         except Exception as exc:
             if timed_out.is_set():
                 raise MacroTimeout("macro timed out") from exc
@@ -344,6 +358,9 @@ class FormualizerHost(ExcelHost):
     def run_macro(self, name, timeout):
         return self.macros[name](self)
 
+    def refresh_all(self, timeout):
+        return self.macros[REFRESH_ALL](self)
+
     def memory_bytes(self):
         return 0
 
@@ -438,14 +455,22 @@ class ExcelEngine:
             raise EngineError("Excel calculation engine failed to apply changes") from exc
 
     def run_macro(self, macro: str, timeout: float = 600) -> dict:
-        """Run a template macro in Excel and record exactly what it changed (see P6.3 decision 5).
+        """Run a template macro in Excel and record exactly what it changed (see P6.3 decision 5)."""
+        return self._record(lambda: self.host.run_macro(macro, timeout))
+
+    def refresh_data(self, timeout: float = 600) -> dict:
+        """Excel's RefreshAll on this copy, recorded like a macro (see P6.5 refresh decision)."""
+        return self._record(lambda: self.host.refresh_all(timeout))
+
+    def _record(self, action) -> dict:
+        """Run an Excel action and record what it wrote, as a macro's delta.
 
         Overlay state is not reset here: the caller syncs the desired state first, and the
-        delta it publishes must cover that sync plus the macro.
+        delta it publishes must cover that sync plus the action.
         """
         try:
             before = self._read_values()
-            messages = self.host.run_macro(macro, timeout)
+            messages = action()
             self.host.calculate()
             now = set()
             areas = [(sheet, rect) for sheet in range(len(self.names))

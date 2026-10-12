@@ -27,6 +27,7 @@ from .calc_service import (
 )
 from .copies import CopyService, ShareChange
 from .db import token_hash
+from .engine.excel import REFRESH_ALL
 from .engine.formualizer import EngineError, MacroTimeout
 from .engine.pool import CalculationRequest, MacroRequest
 from .config import BRAND_TYPES
@@ -125,6 +126,7 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/macros", _macros, methods=["POST"]),
+        Route("/api/copies/{copy_id}/refresh", _refresh, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/downloads", _prepare_download, methods=["POST"]),
@@ -313,9 +315,28 @@ async def _macros(request: Request):
     button, op_id = payload.get("button"), payload.get("op_id")
     engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
     macro = services.workbooks.macro_request(copy_id, user["id"], button, op_id, engine_kind)
-    operation = {"op_id": op_id, "button": button}
+    return await _run_excel_action(services, copy_id, user["id"], {"op_id": op_id, "button": button},
+                                   macro, "macro", _MACRO_FAILURES)
+
+
+async def _refresh(request: Request):
+    services, user, _ = _write_auth(request)
+    copy_id, payload = request.path_params["copy_id"], await _body(request)
+    op_id = payload.get("op_id")
+    engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
+    services.workbooks.refresh_request(copy_id, user["id"], op_id, engine_kind)
+    return await _run_excel_action(services, copy_id, user["id"], {"op_id": op_id, "action": "refresh"},
+                                   REFRESH_ALL, "refresh", _REFRESH_FAILURES)
+
+
+_MACRO_FAILURES = ("The macro ran too long and was stopped.", "The macro did not finish in Excel.")
+_REFRESH_FAILURES = ("The refresh ran too long and was stopped.", "The refresh did not finish in Excel.")
+
+
+async def _run_excel_action(services, copy_id, user_id, operation, macro, action, failures):
+    """Run a template macro (or REFRESH_ALL) in Excel and commit what it wrote as one revision."""
     async with services.hub.pipeline(copy_id):
-        replay = services.operations.macro_replay(copy_id, user["id"], operation)
+        replay = services.operations.macro_replay(copy_id, user_id, operation)
         if replay is not None:
             return JSONResponse(_macro_response(replay))
         state = services.operations.revisions(copy_id)
@@ -326,13 +347,13 @@ async def _macros(request: Request):
             result = await asyncio.to_thread(services.engine_pool.run_macro, MacroRequest(
                 copy_id, revision, source, changes, state["calculated_revision"], macro))
         except MacroTimeout as exc:
-            raise AppError(502, "macro_failed", "The macro ran too long and was stopped.") from exc
+            raise AppError(502, "macro_failed", failures[0]) from exc
         except EngineError as exc:
-            raise AppError(502, "macro_failed", "The macro did not finish in Excel.") from exc
+            raise AppError(502, "macro_failed", failures[1]) from exc
         ack = None
         if result["contents"]:
-            ack = await asyncio.to_thread(services.operations.apply_macro, copy_id, user["id"], operation,
-                                          result["messages"], result["contents"], revision)
+            ack = await asyncio.to_thread(services.operations.apply_macro, copy_id, user_id, operation,
+                                          result["messages"], result["contents"], revision, action)
         if ack is None:
             return JSONResponse({"messages": result["messages"], "changed": 0,
                                  "input_revision": state["input_revision"]})

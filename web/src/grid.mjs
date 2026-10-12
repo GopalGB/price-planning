@@ -19,7 +19,9 @@ import { EditController } from "./client.mjs";
 import {
   macroButtonsView,
   macroMessagesView,
+  refreshResultView,
   runMacroButton,
+  runRefresh,
 } from "./macros.mjs";
 import {
   makeSnapshot,
@@ -1350,6 +1352,23 @@ export class PlanningGrid {
     } finally {
       this.macroBusy.delete(id);
       this.renderMacros();
+    }
+  }
+  async refreshData() {
+    const button = $("refresh-button");
+    if (this.refreshing || this.copy.my_role === "viewer") return;
+    this.refreshing = true;
+    button.disabled = true;
+    button.textContent = "Refreshing...";
+    try {
+      const result = await runRefresh(this.api, this.copy.id);
+      this.dialog("Refresh data", refreshResultView(result));
+    } catch (error) {
+      this.dialog("Refresh data", `<p>${e(error.message)}</p>`);
+    } finally {
+      this.refreshing = false;
+      button.disabled = this.copy.my_role === "viewer";
+      button.textContent = "Refresh data";
     }
   }
   setZoom(zoom) {

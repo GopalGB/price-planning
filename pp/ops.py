@@ -101,13 +101,13 @@ class OperationService:
         raise AppError(409, "op_id_reused", "This operation identifier was already used")
 
     def apply_macro(self, copy_id: str, actor_id: str, payload: dict, messages: list,
-                    contents: list, expected_revision: int) -> dict | None:
+                    contents: list, expected_revision: int, action: str = "macro") -> dict | None:
         with self.database.transaction() as connection:
             return self.apply_macro_in_transaction(
-                connection, copy_id, actor_id, payload, messages, contents, expected_revision)
+                connection, copy_id, actor_id, payload, messages, contents, expected_revision, action)
 
     def apply_macro_in_transaction(self, connection, copy_id, actor_id, payload, messages, contents,
-                                   expected_revision):
+                                   expected_revision, action="macro"):
         """Commit what a template macro wrote as one trusted operation (no version or input checks).
 
         Returns None when nothing was written (no contents, or only blanks over template blanks).
@@ -135,7 +135,7 @@ class OperationService:
             return None
         ack = {"op_id": op_id, "input_revision": expected_revision, "accepted": len(cells),
                "messages": list(messages)}
-        self._commit(connection, OperationCommit(copy, actor_id, op_id, "macro", _payload_hash(payload), ack, cells))
+        self._commit(connection, OperationCommit(copy, actor_id, op_id, action, _payload_hash(payload), ack, cells))
         return ack
 
     def revisions(self, copy_id: str) -> dict:

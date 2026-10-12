@@ -99,3 +99,13 @@ Every button runs on a fresh Excel, then a second fresh Excel applies only the r
 two are compared cell by cell. It prints per button: seconds, message count, contents count, formula
 contents, published changes and Excel's peak memory, plus the mismatched-cell count of the replay. It must
 end with `PASS`. Macros only run on the Excel engine; on this Mac they answer 409 `macros_unavailable`.
+
+"Refresh data" (shown only for templates with Power Query connections) runs Excel's own refresh on each
+copy's private Excel. The query sources must be reachable from the server's Windows account (a network
+share or database the account can log in to). Excel's messages about a source (for example, that it
+could not be reached) appear in the dialog. Check it with:
+
+    .venv\Scripts\python ops\excel_smoke.py --refresh
+
+It refreshes on a fresh Excel, replays the recorded contents on a second fresh Excel, and prints counts,
+timings and Excel's peak memory only. It must end with `PASS`.

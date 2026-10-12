@@ -1,7 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { macroButtonsView, macroRect, runMacroButton } from "../src/macros.mjs";
+import {
+  macroButtonsView,
+  macroRect,
+  refreshResultView,
+  runMacroButton,
+  runRefresh,
+} from "../src/macros.mjs";
 
 const sheet = {
   index: 0,
@@ -163,4 +169,33 @@ test("a refused macro shows the server message and viewers never send it", async
   grid.copy = { id: "copy-1", my_role: "viewer" };
   await PlanningGrid.prototype.pressMacro.call(grid, "b0");
   assert.equal(requests, 1);
+});
+
+test("runRefresh posts a fresh op id to the refresh route", async () => {
+  const calls = [];
+  const api = {
+    request: async (path, options) => {
+      calls.push({ path, options });
+      return { messages: [], changed: 2, input_revision: 4 };
+    },
+  };
+  const result = await runRefresh(api, "copy-1", () => "op-9");
+  assert.deepEqual(result, { messages: [], changed: 2, input_revision: 4 });
+  assert.deepEqual(calls, [
+    {
+      path: "/copies/copy-1/refresh",
+      options: { method: "POST", body: { op_id: "op-9" } },
+    },
+  ]);
+});
+
+test("refreshResultView states the changed count and lists Excel's messages escaped", () => {
+  const html = refreshResultView({
+    messages: ["Query <loaded>"],
+    changed: 3,
+    input_revision: 2,
+  });
+  assert.match(html, /Data refreshed: 3 cells changed\./);
+  assert.match(html, /<li>Query &lt;loaded&gt;<\/li>/);
+  assert.doesNotMatch(refreshResultView({ messages: [], changed: 0 }), /<ul>/);
 });

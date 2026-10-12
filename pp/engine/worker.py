@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from .excel import REFRESH_ALL
 from .formualizer import EngineError, FormualizerAdapter
 from ..export.xlsm import export_xlsm
 from ..values import exactly_equal
@@ -43,7 +44,10 @@ class WarmCopy:
             raise EngineError("template macros need the Excel engine")
         batch = WorkerBatch(changes, base_revision)
         calculated, reset = self._sync(template_path, batch.changes)
-        outcome = self.engine.run_macro(macro, timeout)
+        if macro == REFRESH_ALL:
+            outcome = self.engine.refresh_data(timeout)
+        else:
+            outcome = self.engine.run_macro(macro, timeout)
         for coordinate, value in outcome["before"].items():
             if coordinate not in self.baseline:
                 self.baseline[coordinate] = value

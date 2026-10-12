@@ -26,6 +26,7 @@ class TemplateSnapshot:
         self.input_mask = frozenset(_read_json(self.path / "input_mask.json"))
         buttons = self.path / "buttons.json"
         self.buttons = _read_json(buttons) if buttons.exists() else []
+        self.refreshable = bool(self.meta.get("refreshable", False))
         self.hash = self.meta["hash"]
         self.results = self.meta.get("results", "engine")
         self.name = self.meta["name"]
@@ -228,7 +229,7 @@ class WorkbookService:
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
-                "buttons": snapshot.buttons}
+                "buttons": snapshot.buttons, "refreshable": snapshot.refreshable}
 
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:
@@ -307,20 +308,28 @@ class WorkbookService:
 
     def macro_request(self, copy_id: str, user_id: str, button_id, op_id, engine_kind: str | None) -> str:
         """Authorize a button press and return the macro that button runs (clients never name macros)."""
+        snapshot = self._press_access(copy_id, user_id, op_id)
+        button = next((item for item in snapshot.buttons if item["id"] == button_id), None)
+        if button is None:
+            raise AppError(404, "unknown_button", "Macro button not found")
+        _require_excel(snapshot, engine_kind)
+        return button["macro"]
+
+    def refresh_request(self, copy_id: str, user_id: str, op_id, engine_kind: str | None) -> None:
+        """Authorize a data refresh of a template that has connections, on the Excel engine."""
+        snapshot = self._press_access(copy_id, user_id, op_id)
+        if not snapshot.refreshable:
+            raise AppError(409, "refresh_unavailable", "This template has no data connections to refresh.")
+        _require_excel(snapshot, engine_kind)
+
+    def _press_access(self, copy_id: str, user_id: str, op_id):
         if not isinstance(op_id, str) or not op_id:
             raise AppError(422, "invalid", "Operation identifier is required")
         with self.database.connect() as connection:
             copy = self._copy(connection, copy_id, user_id)
             if effective_role(connection, copy_id, user_id) not in {"owner", "editor"}:
                 raise AppError(403, "forbidden", "Editor access is required")
-            snapshot = self.templates.get(connection, copy["template_id"])
-        button = next((item for item in snapshot.buttons if item["id"] == button_id), None)
-        if button is None:
-            raise AppError(404, "unknown_button", "Macro button not found")
-        if engine_kind != "excel" or snapshot.results == "cached":
-            raise AppError(409, "macros_unavailable",
-                           "Macros run on the office server, where the app uses Microsoft Excel.")
-        return button["macro"]
+            return self.templates.get(connection, copy["template_id"])
 
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:
@@ -490,6 +499,12 @@ def _spill_input_metadata(snapshot, coordinate, input_record):
     return metadata
 
 
+def _require_excel(snapshot, engine_kind: str | None) -> None:
+    if engine_kind != "excel" or snapshot.results == "cached":
+        raise AppError(409, "macros_unavailable",
+                       "Macros run on the office server, where the app uses Microsoft Excel.")
+
+
 def _check_overrides(connection, snapshot, copy_id, rows):
     """Inputs may hold overrides; any other cell only when a template macro wrote it."""
     for item in rows:
@@ -506,7 +521,7 @@ def _macro_wrote(connection, copy_id, coordinate):
             (copy_id, *coordinate),
         ).fetchone()
         if latest is not None:
-            return latest["action"] == "macro"
+            return latest["action"] in {"macro", "refresh"}
         parent = connection.execute("SELECT parent_copy_id FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
         copy_id = parent["parent_copy_id"] if parent is not None else None
     return False

@@ -75,3 +75,17 @@ export function runMacroButton(api, copyId, buttonId, newOp = newOpId) {
     body: { button: buttonId, op_id: newOp() },
   });
 }
+
+export function runRefresh(api, copyId, newOp = newOpId) {
+  return api.request(`/copies/${copyId}/refresh`, {
+    method: "POST",
+    body: { op_id: newOp() },
+  });
+}
+
+export function refreshResultView(result) {
+  const messages = (result.messages ?? [])
+    .map((message) => `<li>${e(message)}</li>`)
+    .join("");
+  return `<p>Data refreshed: ${result.changed} cells changed.</p>${messages ? `<ul>${messages}</ul>` : ""}`;
+}

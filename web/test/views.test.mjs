@@ -248,3 +248,11 @@ test("editor metadata without a server timestamp never renders the Unix epoch", 
     "New Editor",
   );
 });
+
+test("refresh data button is hidden until the workbook reports connections, and disabled for viewers", async () => {
+  const { workspaceView } = await import("../src/views.mjs");
+  const editor = workspaceView({ id: "c", name: "Test", my_role: "editor" });
+  assert.match(editor, /<button id="refresh-button" hidden>Refresh data<\/button>/);
+  const viewer = workspaceView({ id: "c", name: "Test", my_role: "viewer" });
+  assert.match(viewer, /<button id="refresh-button" hidden disabled>Refresh data<\/button>/);
+});
