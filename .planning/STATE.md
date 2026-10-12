@@ -1,5 +1,29 @@
 # STATE
 
+## 2026-10-12 06:20 IST (Claude, free lanes down)
+
+Branch feat/v2-integration at the merge of feat/v2-brand. New since 4b9bc6b:
+13a2640 structured table references resolved to absolute ranges before native
+load (#All/#Data/#Headers/#Totals, column spans, bare names; [@Col] raises);
+da0aa53 + style follow-up: optional "brand" settings block, /api/brand and
+/brand/<asset> public, branded app bar and sign-in. Tests: 438 Python OK, 101
+web OK, ruff clean, content_guard 0.
+
+Real template (counts only): import and shared/structured expansion now pass.
+The engine is the blocker: 1,894,479 formula cells; the Python template map
+takes 357 s and 1.1 GB; native load 2.8 s; the FIRST evaluation of any single
+cell builds the whole dependency graph and passed 2.5 GB in under 60 s (an
+unguarded run reached a 25 GB footprint). EvaluationConfig knobs
+(enable_parallel off, max_threads 1, range_expansion_limit 1, flat cache 0)
+do not change it. Sheet-level reachability from editable cells keeps 93% of
+formulas, so sheet pruning is not enough. Next: cell-level reachability from
+input cells (formulas no input can reach keep Excel's cached value and are
+dropped from the engine package); measure the live fraction first.
+
+LAN app: 0.0.0.0:8765 runs from ~/PricePlanning-private/lan-demo on a
+synthetic demo workbook with the private brand; real template not served yet.
+
+
 ## Current phase
 
 Branch: feat/v2-integration. Native Formualizer load is implemented and measured.
