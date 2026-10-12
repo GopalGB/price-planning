@@ -38,7 +38,7 @@ def create_runtime(root: str | Path) -> Runtime:
     config = load_config(root)
     if config.template_path is None or not config.template_path.is_file():
         raise ValueError("template_path must name an existing .xlsm file")
-    snapshot_path = import_template(config.template_path, config.data_dir, config.template_results)
+    snapshot_path = import_template(config.template_path, config.data_dir, _import_results(config))
     snapshot = TemplateSnapshot(snapshot_path)
     database = Database(config.database_path)
     database.initialize()
@@ -56,6 +56,8 @@ def create_runtime(root: str | Path) -> Runtime:
 
         if config.template_results != "cached":
             recover_unfinished(database, calculate, snapshot)
+        if config.engine == "excel" and config.template_results != "cached":
+            _warm_excel_caches(snapshot.source_path)
         # A values-only template never calculates, so copies must not start engine workers.
         calculator = None if config.template_results == "cached" else pool
         app = create_app(ServiceContext(database, snapshot, config, calculator))
@@ -64,6 +66,28 @@ def create_runtime(root: str | Path) -> Runtime:
         pool.close()
         database.close()
         raise
+
+
+def _import_results(config):
+    """Excel's saved results are exact for an Excel-calculated template, so never run the import engine pass."""
+    if getattr(config, "template_results", "engine") == "cached":
+        return "cached"
+    return "saved" if getattr(config, "engine", "formualizer") == "excel" else "engine"
+
+
+def _warm_excel_caches(source):
+    """Build the Excel engine's template caches in the background; a failure only delays the first edit."""
+    import logging
+    import threading
+
+    def warm():
+        try:
+            from .engine.excel import warm_caches
+            warm_caches(source)
+        except Exception:
+            logging.getLogger(__name__).exception("Excel engine cache warm-up failed")
+
+    threading.Thread(target=warm, name="excel-cache-warmup", daemon=True).start()
 
 
 def _register_template(database, snapshot):

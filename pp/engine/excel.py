@@ -215,6 +215,13 @@ def _cached_index(prepared: Path, formulas: dict, names: list[str]) -> Dependenc
     return index
 
 
+def warm_caches(template_path: str | Path, cache_dir: str | Path | None = None) -> None:
+    """Build the prepared package, formula map and index once, before the first edit needs them."""
+    prepared = prepared_template(Path(template_path), cache_dir)
+    _, formulas, names = _cached_formula_map(prepared)[:3]
+    _cached_index(prepared, formulas, names)
+
+
 @dataclass
 class ExcelEngine:
     host: ExcelHost

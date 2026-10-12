@@ -292,7 +292,7 @@ class RunnerContractTests(unittest.TestCase):
                 self.assertEqual(runner.main(["--import-template"]), 0)
 
             self.assertFalse((root / "settings.json").exists())
-            import_template.assert_called_once_with(template, root / "data")
+            import_template.assert_called_once_with(template, root / "data", "engine")
             create_runtime.assert_not_called()
             serve.assert_not_called()
 

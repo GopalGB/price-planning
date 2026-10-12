@@ -94,6 +94,26 @@ class ExcelWorkerTests(unittest.TestCase):
         close.assert_called_once()
 
 
+class ExcelRuntimeTests(unittest.TestCase):
+    def test_excel_runtime_warms_template_caches_and_builds_an_excel_pool(self):
+        import json
+
+        from pp.runtime import create_runtime
+        from tests.v2.test_end_to_end import runtime_root
+
+        temporary, root = runtime_root()
+        self.addCleanup(temporary.cleanup)
+        settings = json.loads((root / "settings.json").read_text())
+        (root / "settings.json").write_text(json.dumps({**settings, "engine": "excel"}))
+        with mock.patch("pp.engine.excel.warm_caches") as warm, \
+                mock.patch("threading.Thread.start", lambda self: self.run()):
+            runtime = create_runtime(root)
+        self.addCleanup(runtime.close)
+        warm.assert_called_once_with(runtime.snapshot.source_path)
+        self.assertEqual(runtime.snapshot.results, "saved")  # no import engine pass, edits stay on
+        self.assertEqual(runtime.pool._engine, "excel")
+
+
 class ValueConversionTests(unittest.TestCase):
     def test_com_values(self):
         from pp.engine.excel import COM_ERROR_BASE, from_com, to_com

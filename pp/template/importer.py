@@ -575,7 +575,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
             database.commit()
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
-        if results == "engine":
+        if results == "engine":  # "cached" and "saved" keep Excel's saved results
             _synchronize_formula_results(source.path, FormulaSync(staging, database, metadata))
         _apply_input_mask(staging, database, protected)
         _write_input_mask(staging / "input_mask.json", database, protected)

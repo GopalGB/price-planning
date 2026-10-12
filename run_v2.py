@@ -95,7 +95,8 @@ def main(argv=None) -> int:
         config = load_config(ROOT)
         if config.template_path is None or not config.template_path.is_file():
             raise ValueError("template_path must name an existing .xlsm file")
-        import_template(config.template_path, config.data_dir)
+        from pp.runtime import _import_results
+        import_template(config.template_path, config.data_dir, _import_results(config))
         return 0
     _create_first_start_settings(ROOT)
     runtime = create_runtime(ROOT)
