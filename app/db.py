@@ -47,7 +47,11 @@ class DB:
   self.con.rollback()
   if self.pg:self.con.execute('SET TRANSACTION ISOLATION LEVEL READ COMMITTED')
   else:self.con.execute('BEGIN IMMEDIATE')
- def lock_scenario(self,sid):return self.one('SELECT * FROM scenarios WHERE id=?'+(' FOR UPDATE' if self.pg else ''),(sid,))
+ def lock_scenario(self,sid):
+   # PostgreSQL needs the row lock; SQLite takes it from BEGIN IMMEDIATE. Both branches
+   # are fixed text, and sid stays a bound parameter either way.
+   sql='SELECT * FROM scenarios WHERE id=? FOR UPDATE' if self.pg else 'SELECT * FROM scenarios WHERE id=?'
+   return self.one(sql,(sid,))
  def commit(self):self.con.commit()
  def rollback(self):self.con.rollback()
  def close(self):self.con.close()

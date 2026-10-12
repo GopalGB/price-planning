@@ -48,7 +48,7 @@ def import_workbook(path,db):
  stylemeta=[{'fmt':formats.get(int(x.get('numFmtId','0')),int(x.get('numFmtId','0'))),'unlocked':unlocked[i]} for i,x in enumerate(xfs)]
  names=[dict(e.attrib,value=e.text or '') for e in w.findall('s:definedNames/s:definedName',NS)]
  db.begin_write()
- for t in ('cells','sheets','shared_formulas','meta'):db.execute('DELETE FROM '+t)
+ for statement in ('DELETE FROM cells','DELETE FROM sheets','DELETE FROM shared_formulas','DELETE FROM meta'):db.execute(statement)
  db.commit()
  counts={'formulas':0,'values':0,'editable':0,'errors':{}}
  for sid,s in enumerate(w.findall('s:sheets/s:sheet',NS),1):
