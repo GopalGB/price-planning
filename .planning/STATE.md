@@ -1,5 +1,28 @@
 # STATE
 
+## 2026-10-12 10:00 IST (Claude)
+
+Branch feat/v2-integration at b6e10e8 (37 commits not yet pushed; Sir runs
+`git push` and answers y at the gate).
+- Excel engine built (288e01d, eda0e81): settings "engine": "excel" makes each
+  copy's worker drive a private hidden Excel (macros and events off, manual
+  calculation, own temp copy of the file). A static dependency index
+  (pp/engine/depindex.py, numpy, cached beside the prepared package) tells it
+  which formula cells an edit can reach; it reads only those back in row
+  blocks and publishes what changed. Import mode "saved": no import engine
+  pass, edits allowed. Real file on the Mac: index build 103 s once, cone
+  1-9 s per edit (largest cones about 540k formulas).
+- Transfer track merged (b6e10e8): download dialog (pick sheets, .xlsx or
+  .xlsm) and upload into the working copy or a new copy with a preview.
+- Tests: 588 Python OK, 109 web OK, ruff clean.
+- LAN 8765 still values-only on the Mac (no Excel here).
+Office server next: set "engine": "excel" in settings.json, then
+`.venv\Scripts\python ops\excel_smoke.py` must print PASS (it proves no
+changed cell is missed and that reverting leaves no overlay). Then: cone speed,
+macros as server actions (P6.3), Power Query refresh (P6.5).
+MiMo v2.6 Pro: not usable (OpenCode Go timed out, ClinePass 403); Space Bunny
+is the only free lane.
+
 ## 2026-10-12 09:15 IST (Claude)
 
 Engine on the real file: load now 1.0-1.2 GB (was >25 GB) after trusting
