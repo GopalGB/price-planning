@@ -1,6 +1,16 @@
 # STATE
 
-## 2026-10-12 13:45 IST (Claude)
+## 2026-10-12 12:34 IST (Claude)
+
+Excel-only pivot and slicers merged (feat/v2-dash-engine) plus b9227f2: the real pivot's cache
+reads a sheet of another workbook (worksheetSource with an external-link r:id; earlier notes said
+Power Query, which was wrong). It is now run by Excel; its 4 slicers import (10/78/769/52 items,
+template selections kept) and show read-only on 8765 (verified in the browser, counts only).
+Office checks for Sir: excel_smoke.py, --macros, --refresh, --slicers must each print PASS.
+Tests: 736 Python OK, 157 web OK, ruff clean, guard 0.
+Earlier entries below had guessed clock times; corrected to undated headings.
+
+## 2026-10-12 (Claude, dashboard merged)
 
 feat/v2-integration at 595808a, pushed (Sir's y; gate clean; no office files on the remote).
 - Dashboard track merged (ed352f2): cell-based pivot service, in-grid slicers, report filters,
@@ -19,7 +29,7 @@ selection (IMPORT_VERSION 12). Pivot output cells are Excel's, published and nev
 copy (`pp_pivot_state`); fresh engines re-apply it. Office check still to run: `ops\excel_smoke.py --slicers` (PASS).
 Plan: .planning/excel-grid/PLAN-P6.4-dashboard.md (status section lists the deviations).
 
-## 2026-10-12 12:20 IST (Claude, P6.5 refresh data)
+## 2026-10-12 (Claude, P6.5 refresh data)
 
 Merged into feat/v2-integration at 7930bbe (648 Python OK, 121 web OK, guard 0). "Refresh data" runs Excel's own
 RefreshAll on the copy's private Excel, waits for the queries, and commits what changed as one `refresh`
@@ -30,7 +40,7 @@ Route POST /api/copies/{id}/refresh; web toolbar button shown only when refresha
 - Not run here: a real RefreshAll (no Excel on the Mac). Office check: `ops\excel_smoke.py --refresh`, must print PASS.
 - Plan: .planning/excel-grid/PLAN-P6.5-refresh.md. Old feat/v2-refresh (pqtools) stays superseded.
 
-## 2026-10-12 11:45 IST (Claude)
+## 2026-10-12 (Claude, macros merged)
 
 Branch feat/v2-integration at c530436 (unpushed; Sir runs `git push`, answers y).
 - P6.3 macros merged (M1 buttons, M2 engine, M3 flow): the template's 5 buttons are read from its
