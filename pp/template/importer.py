@@ -21,6 +21,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
+from .colors import Palette, indexed_palette, theme_colors
 from .dashboard import DashboardUnsupported, read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
@@ -31,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 13
+IMPORT_VERSION = 14
 
 
 class TemplateImportError(Exception):
@@ -140,18 +141,6 @@ def _bounds(ref: str) -> list[int]:
     return [min(row1, row2), min(col1, col2), max(row1, row2), max(col1, col2)]
 
 
-def _color(node: ET.Element | None) -> str | None:
-    if node is None:
-        return None
-    if node.get("rgb"):
-        return node.get("rgb")
-    if node.get("theme"):
-        return f"theme:{node.get('theme')}"
-    if node.get("indexed"):
-        return f"indexed:{node.get('indexed')}"
-    return None
-
-
 def _font_name(font: ET.Element | None) -> str | None:
     if font is None:
         return None
@@ -179,7 +168,7 @@ def _locked(xf: ET.Element | None, inherited: bool = True) -> bool:
     return protection.get("locked", "1") not in {"0", "false"}
 
 
-def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
+def _style_record(style: StyleDefinition, root: ET.Element, palette: Palette) -> dict:
     index, xf, base = style.index, style.node, style.base
     fonts = list(root.findall(f"{NS}fonts/{NS}font"))
     fills = list(root.findall(f"{NS}fills/{NS}fill"))
@@ -195,14 +184,19 @@ def _style_record(style: StyleDefinition, root: ET.Element) -> dict:
               for item in root.findall(f"{NS}numFmts/{NS}numFmt")}
     def side(name):
         node = border.find(f"{NS}{name}") if border is not None else None
-        return node.get("style") if node is not None else None
+        if node is None or node.get("style") in {None, "none"}:
+            return None
+        return {"style": node.get("style"), "color": palette.cell(node.find(f"{NS}color")) or "#000000"}
+    pattern = fill.find(f"{NS}patternFill") if fill is not None else None
+    # shortcut: hatch patterns (gray125, darkGrid...) show no fill; draw them if a template uses one
+    solid = pattern is not None and pattern.get("patternType") == "solid"
     return {
         "id": index, "nf": custom.get(num_id, BUILTIN_FORMATS.get(num_id, "General")),
         "bold": font is not None and font.find(f"{NS}b") is not None,
         "italic": font is not None and font.find(f"{NS}i") is not None,
         "font_name": _font_name(font),
-        "color": _color(font.find(f"{NS}color") if font is not None else None),
-        "fill": _color(fill.find(f"{NS}patternFill/{NS}fgColor") if fill is not None else None),
+        "color": palette.cell(font.find(f"{NS}color") if font is not None else None),
+        "fill": palette.cell(pattern.find(f"{NS}fgColor")) if solid else None,
         "align": alignment.get("horizontal") if alignment is not None else None,
         "valign": alignment.get("vertical") if alignment is not None else None,
         "wrap": alignment is not None and alignment.get("wrapText") in {"1", "true"},
@@ -216,12 +210,13 @@ def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
     if "xl/styles.xml" not in archive.namelist():
         return [_default_style()], set()
     root = ET.fromstring(archive.read("xl/styles.xml"))
+    palette = Palette(theme_colors(archive), indexed_palette(root))
     bases = list(root.findall(f"{NS}cellStyleXfs/{NS}xf"))
     styles, unlocked = [], set()
     for index, xf in enumerate(root.findall(f"{NS}cellXfs/{NS}xf")):
         parent = int(xf.get("xfId", "0"))
         base = bases[parent] if parent < len(bases) else None
-        styles.append(_style_record(StyleDefinition(index, xf, base), root))
+        styles.append(_style_record(StyleDefinition(index, xf, base), root, palette))
         if not _locked(xf, _locked(base)):
             unlocked.add(index)
     return styles or [_default_style()], unlocked

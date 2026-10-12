@@ -88,6 +88,22 @@ export function displayWidth(sheet, { r, c }) {
     width += sheet?.col_widths?.[column] ?? GRID_DEFAULT_COLUMN_WIDTH;
   return width;
 }
+// Excel border style names to Univer BorderStyleTypes.
+const BORDER_STYLES = {
+  thin: 1,
+  hair: 2,
+  dotted: 3,
+  dashed: 4,
+  dashDot: 5,
+  dashDotDot: 6,
+  double: 7,
+  medium: 8,
+  mediumDashed: 9,
+  mediumDashDot: 10,
+  mediumDashDotDot: 11,
+  slantDashDot: 12,
+  thick: 13,
+};
 export function styleData(style) {
   const align = { left: 1, center: 2, right: 3 },
     vertical = { top: 1, middle: 2, bottom: 3 };
@@ -95,9 +111,14 @@ export function styleData(style) {
   for (const [key, value] of Object.entries(style.border ?? {}))
     if (value)
       border[key] =
-        typeof value === "object"
-          ? value
-          : { s: 1, cl: { rgb: String(value) } };
+        typeof value !== "object"
+          ? { s: BORDER_STYLES[value] ?? 1, cl: { rgb: "#000000" } }
+          : "style" in value
+            ? {
+                s: BORDER_STYLES[value.style] ?? 1,
+                cl: { rgb: value.color ?? "#000000" },
+              }
+            : value;
   return {
     bg: { rgb: style.fill ?? "#fff" },
     cl: { rgb: style.color ?? "#222" },

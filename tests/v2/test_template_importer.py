@@ -367,7 +367,9 @@ class TemplateImporterTests(unittest.TestCase):
             self.assertEqual(style["align"], "center")
             self.assertEqual(style["valign"], "top")
             self.assertTrue(style["wrap"])
-            self.assertEqual(style["border"], {"t": "thin", "r": "thin", "b": "thin", "l": "thin"})
+            edge = {"style": "thin", "color": "#000000"}
+            self.assertEqual(style["border"], {"t": edge, "r": edge, "b": edge, "l": edge})
+            self.assertEqual((style["fill"], style["color"]), ("#445566", "#112233"))
 
     def test_blank_row_and_column_default_styles_resolve_as_lazy_inputs(self):
         """Unlocked blank styled cells must stay editable without materializing a full-sheet mask."""
