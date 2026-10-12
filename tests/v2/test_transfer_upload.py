@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+from base64 import b64encode
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -437,6 +439,149 @@ class UploadAPITests(unittest.TestCase):
                 self.assertEqual(
                     (raised.exception.status, raised.exception.code), (413, "archive_bomb"),
                 )
+
+    def test_chart_and_drawing_parts_are_screened_without_an_xml_suffix(self):
+        chart = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE chartSpace [<!ENTITY unsafe "1">]>'
+            '<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            '<c:chart><c:plotArea><c:val><c:numRef><c:f>&unsafe;</c:f></c:numRef>'
+            '</c:val></c:plotArea></c:chart></c:chartSpace>'
+        ).encode("utf-16")
+        drawing = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE wsDr [<!ENTITY unsafe "1">]>'
+            '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing">'
+            '<xdr:twoCellAnchor/></xdr:wsDr>'
+        ).encode("utf-16")
+
+        cases = (
+            ("chart", "xl/_rels/workbook.xml.rels", "charts/chart.bin",
+             "xl/charts/chart.bin", chart),
+            ("chartsheet", "xl/_rels/workbook.xml.rels", "chartsheets/sheet.bin",
+             "xl/chartsheets/sheet.bin", chart),
+            ("drawing", None, "../drawings/drawing.bin",
+             "xl/drawings/drawing.bin", drawing),
+        )
+        for role, rels, target, member, payload in cases:
+            with self.subTest(role=role):
+                relationship = (
+                    '<Relationship Id="rIdRole" Type="http://schemas.openxmlformats.org/'
+                    f'officeDocument/2006/relationships/{role}" Target="{target}"/>'
+                )
+                source = rels or "xl/worksheets/_rels/sheet1.xml.rels"
+                additions = [(member, payload)]
+                if rels is None:
+                    additions.insert(0, (source, (
+                        '<Relationships xmlns="http://schemas.openxmlformats.org/package/'
+                        f'2006/relationships">{relationship}</Relationships>'
+                    ).encode()))
+
+                def relocate(name, content, rels=rels, relationship=relationship):
+                    if name == (rels or "xl/worksheets/_rels/sheet1.xml.rels"):
+                        return content.replace(
+                            b"</Relationships>", relationship.encode() + b"</Relationships>")
+                    return content
+
+                data = _rewrite_zip(self.exported, self.fixture.root, relocate, additions)
+
+                response = self.preview(self.owner, self.owner_csrf, data)
+
+                self.assertEqual(response.status_code, 422, response.body)
+                self.assertEqual(response.json()["error"], "unsafe_xml")
+
+    def test_a_dangling_chart_relationship_is_refused(self):
+        chart = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            b'<c:chart><c:plotArea><c:val><c:numRef><c:f>Calc!$B$2</c:f></c:numRef></c:val>'
+            b"</c:plotArea></c:chart></c:chartSpace>"
+        )
+
+        def relocate(name, content):
+            if name == "xl/_rels/workbook.xml.rels":
+                return content.replace(
+                    b"</Relationships>",
+                    b'<Relationship Id="rIdGone" Type="http://schemas.openxmlformats.org/'
+                    b'officeDocument/2006/relationships/chart" Target="charts/missing.bin"/>'
+                    b"</Relationships>",
+                )
+            return content
+
+        data = _rewrite_zip(self.exported, self.fixture.root, relocate,
+                            (("xl/charts/chart1.xml", chart),))
+
+        response = self.preview(self.owner, self.owner_csrf, data)
+
+        self.assertEqual(response.status_code, 422, response.body)
+        self.assertEqual(response.json()["error"], "invalid_workbook")
+
+    def test_chart_and_drawing_roles_are_capped_by_the_tree_limit(self):
+        from pp.upload import _validate_archive
+
+        payload = b64encode(os.urandom(700_000)).rstrip(b"=")
+        points = b"".join(b"<c:pt>" + payload + b"</c:pt>" for _ in range(10))
+        chart = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            b'<c:chart><c:plotArea><c:val>' + points + b"</c:val></c:plotArea>"
+            b"</c:chart></c:chartSpace>"
+        )
+        self.assertGreater(len(chart), upload_module.MAX_TREE_XML)
+        self.assertLess(len(payload), upload_module.MAX_XML_TOKEN_BYTES)
+
+        def relocate(name, content):
+            if name == "xl/_rels/workbook.xml.rels":
+                return content.replace(
+                    b"</Relationships>",
+                    b'<Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/'
+                    b'officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>'
+                    b"</Relationships>",
+                )
+            return content
+
+        candidate = self.fixture.root / "oversized-chart.xlsx"
+        candidate.write_bytes(
+            _rewrite_zip(self.exported, self.fixture.root, relocate,
+                         (("xl/charts/chart1.xml", chart),))
+        )
+        with mock.patch("pp.upload.validate_package",
+                        side_effect=AssertionError("tree parser reached")):
+            with self.assertRaises(AppError) as raised:
+                _validate_archive(candidate)
+        self.assertEqual((raised.exception.status, raised.exception.code), (413, "archive_bomb"))
+        self.assertEqual(raised.exception.message, "Workbook XML metadata is too large")
+
+    def test_a_real_chart_part_still_previews(self):
+        chart = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart">'
+            b'<c:chart><c:plotArea><c:val><c:numRef><c:f>Calc!$B$2</c:f></c:numRef></c:val>'
+            b"</c:plotArea></c:chart></c:chartSpace>"
+        )
+
+        def relocate(name, content):
+            if name == "xl/_rels/workbook.xml.rels":
+                return content.replace(
+                    b"</Relationships>",
+                    b'<Relationship Id="rIdChart" Type="http://schemas.openxmlformats.org/'
+                    b'officeDocument/2006/relationships/chart" Target="charts/chart1.xml"/>'
+                    b"</Relationships>",
+                )
+            if name == "[Content_Types].xml":
+                return content.replace(
+                    b"</Types>",
+                    b'<Override PartName="/xl/charts/chart1.xml" ContentType="application/'
+                    b'vnd.openxmlformats-officedocument.drawingml.chart+xml"/></Types>',
+                )
+            return content
+
+        data = _rewrite_zip(self.exported, self.fixture.root, relocate,
+                            (("xl/charts/chart1.xml", chart),))
+
+        response = self.preview(self.owner, self.owner_csrf, data)
+
+        self.assertEqual(response.status_code, 200, response.body)
 
     def test_styles_theme_and_renamed_shared_strings_have_tree_limits(self):
         from pp.upload import _validate_archive

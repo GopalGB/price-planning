@@ -58,6 +58,7 @@ MAX_ACTIVE_PREVIEWS = 128
 MAX_PREVIEW_CACHE_BYTES = 2 * MAX_UNCOMPRESSED
 XML_RELATIONSHIP_ROLES = {
     "officeDocument", "worksheet", "styles", "sharedStrings", "theme", "custom-properties",
+    "chart", "chartsheet", "chartSheet", "drawing",
 }
 
 
@@ -618,14 +619,20 @@ def _validate_xml_roles(archive, xml_members):
         for relationship in relationships:
             role = relationship["type"].rsplit("/", 1)[-1]
             target = relationship["target"]
+            limit = _role_xml_limit(role)
+            if target is not None and limit is not None:
+                try:
+                    _screen_xml(archive, archive.getinfo(target), limit)
+                except KeyError as exc:
+                    raise AppError(
+                        422, "invalid_workbook",
+                        "Workbook XML relationship has a non-XML content type",
+                    ) from exc
             if target is not None and role in XML_RELATIONSHIP_ROLES and target not in xml_members:
                 raise AppError(
                     422, "invalid_workbook",
                     "Workbook XML relationship has a non-XML content type",
                 )
-            limit = _role_xml_limit(role)
-            if target is not None and limit is not None:
-                _screen_xml(archive, archive.getinfo(target), limit)
     return graph
 
 
@@ -634,6 +641,10 @@ def _role_xml_limit(role):
         "styles": MAX_STYLES_XML,
         "sharedStrings": MAX_SHARED_STRINGS_XML,
         "theme": MAX_THEME_XML,
+        "chart": MAX_TREE_XML,
+        "chartsheet": MAX_TREE_XML,
+        "chartSheet": MAX_TREE_XML,
+        "drawing": MAX_TREE_XML,
     }.get(role)
 
 
