@@ -1,5 +1,21 @@
 # STATE
 
+## 2026-10-12 08:10 IST (Claude)
+
+Sir asked again to see the whole template with every tab. Values-only mode
+(da0a435, d52dee1, d3c1df1): settings "template_results": "cached" imports
+without the engine pass (Excel's saved results), records "results" in
+meta.json, opens copies read only (status bar says so), refuses edits with
+409 calculation_paused, and gives the app no engine pool so copy creation
+never starts a worker. Real file: import 51 s, 134 MB peak; 22 sheets (13
+visible, 9 hidden as in Excel); copy opens in 4.3 s; each tab switches in
+about 30 ms; browser heap 45 MB. Tests: 446 Python OK, 101 web OK.
+
+LAN: 0.0.0.0:8765 now runs ~/PricePlanning-private/lan-real (real template,
+values only, brand). lan-demo is stopped. New database: users sign up again.
+Next: cell-level reachability result -> pruned engine package -> turn
+template_results back to "engine".
+
 ## 2026-10-12 06:20 IST (Claude, free lanes down)
 
 Branch feat/v2-integration at the merge of feat/v2-brand. New since 4b9bc6b:
