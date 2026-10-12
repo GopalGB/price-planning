@@ -11,6 +11,14 @@ values-only mode show the saved pivot and slicers read-only.
   many items are flagged "no data" (`nd="1"`). The pivot cache records are 27 MB.
 - One more pivot table part exists in the package; every pivot is found through Excel at run time.
 
+## Revision 2026-10-12 13:30 (after merging feat/v2-dashboard)
+
+The earlier dashboard track (merged, ed352f2) already rebuilds pivots from workbook cells in Python:
+in-grid slicers, report filters, personal views, category totals and the team overview. It cannot
+rebuild the real template's pivot, whose cache source is the external Power Query connection, so
+that pivot now imports as Excel's saved values (fff35f6) instead of failing the import. The decisions
+below apply to such Excel-only pivots; the D2 UI reuses the merged slicer frames instead of new ones.
+
 ## Decisions
 
 1. Pivot output is computed, like formula results. Cells inside any pivot table's `TableRange2` are
