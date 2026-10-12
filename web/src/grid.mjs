@@ -17,6 +17,11 @@ import {
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
 import {
+  macroButtonsView,
+  macroMessagesView,
+  runMacroButton,
+} from "./macros.mjs";
+import {
   makeSnapshot,
   displayWidth,
   renderCell,
@@ -41,8 +46,17 @@ const $ = (id) => document.getElementById(id);
 const DETAIL_REFRESH_LIMIT = 8;
 const COPY_SNAPSHOT_ATTEMPTS = 3;
 export class PlanningGrid {
-  constructor({ api, copy, meta, user, toast, inputHighlight = true }) {
-    Object.assign(this, { api, copy, meta, user, toast, inputHighlight });
+  constructor({ api, copy, meta, user, toast, dialog, inputHighlight = true }) {
+    Object.assign(this, {
+      api,
+      copy,
+      meta,
+      user,
+      toast,
+      dialog,
+      inputHighlight,
+    });
+    this.macroBusy = new Set();
     // Values-only templates cannot recalculate, so every copy opens read only.
     if (meta.calculation === "cached") this.copy = { ...copy, my_role: "viewer" };
     this.styleMap = new Map(
@@ -123,8 +137,15 @@ export class PlanningGrid {
         this.selectionInfo();
         this.sendPresence();
       }
-      if (event.id === "sheet.operation.set-scroll") this.scheduleVisible();
+      if (event.id === "sheet.operation.set-scroll") {
+        this.scheduleVisible();
+        this.renderMacros();
+      }
     });
+    $("macro-layer").onclick = (event) => {
+      const id = event.target.closest?.("button[data-macro]")?.dataset.macro;
+      if (id !== undefined) this.pressMacro(id);
+    };
     this.on("BeforeSheetEditStart", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
       if (this.copy.my_role === "viewer" || !editableInput(cell)) {
@@ -429,6 +450,7 @@ export class PlanningGrid {
     await this.loadBlock(0, true);
     if (!this.viewMatches(context)) return false;
     this.paint();
+    this.renderMacros();
     context.worksheet.getRange(1, 1).activate();
     this.selectionInfo();
     return true;
@@ -1300,7 +1322,39 @@ export class PlanningGrid {
         );
       }
   }
+  renderMacros() {
+    const layer = $("macro-layer");
+    if (!layer || this.closed) return;
+    const buttons = (this.meta.buttons ?? []).some(
+      (button) => button.sheet === this.sheet,
+    );
+    layer.innerHTML = buttons
+      ? macroButtonsView(this.meta, this.sheet, {
+          scroll: this.u
+            .getActiveWorkbook()
+            ?.getScrollStateBySheetId(`s${this.sheet}`),
+          copyRole: this.copy.my_role,
+          busy: this.macroBusy,
+        })
+      : "";
+  }
+  async pressMacro(id) {
+    if (this.macroBusy.has(id) || this.copy.my_role === "viewer") return;
+    this.macroBusy.add(id);
+    this.renderMacros();
+    try {
+      const result = await runMacroButton(this.api, this.copy.id, id);
+      this.dialog("Macro", macroMessagesView(result.messages));
+    } catch (error) {
+      this.dialog("Macro", `<p>${e(error.message)}</p>`);
+    } finally {
+      this.macroBusy.delete(id);
+      this.renderMacros();
+    }
+  }
   setZoom(zoom) {
+    const layer = $("macro-layer");
+    if (layer) layer.style.transform = `scale(${zoom})`;
     this.internal++;
     try {
       this.u.syncExecuteCommand("sheet.operation.set-zoom-ratio", {
@@ -1311,6 +1365,7 @@ export class PlanningGrid {
     } finally {
       this.internal--;
     }
+    this.renderMacros();
   }
   dispose() {
     this.closed = true;

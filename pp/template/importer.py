@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import posixpath
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -553,6 +554,102 @@ def _write_input_mask(path: Path, database: sqlite3.Connection, protected: set[i
         stream.write("]")
 
 
+DRAWING_XDR = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
+DRAWING_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+VML = "{urn:schemas-microsoft-com:vml}"
+EXCEL_VML = "{urn:schemas-microsoft-com:office:excel}"
+PACKAGE_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+DRAWING_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
+VML_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing"
+EMU_PER_PIXEL = 9525
+
+
+def _macro_name(text: str | None) -> str:
+    # "[0]!name" and "'Book.xlsm'!name" both name the same macro; "Sheet13.name" keeps its module.
+    return (text or "").strip().rsplit("!", 1)[-1].strip()
+
+
+def _emu_pixels(value: str | None) -> float:
+    return round(int(value or 0) / EMU_PER_PIXEL, 2)
+
+
+def _anchor_point(node: ET.Element) -> dict:
+    return {"row": int(node.findtext(f"{DRAWING_XDR}row", "0")),
+            "col": int(node.findtext(f"{DRAWING_XDR}col", "0")),
+            "dx": _emu_pixels(node.findtext(f"{DRAWING_XDR}colOff")),
+            "dy": _emu_pixels(node.findtext(f"{DRAWING_XDR}rowOff"))}
+
+
+def _drawing_buttons(root: ET.Element) -> list[dict]:
+    buttons = []
+    for anchor in root:
+        if anchor.tag not in (f"{DRAWING_XDR}twoCellAnchor", f"{DRAWING_XDR}oneCellAnchor"):
+            continue
+        for shape in anchor.iter():
+            macro = _macro_name(shape.get("macro"))
+            props = next(shape.iter(f"{DRAWING_XDR}cNvPr"), None)
+            if not macro or (props is not None and props.get("hidden") in {"1", "true"}):
+                continue
+            label = "".join(text.text or "" for text in shape.iter(f"{DRAWING_A}t")).strip()
+            if anchor.tag == f"{DRAWING_XDR}twoCellAnchor":
+                end = {"to": _anchor_point(anchor.find(f"{DRAWING_XDR}to"))}
+            else:
+                ext = anchor.find(f"{DRAWING_XDR}ext")
+                end = {"size": {"w": _emu_pixels(ext.get("cx")), "h": _emu_pixels(ext.get("cy"))}}
+            buttons.append({"from": _anchor_point(anchor.find(f"{DRAWING_XDR}from")), **end,
+                            "label": label or (props.get("name", "") if props is not None else ""),
+                            "macro": macro})
+    return buttons
+
+
+def _vml_buttons(root: ET.Element) -> list[dict]:
+    buttons = []
+    for shape in root.iter(f"{VML}shape"):
+        client = shape.find(f"{EXCEL_VML}ClientData")
+        if client is None or client.get("ObjectType") != "Button":
+            continue
+        macro = _macro_name(client.findtext(f"{EXCEL_VML}FmlaMacro"))
+        style = "".join((shape.get("style") or "").split())
+        if not macro or "visibility:hidden" in style:
+            continue
+        try:
+            left, left_px, top, top_px, right, right_px, bottom, bottom_px = (
+                int(part) for part in client.findtext(f"{EXCEL_VML}Anchor", "").split(","))
+        except ValueError:
+            continue
+        textbox = shape.find(f"{VML}textbox")
+        label = "".join(textbox.itertext()).strip() if textbox is not None else ""
+        buttons.append({"from": {"row": top, "col": left, "dx": left_px, "dy": top_px},
+                        "to": {"row": bottom, "col": right, "dx": right_px, "dy": bottom_px},
+                        "label": label, "macro": macro})
+    return buttons
+
+
+def _sheet_button_parts(archive: zipfile.ZipFile, sheet_part: str) -> list[tuple[str, str]]:
+    directory, name = posixpath.split(sheet_part)
+    rels_part = posixpath.join(directory, "_rels", f"{name}.rels")
+    if rels_part not in archive.namelist():
+        return []
+    parts = []
+    for item in ET.fromstring(archive.read(rels_part)).findall(f"{PACKAGE_RELS}Relationship"):
+        target = item.get("Target", "")
+        resolved = target.lstrip("/") if target.startswith("/") else posixpath.normpath(
+            posixpath.join(directory, target))
+        if item.get("Type") in {DRAWING_REL, VML_REL} and resolved in archive.namelist():
+            parts.append((item.get("Type"), resolved))
+    return parts
+
+
+def _button_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict]:
+    found = []
+    for spec in sheet_specs:
+        for rel_type, part in _sheet_button_parts(archive, spec["part"]):
+            root = ET.fromstring(archive.read(part))
+            extracted = _vml_buttons(root) if rel_type == VML_REL else _drawing_buttons(root)
+            found.extend({"sheet": spec["index"], **button} for button in extracted)
+    return [{"id": f"b{number}", **button} for number, button in enumerate(found)]
+
+
 def _import_archive(source: CapturedSource, staging: Path, results: str = "engine") -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
@@ -573,12 +670,14 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
                             "sheets_completed": len(metadata), "sheets_total": len(sheet_specs)})
                 LOGGER.info("Template import progress: sheet %d/%d", len(metadata), len(sheet_specs))
             database.commit()
+            buttons = _button_data(archive, sheet_specs)
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
         if results == "engine":  # "cached" and "saved" keep Excel's saved results
             _synchronize_formula_results(source.path, FormulaSync(staging, database, metadata))
         _apply_input_mask(staging, database, protected)
         _write_input_mask(staging / "input_mask.json", database, protected)
+        _write_json(staging / "buttons.json", buttons)
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
                     "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,
