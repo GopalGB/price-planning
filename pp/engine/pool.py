@@ -8,7 +8,7 @@ import multiprocessing
 from pathlib import Path
 import threading
 
-from .formualizer import EngineError
+from .formualizer import EngineError, MacroTimeout
 from .worker import worker_loop
 
 
@@ -90,6 +90,17 @@ class CalculationRequest:
     base_revision: int | None = None
 
 
+@dataclass(frozen=True)
+class MacroRequest:
+    copy_id: str
+    revision: int
+    template_path: Path
+    changes: list[tuple[int, int, int, object]]
+    base_revision: int | None
+    macro: str
+    timeout: float = 600
+
+
 class _CopyWorker:
     def __init__(self, context, copy_id: str, engine: str = "formualizer"):
         parent, child = context.Pipe()
@@ -102,15 +113,24 @@ class _CopyWorker:
         self.accounted_bytes = 0
 
     def calculate(self, request: CalculationRequest) -> dict:
+        return self._exchange((request.revision, str(request.template_path), request.changes,
+                               request.base_revision))
+
+    def macro(self, request: MacroRequest) -> dict:
+        return self._exchange(("macro", request.revision, str(request.template_path), request.changes,
+                               request.base_revision, request.macro, request.timeout))
+
+    def _exchange(self, message: tuple) -> dict:
         if not self.process.is_alive():
             raise _WorkerUnavailable("calculation worker is unavailable")
         try:
-            self.connection.send((request.revision, str(request.template_path), request.changes,
-                                  request.base_revision))
+            self.connection.send(message)
             success, payload = self.connection.recv()
         except (BrokenPipeError, EOFError, OSError) as exc:
             raise _WorkerUnavailable("calculation worker transport failed") from exc
         if not success:
+            if payload == "MacroTimeout":
+                raise MacroTimeout("The macro ran too long and was stopped.")
             raise EngineError(f"calculation worker failed: {payload}")
         self.resident_bytes = payload.get("engine_bytes") or 0
         return payload
@@ -144,6 +164,10 @@ class EnginePool:
         self.memory_budget = MemoryBudget(
             limit_bytes=None if memory_budget_mb is None else memory_budget_mb * 1024 * 1024)
         self.protection = Protection()
+
+    @property
+    def kind(self) -> str:
+        return self._engine
 
     def order(self):
         with self._condition:
@@ -216,10 +240,16 @@ class EnginePool:
         return worker
 
     def apply(self, request: CalculationRequest) -> dict:
+        return self._run(request, _CopyWorker.calculate)
+
+    def run_macro(self, request: MacroRequest) -> dict:
+        return self._run(request, _CopyWorker.macro)
+
+    def _run(self, request, call) -> dict:
         for attempt in range(2):
             worker = self._acquire(request.copy_id)
             try:
-                result = worker.calculate(request)
+                result = call(worker, request)
                 self._account(worker)
                 return result
             except _WorkerUnavailable:

@@ -87,6 +87,11 @@ def write_button_fixture(path):
     workbook.create_sheet("Lookup")
     workbook.create_sheet("Calc")
     workbook.save(path)
+    add_buttons(path)
+
+
+def add_buttons(path):
+    """Add the drawing and VML buttons to sheets 1 and 2 of a saved workbook (sheets 0-2 must exist)."""
     with zipfile.ZipFile(path) as source:
         members = {info.filename: source.read(info.filename) for info in source.infolist()}
     sheet_rels = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
@@ -99,6 +104,12 @@ def write_button_fixture(path):
                    f'</Relationships>')
     members["xl/drawings/drawing1.xml"] = DRAWING_XML.encode("utf-8")
     members["xl/drawings/vmlDrawing1.vml"] = VML_XML.encode("utf-8")
+    types = members["[Content_Types].xml"].decode("utf-8").replace(
+        "</Types>",
+        '<Default Extension="vml" ContentType="application/vnd.openxmlformats-officedocument.vmlDrawing"/>'
+        '<Override PartName="/xl/drawings/drawing1.xml" '
+        'ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>')
+    members["[Content_Types].xml"] = types.encode("utf-8")
     members["xl/worksheets/_rels/sheet1.xml.rels"] = sheet_rels.encode("utf-8")
     members["xl/worksheets/_rels/sheet2.xml.rels"] = lookup_rels.encode("utf-8")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as target:

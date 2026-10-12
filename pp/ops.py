@@ -87,6 +87,64 @@ class OperationService:
             connection, copy_id, actor_id, payload, session_check, None,
         ))
 
+    def macro_replay(self, copy_id: str, actor_id: str, payload: dict) -> dict | None:
+        """The stored ack when this user already committed this macro press; a reused op_id is refused."""
+        op_id = _operation_id(payload)
+        with self.database.connect() as connection:
+            prior = connection.execute(
+                "SELECT * FROM pp_ops WHERE copy_id=? AND op_id=?", (copy_id, op_id)
+            ).fetchone()
+        if prior is None:
+            return None
+        if prior["actor_id"] == actor_id and prior["payload_hash"] == _payload_hash(payload):
+            return json.loads(prior["ack_json"])
+        raise AppError(409, "op_id_reused", "This operation identifier was already used")
+
+    def apply_macro(self, copy_id: str, actor_id: str, payload: dict, messages: list,
+                    contents: list, expected_revision: int) -> dict | None:
+        with self.database.transaction() as connection:
+            return self.apply_macro_in_transaction(
+                connection, copy_id, actor_id, payload, messages, contents, expected_revision)
+
+    def apply_macro_in_transaction(self, connection, copy_id, actor_id, payload, messages, contents,
+                                   expected_revision):
+        """Commit what a template macro wrote as one trusted operation (no version or input checks).
+
+        Returns None when nothing was written (no contents, or only blanks over template blanks).
+        """
+        op_id = _operation_id(payload)
+        copy = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
+        if copy is None or effective_role(connection, copy_id, actor_id) not in EDIT_ROLES:
+            raise AppError(403, "forbidden", "Editor access is required")
+        if copy["input_revision"] + 1 != expected_revision:
+            raise AppError(409, "conflict", "The copy changed while the macro ran")
+        snapshot = self.templates.get(connection, copy["template_id"])
+        cells = []
+        for sheet, row, col, value in contents:
+            current = connection.execute(
+                "SELECT * FROM pp_overrides WHERE copy_id=? AND sheet=? AND row=? AND col=?",
+                (copy_id, sheet, row, col),
+            ).fetchone()
+            before = json.loads(current["value_json"]) if current else snapshot.cell(sheet, row, col)["v"]
+            if current is None and value is None and before is None:
+                continue
+            version = current["version"] if current else 0
+            cells.append({"sheet": sheet, "row": row, "col": col, "value": value,
+                          "before": before, "version": version + 1})
+        if not cells:
+            return None
+        ack = {"op_id": op_id, "input_revision": expected_revision, "accepted": len(cells),
+               "messages": list(messages)}
+        self._commit(connection, OperationCommit(copy, actor_id, op_id, "macro", _payload_hash(payload), ack, cells))
+        return ack
+
+    def revisions(self, copy_id: str) -> dict:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT input_revision,calculated_revision FROM pp_copies WHERE id=?", (copy_id,)
+            ).fetchone()
+        return {"input_revision": row["input_revision"], "calculated_revision": row["calculated_revision"]}
+
     def apply_upload_in_transaction(self, request):
         return self._apply_transaction(OperationContext(
             request.connection, request.copy_id, request.actor_id,
@@ -187,8 +245,7 @@ class OperationService:
             )
         event = {"type": "op", "op_id": commit.op_id, "input_revision": revision, "at": now,
                  "by": {"id": actor["id"], "name": actor["name"]}, "action": commit.action,
-                 "cells": [{"sheet": item["sheet"], "r": item["row"], "c": item["col"],
-                            "v": item["value"], "ver": item["version"]} for item in commit.cells]}
+                 "cells": [_event_cell(item) for item in commit.cells]}
         connection.execute("UPDATE pp_copies SET input_revision=?,updated_at=? WHERE id=?",
                            (revision, now, commit.copy["id"]))
         connection.execute("INSERT INTO pp_calc_jobs(copy_id,revision,status,created_at,updated_at) VALUES(?,?,'pending',?,?)",
@@ -410,6 +467,15 @@ def _conflict(connection, state):
     value = (json.loads(state.current["value_json"]) if state.current else
              state.snapshot.cell(cell["sheet"], cell["r"], cell["c"])["v"])
     return {**_public_cell(cell), "current_version": state.version, "current_v": value, "by": user}
+
+
+def _event_cell(item):
+    """A formula is not a value: clients get the formula text and the result from the calc event."""
+    formula = item["value"].get("formula") if isinstance(item["value"], dict) else None
+    if formula is None:
+        return {"sheet": item["sheet"], "r": item["row"], "c": item["col"], "v": item["value"], "ver": item["version"]}
+    return {"sheet": item["sheet"], "r": item["row"], "c": item["col"], "v": None, "formula": formula,
+            "ver": item["version"]}
 
 
 def _public_cell(cell):

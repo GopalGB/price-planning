@@ -41,8 +41,8 @@ this phase brings them in on the Excel engine only.
 7. Formula overrides are not in the template's dependency index. The engine keeps a small second index
    over them (same `DependencyIndex.build`, override formulas only) and computes the cone as a fixpoint
    over both indexes, so edits that reach an override formula re-read it and its dependents.
-8. While a macro job is pending for a copy, edits to that copy get 409 `macro_running`; a server restart
-   marks a pending macro job failed (the user presses the button again) instead of replaying it.
+8. Edits wait behind a running macro through the per-copy pipeline lock (no 409). A crash after the macro
+   commits is recovered by the normal calculation replay (the committed macro is a revision like any other).
 9. Formualizer and values-only deployments return 409 `macros_unavailable` with the reason.
 
 ## Tracks

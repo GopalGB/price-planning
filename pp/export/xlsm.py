@@ -55,6 +55,8 @@ def _check(cell):
             validate_text(v)
         except ValueError as exc:
             raise ValueError(f'{exc} at {cell[:3]!r}') from exc
+    if isinstance(v, dict) and set(v) == {'formula'} and isinstance(v['formula'], str) and v['formula'][:1] == '=':
+        return
     if v is not None and not isinstance(v, (bool, int, float, str)):
         raise ValueError(f'unsupported value type {type(v).__name__} in {cell!r}')
 
@@ -75,6 +77,9 @@ def _cell_xml(p, ref, style, v):
     s = f' s="{style}"' if style is not None else ''
     if v is None:
         return f'<{p}c r="{ref}"{s}/>'
+    if isinstance(v, dict):
+        # A formula without a cached value: Excel calculates it when the workbook opens.
+        return f'<{p}c r="{ref}"{s}><{p}f>{escape(v["formula"][1:])}</{p}f></{p}c>'
     if isinstance(v, bool):
         return f'<{p}c r="{ref}"{s} t="b"><{p}v>{int(v)}</{p}v></{p}c>'
     if isinstance(v, (int, float)):

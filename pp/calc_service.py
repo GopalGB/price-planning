@@ -196,7 +196,11 @@ def _spill_input_metadata(snapshot, coordinate, overrides):
         return {}
     override = overrides.get(coordinate)
     value = override["v"] if override else snapshot.cell(*coordinate)["v"]
-    metadata = {"input": True, "input_value": value, "ver": override["ver"] if override else 0}
+    formula = value.get("formula") if isinstance(value, dict) else None
+    metadata = {"input": True, "input_value": value if formula is None else formula,
+                "ver": override["ver"] if override else 0}
+    if formula is not None:
+        metadata["input_formula"] = True
     if override:
         metadata.update({key: override[key] for key in ("by", "at")})
     return metadata

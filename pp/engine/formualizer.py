@@ -48,6 +48,10 @@ class EngineError(Exception):
     """Calculation errors that may be safely exposed as an unfinished job."""
 
 
+class MacroTimeout(EngineError):
+    """A template macro ran past its time limit and its Excel was stopped."""
+
+
 @dataclass(frozen=True)
 class FormulaLookup:
     sheet: int
@@ -625,6 +629,8 @@ class FormualizerEngine:
             raise EngineError("template calculation engine failed to load") from exc
 
     def apply(self, changes: list[tuple[int, int, int, object]]) -> list[tuple[int, int, int, object]]:
+        if any(isinstance(value, dict) and "formula" in value for _, _, _, value in changes):
+            raise EngineError("formulas written by macros need the Excel engine")
         self._reset_overlay_delta()
         if not changes:
             return []

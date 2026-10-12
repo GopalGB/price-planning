@@ -62,8 +62,20 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   text are rejected 422 ("Formulas can't be typed into input cells"). Identical retry of an op_id returns the
   stored ack; same op_id with different payload -> 409 `{error: "op_id_reused"}`.
 - Undo = client sends a new op with `action: "undo"` restoring `before` values with current versions.
-- `POST /api/copies/{id}/macros {button, op_id}` (owner/editor; viewers 403) -> 404 `{error: "unknown_button"}` for an
-  id not in `buttons`; 409 `{error: "macros_unavailable", message}` until the office-server run lands (macro track M3).
+- `POST /api/copies/{id}/macros {button, op_id}` (owner/editor; viewers 403). The server maps `button` to the
+  template's macro; clients never name a macro. Runs inside the copy's pipeline lock, so edits to the copy
+  wait behind it (no 409 for a running macro).
+  -> 200 `{messages: [...], changed: n, input_revision}` where `messages` are the macro's dialog texts and `changed`
+  the number of cells it wrote (0: nothing committed, `input_revision` unchanged). One macro press is one
+  revision with history action `macro`; its cells are overrides (inputs, plain values and `{formula}` values).
+  Identical retry of `op_id` returns the stored ack without running the macro; reused `op_id` -> 409 `op_id_reused`.
+  Errors: 404 `unknown_button`; 409 `macros_unavailable` ("Macros run on the office server, where the app uses
+  Microsoft Excel.") when there is no Excel engine or the template is `cached`; 502 `macro_failed` with
+  "The macro did not finish in Excel." or, past the 600 s limit, "The macro ran too long and was stopped."
+  (nothing is committed on 502). If the server dies after the commit, the normal calculation replay publishes it.
+- Rows and cells: an override on a non-input cell shows its value with the cell's own kind (`k` stays `c`/`f`) and no
+  `ver`/`by`/`at`; a formula override is never sent as a value (its published result is shown). On an input,
+  `input_value` is the formula text with `input_formula: true`.
 
 ## Export
 - `GET /api/copies/{id}/export.xlsm` -> the original template with this copy's input values written in; Excel

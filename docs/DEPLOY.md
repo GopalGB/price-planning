@@ -90,3 +90,12 @@ First check on the server, before inviting users (prints counts and timings only
 It must end with `PASS`. The first start builds the template caches in the background (a few
 minutes); edits made before that finish simply wait for them. Without Excel (this Mac), use
 `"template_results": "cached"` to show the template read only.
+
+Template macros (the buttons on the template) get their own check:
+
+    .venv\Scripts\python ops\excel_smoke.py --macros
+
+Every button runs on a fresh Excel, then a second fresh Excel applies only the recorded contents, and the
+two are compared cell by cell. It prints per button: seconds, message count, contents count, formula
+contents, published changes and Excel's peak memory, plus the mismatched-cell count of the replay. It must
+end with `PASS`. Macros only run on the Excel engine; on this Mac they answer 409 `macros_unavailable`.

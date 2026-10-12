@@ -27,7 +27,8 @@ from .calc_service import (
 )
 from .copies import CopyService, ShareChange
 from .db import token_hash
-from .engine.pool import CalculationRequest
+from .engine.formualizer import EngineError, MacroTimeout
+from .engine.pool import CalculationRequest, MacroRequest
 from .config import BRAND_TYPES
 from .errors import AppError
 from .export.transfer import TransferRequest, export_transfer
@@ -308,9 +309,51 @@ async def _ops(request: Request):
 
 async def _macros(request: Request):
     services, user, _ = _write_auth(request)
-    payload = await _body(request)
-    services.workbooks.macro_request(request.path_params["copy_id"], user["id"],
-                                     payload.get("button"), payload.get("op_id"))
+    copy_id, payload = request.path_params["copy_id"], await _body(request)
+    button, op_id = payload.get("button"), payload.get("op_id")
+    engine_kind = services.engine_pool.kind if services.engine_pool is not None else None
+    macro = services.workbooks.macro_request(copy_id, user["id"], button, op_id, engine_kind)
+    operation = {"op_id": op_id, "button": button}
+    async with services.hub.pipeline(copy_id):
+        replay = services.operations.macro_replay(copy_id, user["id"], operation)
+        if replay is not None:
+            return JSONResponse(_macro_response(replay))
+        state = services.operations.revisions(copy_id)
+        revision = state["input_revision"] + 1
+        source = services.workbooks.calculation_source(copy_id)
+        changes = services.operations.revision_changes(copy_id, state["input_revision"])
+        try:
+            result = await asyncio.to_thread(services.engine_pool.run_macro, MacroRequest(
+                copy_id, revision, source, changes, state["calculated_revision"], macro))
+        except MacroTimeout as exc:
+            raise AppError(502, "macro_failed", "The macro ran too long and was stopped.") from exc
+        except EngineError as exc:
+            raise AppError(502, "macro_failed", "The macro did not finish in Excel.") from exc
+        ack = None
+        if result["contents"]:
+            ack = await asyncio.to_thread(services.operations.apply_macro, copy_id, user["id"], operation,
+                                          result["messages"], result["contents"], revision)
+        if ack is None:
+            return JSONResponse({"messages": result["messages"], "changed": 0,
+                                 "input_revision": state["input_revision"]})
+        await _publish_macro(services, copy_id, revision, source, result)
+    return JSONResponse(_macro_response(ack))
+
+
+def _macro_response(ack):
+    return {"messages": ack["messages"], "changed": ack["accepted"], "input_revision": ack["input_revision"]}
+
+
+async def _publish_macro(services, copy_id, revision, source, result):
+    """Publish a committed macro like an edit; a failure here leaves the calc job for the normal replay."""
+    await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("op", revision)))
+    await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services.database, copy_id)})
+    try:
+        request = CalculationRequest(copy_id, revision, source, services.operations.revision_changes(copy_id, revision))
+        if await _publish_result(services, request, result):
+            await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
+    except Exception as exc:
+        await asyncio.to_thread(services.calculations.failed, copy_id, revision, type(exc).__name__)
 
 
 async def _calculate_and_publish(services, copy_id, revision):
@@ -357,6 +400,10 @@ async def _calculate_baseline(services, copy, user_id):
 
 async def _run_calculation(services, request):
     result = await asyncio.to_thread(services.engine_pool.apply, request)
+    return await _publish_result(services, request, result)
+
+
+async def _publish_result(services, request, result):
     publication = CalculationPublication.from_result(
         request.copy_id, request.revision, result
     )

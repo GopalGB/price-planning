@@ -11,6 +11,7 @@ from unittest import mock
 
 from openpyxl import Workbook
 
+from ops.fixtures import make_semantic
 from tests.v2.support import TMP
 from tests.v2.test_engine_cached import _replace_formula_values
 
@@ -77,7 +78,8 @@ class MacroEngineTests(unittest.TestCase):
 
         result = engine.run_macro("SetA1")
 
-        self.assertEqual(result, {"messages": [], "contents": [(0, 0, 0, 5)], "changes": [(0, 0, 1, 10)]})
+        self.assertEqual(result, {"messages": [], "contents": [(0, 0, 0, 5)], "changes": [(0, 0, 1, 10)],
+                                  "before": {(0, 0, 0): 2}})
         self.assertEqual(engine.overlay_snapshot(), [(0, 0, 1, 10)])
 
     def test_macro_formula_is_an_override_and_edits_reach_it_through_both_indexes(self):
@@ -86,6 +88,7 @@ class MacroEngineTests(unittest.TestCase):
         result = engine.run_macro("Chain")
 
         self.assertEqual(result["contents"], [(0, 1, 0, {"formula": "=A1*3"})])
+        self.assertEqual(result["before"], {(0, 1, 0): None})
         self.assertEqual(result["changes"], [(0, 0, 2, 7), (0, 1, 0, 6)])
         # C1 is a template formula that only reads the override A2: the fixpoint must reach it
         self.assertEqual(engine.apply([(0, 0, 0, 4)]), [(0, 0, 1, 8), (0, 0, 2, 13), (0, 1, 0, 12)])
@@ -96,7 +99,8 @@ class MacroEngineTests(unittest.TestCase):
 
         result = engine.run_macro("Detach")
 
-        self.assertEqual(result, {"messages": [], "contents": [(0, 0, 1, 9)], "changes": []})
+        self.assertEqual(result, {"messages": [], "contents": [(0, 0, 1, 9)], "changes": [],
+                                  "before": {(0, 0, 1): 4}})
         self.assertNotIn((0, 0, 1), engine.formula_anchors)
         self.assertEqual(engine.apply([(0, 0, 0, 3)]), [])
         self.assertEqual(engine.get(0, 0, 1), 9)
@@ -366,6 +370,216 @@ def wait_until_killed(app):
 
 def fail(app, name):
     raise RuntimeError("macro error")
+
+
+class FakeWireConnection:
+    """Stands in for the worker pipe: serves queued requests and records replies."""
+
+    def __init__(self, *requests):
+        self.requests, self.sent = list(requests), []
+
+    def recv(self):
+        return self.requests.pop(0)
+
+    def send(self, message):
+        self.sent.append(message)
+
+    def close(self):
+        pass
+
+
+class WarmCopyMacroTests(unittest.TestCase):
+    def warm(self, macros):
+        from pp.engine.excel import ExcelEngine, FormualizerHost
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=TMP)
+        self.addCleanup(directory.cleanup)
+        source = macro_workbook(directory.name)
+
+        def factory(path, names):
+            host = FormualizerHost(path, names)
+            host.macros = macros
+            return host
+
+        copy = WarmCopy("copy-a", "excel")
+        copy.source = str(source)
+        copy.engine = ExcelEngine.load(source, cache_dir=Path(directory.name) / "cache", host_factory=factory)
+        self.addCleanup(copy.close)
+        return copy, str(source)
+
+    def test_macro_delta_covers_the_sync_and_the_macro(self):
+        copy, source = self.warm({"Chain": chain})
+        copy.apply(1, source, [])
+
+        result = copy.run_macro(2, source, [(0, 0, 0, 4)], 1, "Chain", 600)
+
+        self.assertTrue(result["delta"])
+        self.assertEqual((result["revision"], result["base_revision"]), (2, 1))
+        # B1 comes from the synced A1 edit; C1 and the new A2 formula come from the macro
+        self.assertEqual(result["results"], [(0, 0, 1, 8), (0, 0, 2, 13), (0, 1, 0, 12)])
+        self.assertEqual(result["contents"], [(0, 1, 0, {"formula": "=A1*3"})])
+        self.assertEqual(result["messages"], [])
+
+    def test_macro_contents_merge_into_overrides_and_keep_the_pre_macro_baseline(self):
+        copy, source = self.warm({"SetA1": set_a1})
+
+        result = copy.run_macro(1, source, [], None, "SetA1", 600)
+
+        self.assertEqual(copy.overrides, {(0, 0, 0): 5})
+        self.assertEqual(copy.baseline[(0, 0, 0)], 2)
+        self.assertEqual(result["changes"], [(0, 0, 1, 10)])
+
+    def test_formualizer_warm_copy_refuses_macros_before_touching_state(self):
+        from pp.engine.formualizer import EngineError
+        from pp.engine.worker import WarmCopy
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "semantic.xlsm"
+            make_semantic(source)
+            copy = WarmCopy("copy-a", "formualizer")
+            self.addCleanup(copy.close)
+            with self.assertRaisesRegex(EngineError, "Excel"):
+                copy.run_macro(1, str(source), [], None, "Chain", 600)
+            self.assertIsNone(copy.engine)
+
+    def test_formualizer_apply_refuses_a_formula_value(self):
+        from pp.engine.formualizer import EngineError, FormualizerAdapter
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "semantic.xlsm"
+            make_semantic(source)
+            engine = FormualizerAdapter.load(source)
+            with self.assertRaisesRegex(EngineError, "Excel"):
+                engine.apply([(0, 0, 0, {"formula": "=1+1"})])
+
+
+class MacroWorkerProtocolTests(unittest.TestCase):
+    def test_worker_serves_tagged_macro_and_keeps_the_plain_request_forms(self):
+        from pp.engine.excel import FormualizerHost
+        from pp.engine.worker import worker_loop
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = macro_workbook(temp)
+
+            def factory(path, names):
+                host = FormualizerHost(path, names)
+                host.macros = {"Chain": chain}
+                return host
+
+            connection = FakeWireConnection(
+                (1, str(source), []),
+                ("macro", 2, str(source), [(0, 0, 0, 4)], 1, "Chain", 600),
+                None,
+            )
+            with mock.patch("pp.engine.excel.default_host", lambda: factory):
+                worker_loop(connection, "copy-a", "excel")
+
+        plain, macro = connection.sent
+        self.assertEqual((plain[0], plain[1]["revision"]), (True, 1))
+        self.assertTrue(macro[0])
+        self.assertEqual(macro[1]["contents"], [(0, 1, 0, {"formula": "=A1*3"})])
+        self.assertEqual(macro[1]["results"], [(0, 0, 1, 8), (0, 0, 2, 13), (0, 1, 0, 12)])
+        self.assertIn("engine_bytes", macro[1])
+
+    def test_worker_reports_a_macro_timeout_by_its_own_name(self):
+        from pp.engine.excel import FormualizerHost
+        from pp.engine.formualizer import MacroTimeout
+        from pp.engine.worker import worker_loop
+
+        def slow(host):
+            raise MacroTimeout("macro timed out")
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = macro_workbook(temp)
+
+            def factory(path, names):
+                host = FormualizerHost(path, names)
+                host.macros = {"Slow": slow}
+                return host
+
+            connection = FakeWireConnection(("macro", 1, str(source), [], None, "Slow", 600), None)
+            with mock.patch("pp.engine.excel.default_host", lambda: factory):
+                worker_loop(connection, "copy-a", "excel")
+
+        self.assertEqual(connection.sent, [(False, "MacroTimeout")])
+
+    def test_pool_maps_a_worker_timeout_to_macro_timeout_and_other_errors_to_engine_error(self):
+        from pp.engine.formualizer import EngineError, MacroTimeout
+        from pp.engine.pool import MacroRequest, _CopyWorker
+
+        def worker_answering(payload):
+            worker = object.__new__(_CopyWorker)
+            worker.process = SimpleNamespace(is_alive=lambda: True)
+            worker.connection = FakeWireConnection()
+            worker.connection.recv = lambda: (False, payload)
+            worker.connection.send = lambda message: None
+            return worker
+
+        request = MacroRequest("copy-a", 2, Path("template.xlsm"), [], 1, "Slow", 5)
+        with self.assertRaises(MacroTimeout):
+            worker_answering("MacroTimeout").macro(request)
+        with self.assertRaises(EngineError) as raised:
+            worker_answering("EngineError").macro(request)
+        self.assertNotIsInstance(raised.exception, MacroTimeout)
+
+    def test_pool_macro_on_a_formualizer_worker_is_refused_as_engine_error(self):
+        from pp.engine.formualizer import EngineError
+        from pp.engine.pool import EnginePool, MacroRequest
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "semantic.xlsm"
+            make_semantic(source)
+            pool = EnginePool(max_workers=1)
+            try:
+                with self.assertRaises(EngineError):
+                    pool.run_macro(MacroRequest("copy-a", 1, source, [], None, "Chain", 600))
+            finally:
+                pool.close()
+
+
+class MacroSmokeTests(unittest.TestCase):
+    def test_smoke_replays_every_button_on_fresh_engines_and_prints_no_values(self):
+        from ops.excel_smoke import check_macros
+        from pp.engine.excel import ExcelEngine, FormualizerHost
+        from pp.engine.formualizer import EngineError
+
+        def broken(host):
+            raise EngineError("macro failed")
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        directory = tempfile.TemporaryDirectory(dir=TMP)
+        self.addCleanup(directory.cleanup)
+        source = macro_workbook(directory.name)
+
+        def open_engine(path):
+            def factory(host_path, names):
+                host = FormualizerHost(host_path, names)
+                host.macros = {"Chain": chain, "Broken": broken}
+                return host
+            return ExcelEngine.load(path, cache_dir=Path(directory.name) / "cache", host_factory=factory)
+
+        snapshot = SimpleNamespace(source_path=source, sheets=[{"rows": 3, "cols": 4}],
+                                   buttons=[{"id": "b0", "macro": "Chain"}])
+        lines = []
+        self.assertEqual(check_macros(snapshot, open_engine, lines.append), 0)
+        self.assertIn("  replay", lines[1])
+        self.assertIn("mismatched cells 0", lines[1])
+        self.assertEqual(lines[-1], "PASS")
+        printed = "\n".join(lines)
+        self.assertNotIn("A1", printed)
+        self.assertNotIn("Chain", printed)
+
+        snapshot.buttons = [{"id": "b1", "macro": "Broken"}]
+        lines = []
+        self.assertEqual(check_macros(snapshot, open_engine, lines.append), 1)
+        self.assertEqual(lines[-1], "FAIL (1)")
 
 
 if __name__ == "__main__":

@@ -1,3 +1,12 @@
+## 2026-10-12 (Claude, M3 macros flow)
+
+Branch feat/v2-macros-flow: template buttons run end to end on the Excel engine (P6.3 M3). Press ->
+pipeline lock -> Excel run on a worker -> one `macro` revision (inputs, plain values, formula overrides)
+-> calc publish. Engine failures are 502 `macro_failed`; Mac/formualizer and cached templates stay 409.
+Rows and export show non-input overrides and write formulas as formulas. `ops/excel_smoke.py --macros`
+is the office check (prints counts only). Not run here: the office `--macros` smoke (no Excel on the Mac).
+Next: Sir runs `excel_smoke.py --macros` on the office server; then the browser check of each button.
+
 # STATE
 
 ## 2026-10-12 10:00 IST (Claude)

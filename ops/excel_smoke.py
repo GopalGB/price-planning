@@ -1,11 +1,15 @@
 """Office-server check of the Excel engine on the configured template (counts and timings only).
 
     .venv\\Scripts\\python ops\\excel_smoke.py [runtime folder] [--edits 3]
+    .venv\\Scripts\\python ops\\excel_smoke.py [runtime folder] --macros
 
 Loads the template in a private hidden Excel, edits real input cells one at a time and proves the
 dependency index missed nothing: every sheet is read in full before and after the edit, and each
 cell Excel changed must be among the published changes. Each edit is then reverted and must leave
 no overlay. Prints no cell values.
+
+--macros runs every template button on a fresh engine, then proves a second fresh engine that
+applies only the recorded contents reads identical values everywhere. Prints counts and timings only.
 """
 
 import argparse
@@ -18,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pp.config import load_config  # noqa: E402
 from pp.engine.excel import ExcelEngine, from_com, warm_caches  # noqa: E402
+from pp.engine.formualizer import EngineError  # noqa: E402
 from pp.template.importer import import_template  # noqa: E402
 from pp.values import exactly_equal  # noqa: E402
 from pp.workbook_service import TemplateSnapshot  # noqa: E402
@@ -37,16 +42,69 @@ def full_read(engine, snapshot):
     return values
 
 
+def check_macros(snapshot, open_engine, report=print):
+    """Each button on a fresh engine, then a fresh replay of its contents; returns the number of failures."""
+    failures = 0
+    for button in snapshot.buttons:
+        try:
+            outcome, expected = _run_on_fresh(snapshot, open_engine, button)
+        except EngineError as exc:
+            report(f"button {button['id']}: macro did not finish ({type(exc).__name__})")
+            failures += 1
+            continue
+        report(f"button {button['id']}: {outcome['seconds']:.1f} s, messages {outcome['messages']}, "
+               f"contents {outcome['contents']}, formula contents {outcome['formulas']}, "
+               f"published {outcome['published']}, Excel peak {outcome['peak_mb']} MB")
+        try:
+            start = time.time()
+            replay = open_engine(snapshot.source_path)
+            try:
+                replay.apply(outcome["values"])
+                actual = full_read(replay, snapshot)
+            finally:
+                replay.close()
+        except EngineError as exc:
+            report(f"  replay did not finish ({type(exc).__name__})")
+            failures += 1
+            continue
+        mismatched = sum(1 for cell in expected.keys() | actual.keys()
+                         if not exactly_equal(expected.get(cell), actual.get(cell)))
+        report(f"  replay: {time.time() - start:.1f} s, mismatched cells {mismatched}")
+        failures += bool(mismatched)
+    report("PASS" if not failures else f"FAIL ({failures})")
+    return failures
+
+
+def _run_on_fresh(snapshot, open_engine, button):
+    start = time.time()
+    engine = open_engine(snapshot.source_path)
+    try:
+        outcome = engine.run_macro(button["macro"])
+        seconds = time.time() - start
+        expected = full_read(engine, snapshot)
+        peak_mb = engine.memory_bytes() // 2**20
+    finally:
+        engine.close()
+    contents = outcome["contents"]
+    summary = {"seconds": seconds, "messages": len(outcome["messages"]), "contents": len(contents),
+               "formulas": sum(isinstance(value, dict) for *_, value in contents),
+               "published": len(outcome["changes"]), "peak_mb": peak_mb, "values": contents}
+    return summary, expected
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("root", nargs="?", default=".")
     parser.add_argument("--edits", type=int, default=3)
+    parser.add_argument("--macros", action="store_true", help="run the template buttons instead of edits")
     args = parser.parse_args()
     config = load_config(Path(args.root))
     snapshot = TemplateSnapshot(import_template(config.template_path, config.data_dir, "saved"))
     start = time.time()
     warm_caches(snapshot.source_path)
     print(f"caches ready in {time.time() - start:.1f} s", flush=True)
+    if args.macros:
+        return 1 if check_macros(snapshot, ExcelEngine.load) else 0
     start = time.time()
     engine = ExcelEngine.load(snapshot.source_path)
     print(f"Excel opened in {time.time() - start:.1f} s; Excel peak memory "

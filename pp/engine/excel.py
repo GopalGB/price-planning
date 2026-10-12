@@ -26,7 +26,7 @@ from ops.typed import typed
 
 from ..values import exactly_equal
 from .depindex import DependencyIndex
-from .formualizer import EngineError, _cached_formula_map, _json_value
+from .formualizer import EngineError, MacroTimeout, _cached_formula_map, _json_value
 from .native_load import prepared_template
 
 BLOCK_ROWS = 256
@@ -190,12 +190,14 @@ class ComExcelHost(ExcelHost):
         try:
             self.app.Run(f"'{self.book.Name}'!{name}")
         except Exception as exc:
-            raise EngineError("macro timed out" if timed_out.is_set() else "macro failed") from exc
+            if timed_out.is_set():
+                raise MacroTimeout("macro timed out") from exc
+            raise EngineError("macro failed") from exc
         finally:
             done.set()
             watcher.join()
         if timed_out.is_set():
-            raise EngineError("macro timed out")
+            raise MacroTimeout("macro timed out")
         return dialogs
 
     def memory_bytes(self):
@@ -436,8 +438,11 @@ class ExcelEngine:
             raise EngineError("Excel calculation engine failed to apply changes") from exc
 
     def run_macro(self, macro: str, timeout: float = 600) -> dict:
-        """Run a template macro in Excel and record exactly what it changed (see P6.3 decision 5)."""
-        self.overlay_upserts, self.overlay_removals = {}, set()
+        """Run a template macro in Excel and record exactly what it changed (see P6.3 decision 5).
+
+        Overlay state is not reset here: the caller syncs the desired state first, and the
+        delta it publishes must cover that sync plus the macro.
+        """
         try:
             before = self._read_values()
             messages = self.host.run_macro(macro, timeout)
@@ -465,7 +470,8 @@ class ExcelEngine:
             contents.sort(key=lambda item: item[:3])
             self._track(contents, {key: before.get(key) for key in new})
             changes = self._publish(self._affected([item[:3] for item in contents]))
-            return {"messages": messages, "changes": changes, "contents": contents}
+            return {"messages": messages, "changes": changes, "contents": contents,
+                    "before": {item[:3]: before.get(item[:3]) for item in contents}}
         except EngineError:
             raise
         except Exception as exc:

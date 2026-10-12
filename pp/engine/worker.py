@@ -33,8 +33,29 @@ class WarmCopy:
 
     def apply(self, revision: int, template_path: str, changes: list[tuple] | WorkerBatch) -> dict:
         batch = changes if isinstance(changes, WorkerBatch) else WorkerBatch(changes)
+        calculated, reset = self._sync(template_path, batch.changes)
+        return self._result(revision, batch, reset, calculated)
+
+    def run_macro(self, revision: int, template_path: str, changes: list[tuple], base_revision: int | None,
+                  macro: str, timeout: float = 600) -> dict:
+        """Sync the desired state, run the template macro in Excel and fold what it wrote into the state."""
+        if self.kind != "excel":
+            raise EngineError("template macros need the Excel engine")
+        batch = WorkerBatch(changes, base_revision)
+        calculated, reset = self._sync(template_path, batch.changes)
+        outcome = self.engine.run_macro(macro, timeout)
+        for coordinate, value in outcome["before"].items():
+            if coordinate not in self.baseline:
+                self.baseline[coordinate] = value
+        for sheet, row, col, value in outcome["contents"]:
+            self.overrides[(sheet, row, col)] = value
+            if value is None:
+                self.cleared = self.cleared | {(sheet, row, col)}
+        result = self._result(revision, batch, reset, calculated + outcome["changes"])
+        return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
+
+    def _sync(self, template_path: str, changes: list[tuple]) -> tuple[list, bool]:
         reset = self._load(template_path)
-        changes = batch.changes
         desired = {(sheet, row, col): value for sheet, row, col, value in changes}
         cleared = frozenset(coordinate for coordinate, value in desired.items() if value is None)
         restored_blanks = frozenset(
@@ -60,6 +81,9 @@ class WarmCopy:
         calculated = self.engine.apply(updates)
         self.overrides = desired
         self.cleared = cleared
+        return calculated, reset
+
+    def _result(self, revision: int, batch: WorkerBatch, reset: bool, changes: list, **extra) -> dict:
         delta = (not reset and batch.base_revision is not None
                  and batch.base_revision == self.last_applied_revision)
         if delta:
@@ -68,8 +92,8 @@ class WarmCopy:
             results, removals = self.engine.overlay_snapshot(), []
         self.last_applied_revision = revision
         return {"copy_id": self.copy_id, "revision": revision, "pid": os.getpid(),
-                "changes": calculated, "results": results, "removals": removals,
-                "delta": delta, "base_revision": batch.base_revision}
+                "changes": changes, "results": results, "removals": removals,
+                "delta": delta, "base_revision": batch.base_revision, **extra}
 
     def close(self) -> None:
         """Release the engine; an Excel engine quits its private Excel."""
@@ -141,6 +165,18 @@ def _engine_bytes():
     return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
+def _serve(copy: WarmCopy, request: tuple) -> dict:
+    """Requests: (revision, path, changes[, base_revision]) or ("macro", revision, path, changes, base, macro, timeout)."""
+    if request[0] == "macro":
+        _, revision, template_path, changes, base_revision, macro, timeout = request
+        return copy.run_macro(revision, template_path, changes, base_revision, macro, timeout)
+    if len(request) == 3:
+        revision, template_path, changes = request
+        return copy.apply(revision, template_path, WorkerBatch(changes))
+    revision, template_path, changes, base_revision = request
+    return copy.apply(revision, template_path, WorkerBatch(changes, base_revision))
+
+
 def worker_loop(connection, copy_id: str, engine: str = "formualizer") -> None:
     """Serve one copy serially inside its dedicated spawned process."""
     copy = WarmCopy(copy_id, engine)
@@ -149,14 +185,8 @@ def worker_loop(connection, copy_id: str, engine: str = "formualizer") -> None:
             request = connection.recv()
             if request is None:
                 return
-            if len(request) == 3:
-                revision, template_path, changes = request
-                batch = WorkerBatch(changes)
-            else:
-                revision, template_path, changes, base_revision = request
-                batch = WorkerBatch(changes, base_revision)
             try:
-                result = copy.apply(revision, template_path, batch)
+                result = _serve(copy, request)
                 result["engine_bytes"] = copy.engine_bytes()
                 connection.send((True, result))
             except Exception as exc:

@@ -213,18 +213,16 @@ class WorkbookService:
             rendered = {}
             for col_text in sorted(coordinates, key=int):
                 col = int(col_text)
-                record = dict(cells.get(col_text, render.snapshot.cell(query.sheet, row, col)))
+                coordinate = (query.sheet, row, col)
+                record = dict(cells.get(col_text, render.snapshot.cell(*coordinate)))
                 record.pop("formula", None)
                 override = render.overrides.get((row, col))
                 input_record = _input_record(connection, override) if override else None
-                if (row, col) in render.results:
+                published = (row, col) in render.results
+                if published:
                     record.update({"v": render.results[(row, col)], "k": "f"})
-                    record.update(_spill_input_metadata(
-                        render.snapshot, (query.sheet, row, col), input_record
-                    ))
-                if override and (row, col) not in render.results:
-                    record.update(input_record)
-                elif record["k"] == "i":
+                record.update(_cell_fields(render.snapshot, coordinate, input_record, published))
+                if not override and not published and record["k"] == "i":
                     record["ver"] = 0
                 rendered[col_text] = record
             if rendered:
@@ -246,21 +244,15 @@ class WorkbookService:
                 (query.copy_id, query.sheet, query.row, query.col),
             ).fetchone()
             input_record = _input_record(connection, override) if override else None
-        record = dict(snapshot.cell(query.sheet, query.row, query.col))
+        coordinate = (query.sheet, query.row, query.col)
+        record = dict(snapshot.cell(*coordinate))
         if result:
             record["k"] = "f"
-        fallback = record["v"]
-        value = json.loads(result["value_json"]) if result else input_record["v"] if input_record else fallback
-        response = {"v": value, "s": record["s"], "k": record["k"],
-                    "formula": record.get("formula"),
-                    "validation": snapshot.validation(query.sheet, query.row, query.col)}
-        if result:
-            response.update(_spill_input_metadata(
-                snapshot, (query.sheet, query.row, query.col), input_record
-            ))
-        elif input_record:
-            response.update({key: input_record[key] for key in ("ver", "by", "at")})
-        elif record["k"] == "i":
+        response = {"v": json.loads(result["value_json"]) if result else record["v"], "s": record["s"],
+                    "k": record["k"], "formula": record.get("formula"),
+                    "validation": snapshot.validation(*coordinate)}
+        response.update(_cell_fields(snapshot, coordinate, input_record, result is not None))
+        if not override and not result and record["k"] == "i":
             response["ver"] = 0
         return response
 
@@ -272,7 +264,8 @@ class WorkbookService:
             rows = _history_rows(connection, copy, query)
         return {"entries": [_history_entry(item) for item in rows]}
 
-    def macro_request(self, copy_id: str, user_id: str, button_id, op_id) -> None:
+    def macro_request(self, copy_id: str, user_id: str, button_id, op_id, engine_kind: str | None) -> str:
+        """Authorize a button press and return the macro that button runs (clients never name macros)."""
         if not isinstance(op_id, str) or not op_id:
             raise AppError(422, "invalid", "Operation identifier is required")
         with self.database.connect() as connection:
@@ -280,11 +273,13 @@ class WorkbookService:
             if effective_role(connection, copy_id, user_id) not in {"owner", "editor"}:
                 raise AppError(403, "forbidden", "Editor access is required")
             snapshot = self.templates.get(connection, copy["template_id"])
-        if not isinstance(button_id, str) or button_id not in {button["id"] for button in snapshot.buttons}:
+        button = next((item for item in snapshot.buttons if item["id"] == button_id), None)
+        if button is None:
             raise AppError(404, "unknown_button", "Macro button not found")
-        # Track M3 replaces this with the office-server run.
-        raise AppError(409, "macros_unavailable",
-                       "Macros run on the office server, where the app uses Microsoft Excel.")
+        if engine_kind != "excel" or snapshot.results == "cached":
+            raise AppError(409, "macros_unavailable",
+                           "Macros run on the office server, where the app uses Microsoft Excel.")
+        return button["macro"]
 
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:
@@ -294,9 +289,7 @@ class WorkbookService:
                                           (copy["template_id"],)).fetchone()
             rows = connection.execute("SELECT sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?",
                                       (copy_id,)).fetchall()
-            for item in rows:
-                if not snapshot.is_input(item["sheet"], item["row"], item["col"]):
-                    raise AppError(422, "locked", "This cell is locked")
+            _check_overrides(connection, snapshot, copy_id, rows)
         return Path(template["source_path"]), {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
                                                  for item in rows}
 
@@ -311,9 +304,7 @@ class WorkbookService:
             rows = connection.execute(
                 "SELECT sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?", (copy_id,)
             ).fetchall()
-            for item in rows:
-                if not snapshot.is_input(item["sheet"], item["row"], item["col"]):
-                    raise AppError(422, "locked", "This cell is locked")
+            _check_overrides(connection, snapshot, copy_id, rows)
             results = {}
             if _calculated_revision(snapshot, copy) == copy["input_revision"]:
                 result_rows = connection.execute(
@@ -424,12 +415,57 @@ def _input_record(connection, override):
             "by": {"id": user["id"], "name": user["name"]}, "at": override["updated_at"]}
 
 
+def _formula(value):
+    return value["formula"] if isinstance(value, dict) and "formula" in value else None
+
+
+def _cell_fields(snapshot, coordinate, input_record, published):
+    """What an override adds to a cell record. A formula is never sent as a value: its published result is."""
+    if published:
+        return _spill_input_metadata(snapshot, coordinate, input_record)
+    if input_record is None:
+        return {}
+    value = input_record["v"]
+    formula = _formula(value)
+    if not snapshot.is_input(*coordinate):
+        return {} if formula is not None else {"v": value}
+    if formula is None:
+        return {"v": value, "k": "i", **{key: input_record[key] for key in ("ver", "by", "at")}}
+    return {"v": snapshot.cell(*coordinate)["v"], "k": "i", "input_value": formula, "input_formula": True,
+            **{key: input_record[key] for key in ("ver", "by", "at")}}
+
+
 def _spill_input_metadata(snapshot, coordinate, input_record):
     if not snapshot.is_input(*coordinate):
         return {}
     value = input_record["v"] if input_record else snapshot.cell(*coordinate)["v"]
-    metadata = {"input": True, "input_value": value,
+    formula = _formula(value)
+    metadata = {"input": True, "input_value": value if formula is None else formula,
                 "ver": input_record["ver"] if input_record else 0}
+    if formula is not None:
+        metadata["input_formula"] = True
     if input_record:
         metadata.update({key: input_record[key] for key in ("by", "at")})
     return metadata
+
+
+def _check_overrides(connection, snapshot, copy_id, rows):
+    """Inputs may hold overrides; any other cell only when a template macro wrote it."""
+    for item in rows:
+        coordinate = (item["sheet"], item["row"], item["col"])
+        if not snapshot.is_input(*coordinate) and not _macro_wrote(connection, copy_id, coordinate):
+            raise AppError(422, "locked", "This cell is locked")
+
+
+def _macro_wrote(connection, copy_id, coordinate):
+    """The latest history action for a cell, walking up the fork chain (forks hold no history of their own)."""
+    while copy_id is not None:
+        latest = connection.execute(
+            "SELECT action FROM pp_history WHERE copy_id=? AND sheet=? AND row=? AND col=? ORDER BY id DESC LIMIT 1",
+            (copy_id, *coordinate),
+        ).fetchone()
+        if latest is not None:
+            return latest["action"] == "macro"
+        parent = connection.execute("SELECT parent_copy_id FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
+        copy_id = parent["parent_copy_id"] if parent is not None else None
+    return False
