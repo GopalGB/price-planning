@@ -24,10 +24,12 @@ if exist settings.json goto have_settings
 rem 3. Python 3.12, 3.11 or 3.10 (the bundled packages are built for these).
 call :find_python
 if defined PYEXE goto have_python
-echo Installing Python 3.12 for this user, one time...
-curl.exe --ssl-no-revoke -L -o "%TEMP%\py312.exe" https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
+echo Getting Python 3.12 for this user, one time...
+rem The python.org NuGet package is the full Python as a plain zip: no installer to run, no admin
+curl.exe --ssl-no-revoke -L -o "%TEMP%\py312.zip" https://www.nuget.org/api/v2/package/python/3.12.10
 if errorlevel 1 goto python_failed
-start "" /wait "%TEMP%\py312.exe" /quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0
+if not exist "%LOCALAPPDATA%\PricePlanning\python312" mkdir "%LOCALAPPDATA%\PricePlanning\python312"
+tar -xf "%TEMP%\py312.zip" -C "%LOCALAPPDATA%\PricePlanning\python312"
 call :find_python
 if not defined PYEXE goto python_failed
 :have_python
@@ -61,6 +63,7 @@ goto leave
 
 :find_python
 set "PYEXE="
+if exist "%LOCALAPPDATA%\PricePlanning\python312\tools\python.exe" set "PYEXE=%LOCALAPPDATA%\PricePlanning\python312\tools\python.exe"
 for %%V in (312 311 310) do if not defined PYEXE if exist "%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe" set "PYEXE=%LOCALAPPDATA%\Programs\Python\Python%%V\python.exe"
 for %%V in (3.12 3.11 3.10) do if not defined PYEXE for /f "delims=" %%P in ('py -%%V -c "import sys; print(sys.executable)" 2^>nul') do set "PYEXE=%%P"
 exit /b 0
@@ -69,8 +72,7 @@ exit /b 0
 echo No .xlsm found in "%HOME_DIR%". Put the template there and run this again.
 goto fail
 :python_failed
-echo Could not install Python 3.12. Open https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe
-echo in the browser, run it, choose "Install Now", then run this again.
+echo Could not get Python 3.12. Check the internet connection, then run this again.
 goto fail
 :install_failed
 echo Installing the packages failed. Send the lines above to Claude.

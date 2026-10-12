@@ -24,8 +24,8 @@ Make a folder (for example `C:\PricePlanning`), put the template `.xlsm` in it, 
 revocation check off, the same as `curl.exe --ssl-no-revoke`).
 
 `office_run.bat` uses the first `.xlsm` in that folder (`PP_TEMPLATE_PATH`), keeps engine caches in
-`engine-cache\` there, writes `settings.json` with the Excel engine on first use (never rewrites it), installs
-Python 3.12 for the user when no 3.10 to 3.12 exists (`curl --ssl-no-revoke` for proxies that block revocation
+`engine-cache\` there, writes `settings.json` with the Excel engine on first use (never rewrites it), unpacks
+Python 3.12 (python.org NuGet zip, no installer or admin) into `%LOCALAPPDATA%\PricePlanning` when no 3.10 to 3.12 exists (`curl --ssl-no-revoke` for proxies that block revocation
 checks), installs the wheels offline, runs the four Excel checks on the first run only (`checks-done.txt`;
 `app\office_run.bat check` runs them again), then starts the app.
 

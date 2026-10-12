@@ -76,7 +76,7 @@ class OfficeRun(unittest.TestCase):
         for path in ('ops\\install_env.py', 'ops\\excel_smoke.py', 'run_v2.py'):
             self.assertIn(path, text)
             self.assertTrue((ROOT / path.replace('\\', '/')).is_file(), path)
-        for flag in ('--macros', '--refresh', '--slicers', '--ssl-no-revoke', 'PP_TEMPLATE_PATH', 'PP_ENGINE_CACHE_DIR'):
+        for flag in ('--macros', '--refresh', '--slicers', '--ssl-no-revoke', 'nuget.org/api/v2/package/python/3.12', 'PP_TEMPLATE_PATH', 'PP_ENGINE_CACHE_DIR'):
             self.assertIn(flag, text)
         # an existing settings.json is never rewritten
         self.assertIn('if exist settings.json goto have_settings', text)
