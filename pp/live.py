@@ -112,9 +112,11 @@ class LiveHub:
                     if payload.get("type") == "op" and "at" not in payload:
                         payload["at"] = event["created_at"]
                     await self._send(connection, payload)
+            # ready before calc_state reaches the client: a client that saw calc_state is already listed as
+            # an occupant, and the publication lock still keeps broadcasts out until this send finishes
+            connection.ready = True
             await self._send(connection, {"type": "calc_state", "input_revision": copy["input_revision"],
                                           "calculated_revision": copy["calculated_revision"]})
-            connection.ready = True
 
     async def presence(self, connection, payload):
         sheet, selection = payload.get("sheet"), payload.get("sel")
