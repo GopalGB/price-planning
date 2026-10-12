@@ -21,7 +21,7 @@ from openpyxl.styles.numbers import BUILTIN_FORMATS
 from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
-from .dashboard import read_dashboard_metadata
+from .dashboard import DashboardUnsupported, read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
 
@@ -674,6 +674,19 @@ def _has_data_connections(archive: zipfile.ZipFile) -> bool:
     return ET.fromstring(archive.read("xl/connections.xml")).find(f"{NS}connection") is not None
 
 
+def _dashboard_or_saved_values(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> dict:
+    """Pivot and slicer metadata, or none when the dashboard cannot be rebuilt from workbook cells.
+
+    A pivot fed by an external connection (the real template's Power Query feed) keeps Excel's saved
+    pivot values in the grid instead of failing the whole template import.
+    """
+    try:
+        return read_dashboard_metadata(archive, sheet_specs)
+    except DashboardUnsupported as exc:
+        logging.getLogger(__name__).warning("dashboard left as saved values: %s", exc)
+        return {spec["index"]: {"pivots": [], "slicers": []} for spec in sheet_specs}
+
+
 def _import_archive(source: CapturedSource, staging: Path, results: str = "engine") -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
@@ -683,7 +696,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
             _shared_strings(archive, database)
             styles, unlocked = _style_data(archive)
             sheet_specs, names = _workbook_data(archive)
-            dashboard = read_dashboard_metadata(archive, sheet_specs)
+            dashboard = _dashboard_or_saved_values(archive, sheet_specs)
             metadata, protected = [], set()
             context = SheetContext(archive, database, unlocked, staging)
             for spec in sheet_specs:

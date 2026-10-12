@@ -37,6 +37,10 @@ class DashboardMetadataError(ValueError):
     """Dashboard relationships or metadata are unsafe or inconsistent."""
 
 
+class DashboardUnsupported(DashboardMetadataError):
+    """A valid pivot this app cannot rebuild from cells; the template keeps Excel's saved values."""
+
+
 class _DashboardXML(ET.TreeBuilder):
     def doctype(self, name, pubid, system):
         raise DashboardMetadataError("dashboard XML DTDs are forbidden")
@@ -148,7 +152,7 @@ def _shared_item(node):
     elif kind in {"s", "d"} and raw is not None:
         value = raw
     else:
-        raise DashboardMetadataError("pivot cache item type is unsupported")
+        raise DashboardUnsupported("pivot cache item type is unsupported")
     return {"kind": {"s": "string", "n": "number", "d": "date", "b": "boolean",
                      "e": "error", "m": "missing"}[kind], "value": value}
 
@@ -191,7 +195,7 @@ def _cache_fields(cache, number_formats):
         })
     declared = cache.find(f"{MAIN}cacheFields")
     if declared is None or _integer(declared.get("count"), "cache field count") != len(output):
-        raise DashboardMetadataError("pivot cache field count does not match")
+        raise DashboardUnsupported("pivot cache field count does not match")
     return output
 
 
@@ -314,7 +318,7 @@ def _pivot_style(root):
 def _cache_source(cache, sheet_names):
     source = cache.find(f"{MAIN}cacheSource/{MAIN}worksheetSource")
     if source is None or source.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"):
-        raise DashboardMetadataError("external or missing pivot source is unsupported")
+        raise DashboardUnsupported("external or missing pivot source is unsupported")
     sheet, reference = source.get("sheet"), source.get("ref")
     if sheet not in sheet_names:
         raise DashboardMetadataError("pivot source worksheet is missing")
@@ -352,13 +356,13 @@ def _read_pivot(archive, part, context):
     source = _cache_source(cache, sheet_names)
     start_row, start_col, _, end_col = _bounds(source["ref"])
     if end_col - start_col + 1 < len(cache_fields):
-        raise DashboardMetadataError("pivot source width is narrower than cache fields")
+        raise DashboardUnsupported("pivot source width is narrower than cache fields")
     if any(field.get("databaseField") == "0" or field.get("fieldGroup") is not None
            for field in cache_fields):
-        raise DashboardMetadataError("calculated and grouped pivot fields are unsupported")
+        raise DashboardUnsupported("calculated and grouped pivot fields are unsupported")
     for field in root.findall(f"{MAIN}dataFields/{MAIN}dataField"):
         if field.get("subtotal", "sum") != "sum" or field.get("showDataAs") is not None:
-            raise DashboardMetadataError("pivot data field feature is unsupported")
+            raise DashboardUnsupported("pivot data field feature is unsupported")
     fields = _pivot_fields(root, _cache_fields(cache, number_formats))
     return {
         "name": root.get("name", ""), "cache_id": _pivot_cache_id(cache, cache_id),

@@ -150,8 +150,8 @@ class DashboardImportTests(unittest.TestCase):
         self.assertEqual(sheet["pivots"][0]["page_fields"][0]["cache_index"], 0)
         self.assertEqual(sheet["pivots"][0]["column_items"][0]["data_index"], 0)
 
-    def test_unsupported_pivot_features_are_rejected(self):
-        from pp.template.importer import TemplateImportError, import_template
+    def test_unsupported_pivot_features_keep_saved_values(self):
+        from pp.template.importer import import_template
         cases = {
             "subtotal": lambda root: root.find(f"{MAIN}dataFields/{MAIN}dataField").set("subtotal", "count"),
             "showDataAs": lambda root: root.find(f"{MAIN}dataFields/{MAIN}dataField").set("showDataAs", "percent"),
@@ -172,8 +172,10 @@ class DashboardImportTests(unittest.TestCase):
 
                     member = "xl/pivotTables/pivotTable1.xml" if label in {"subtotal", "showDataAs"} else "xl/pivotCache/pivotCacheDefinition1.xml"
                     rewrite_member(source, member, mutate)
-                    with self.assertRaisesRegex(TemplateImportError, "template import failed"):
-                        import_template(source, workspace / "data")
+                    snapshot = import_template(source, workspace / "data")
+                    sheets = json.loads((snapshot / "meta.json").read_text())["sheets"]
+                    self.assertEqual([(sheet["pivots"], sheet["slicers"]) for sheet in sheets],
+                                     [([], [])] * len(sheets))  # Excel's saved pivot values stay in the grid
 
     def test_slicer_preserves_multiple_sheet_pivot_connections(self):
         from pp.template.importer import import_template
