@@ -1,5 +1,33 @@
 # STATE
 
+## 2026-10-12 (OpenCode runner, bandit hardening)
+
+fix/bandit-hardening at 8394df1 (3 commits after d2a45ca). CI's `bandit -r app ops -ll` was
+exiting 1 on 18 MEDIUM findings; it now exits 0.
+- XML hardening (51e301e): 11 B314 findings closed. This was a real defect, not a lint nit.
+  Entity expansion was live: a 200 kB literal through six levels expanded 64x (12.8 MB)
+  before expat's ceiling refused it. app/workbook.py, ops/find_inputs.py and the ops
+  dashboard fixture now parse through defusedxml, already pinned and vendored since d2a45ca.
+  Two tests in tests/test_p0_regressions.py (XmlEntityRefusal) pin refusal at both entry
+  points; both failed before the change.
+- B104 (76690a1): bandit's rule fires on the literal 0.0.0.0 wherever it appears, including
+  the two comparisons that reject it as a public origin, so one deliberate LAN deployment
+  choice produced six findings. The literal now lives in one ALL_INTERFACES constant with
+  the justification and a scoped nosec. Behaviour unchanged.
+- B608 (8394df1): both findings concatenated fixed literals, so nothing was injectable, but
+  bandit reads a BinOp and cannot see that. Complete statements now; no suppression added.
+- Checked pp/ (39 B314 findings, outside the CI scan) by driving real entity bombs through
+  _validate_archive: already defended. The DOCTYPE screen runs before any parser, returning
+  422 unsafe_xml or 422 invalid_workbook. Not widened, and reported rather than assumed.
+- Tests: 754 Python OK twice (187.967s, 185.953s), bandit exit 0, content guard 0, Ruff whole
+  tree 698 findings now and 698 at baseline, 0 introduced and 0 removed.
+- Not run: web suite (no node_modules, no web file touched), semgrep, pip-audit, gitleaks,
+  browser, Office/Excel. No external model review; the supervisor owns that.
+- Incident: a `git stash pop` with nothing to stash popped another branch's stash@{0}
+  (feat/v2-dashboard). Nothing lost; stash preserved and verified. Baselines now use a
+  scratch worktree.
+- Report: .planning/oc-report.md.
+
 ## 2026-10-12 14:35 IST (Claude, P6.2 look: colors, pictures, shapes)
 
 feat/v2-integration at 6dd69b4 (5 commits after 78bbe4c). IMPORT_VERSION 15 (8765 reimported).

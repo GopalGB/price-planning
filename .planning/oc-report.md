@@ -1,118 +1,123 @@
 # OpenCode runner report
 
-Date: 2026-10-12. Branch `feat/v2-transfer`. Base for this session `cc14e1c`, head `ab90e8b`.
+Date: 2026-10-12. Branch `fix/bandit-hardening`. Base `d2a45ca`, head `8394df1`, three commits.
 
 ## STATUS
 
-IN_PROGRESS. Every LOW finding from the exact `claude-opus-5-5` review is now closed or
-dispositioned with evidence. The resource stop recorded in the previous checkpoint is cleared.
-The exact clean re-review, independent planner closure, a second full Python run and fresh
-browser acceptance remain open.
+DONE for the task I picked up: CI's security job runs `bandit -r app ops -ll`, and it was
+exiting 1 on 18 MEDIUM findings. It now exits 0 with no suppression beyond one documented
+`nosec`. The underlying XML defect was real, not a lint nit: entity expansion was live.
 
-Resource preflight was inside the owner limits, so work proceeded: disk 6705 MB (stop below
-2500), swap 4504.25 MiB (stop above 10411.31), load 3.25. Final gates ran at disk 7411 MB and
-swap 3596.56 MiB. No stop was hit and no test failed for resource reasons.
+Superseded: this report replaces the earlier `feat/v2-transfer` content at this path.
 
 ## CHANGED
 
-Five commits, each a focused unit.
+Three commits, each one finding class, each verified before commit.
 
-`d5bc084` fix(upload): bound chart and drawing parts by relationship role.
-`pp/upload.py` gives chart, chartsheet, chartSheet and drawing the tree limit and screens them
-before the content-type check, so an unsafe declaration reports `unsafe_xml` instead of being
-masked as `invalid_workbook`, and a missing target is translated instead of escaping as a
-`KeyError`. This is inherited work that was uncommitted and unverified.
+`51e301e` fix(security): parse workbook parts with defusedxml in app and ops.
+Closed 11 B314 findings across `app/workbook.py`, `ops/find_inputs.py` and
+`ops/fixtures/dashboard.py`. These were the substantive ones. `defusedxml` was already a
+locked, vendored dependency from `d2a45ca`; this extends its use to the parsers CI scans.
+The fixture module keeps stdlib `ElementTree` for building and serializing, because
+`defusedxml` does not re-export `Element`/`SubElement`; only its parse entry point moved.
 
-`e6d1059` fix(upload): answer an unknown provenance template hash with 422.
-`_new_copy_snapshot` converted the catalogue's 500 into the same `different_template` rejection
-the identity check uses. A corrupt snapshot stays a 500, since that is a server fault.
+`76690a1` fix(security): name the all-interfaces bind constant, closing 6 B104 findings.
+Bandit B104 fires on the literal `0.0.0.0` wherever it appears, including the two
+comparisons that *reject* it as a public origin, so one deliberate deployment choice
+produced six findings. The literal now lives in one named `ALL_INTERFACES` constant
+carrying the justification and a scoped `nosec B104`. Behaviour unchanged.
 
-`13418ef` test(upload): cover undo, redo and undo on one upload lineage.
-Passes on unmodified code, so this is coverage, not a fix.
+`8394df1` fix(security): write lock and table-wipe SQL as complete statements, closing B608.
+Both findings concatenated fixed literals, so nothing was injectable, but bandit reads a
+`BinOp` and cannot see that. `app/db.py` now selects one of two whole statements instead of
+appending a row-lock suffix, and the import wipe lists four complete statements instead of
+building them from table names. No suppression was added here.
 
-`132c825` test(web): pin the operation cell cap and the undo input-key bypass.
+### Red evidence, captured before each fix
 
-`ab90e8b` docs(transfer): clear the resource stop and record the LOW dispositions.
+The XML defect was reproduced, not assumed. A 200 kB literal nested through six entity
+levels expanded 64x (to 12.8 MB) in process memory before expat's amplification ceiling
+refused it. A tighter bomb, sitting under that ceiling, parsed silently.
 
-Two defects in the inherited work were found and fixed before committing, which is why the
-inherited unit was not simply validated and committed:
+New tests in `tests/test_p0_regressions.py` (class `XmlEntityRefusal`) pin refusal at both
+entry points. Both failed before the change:
+- `find_inputs._unlocked_style_ids` accepted an entity-bearing styles part.
+- `import_workbook` parsed the whole workbook and printed its sheet before the assertion.
 
-- The inherited role test proved only an error string. Its payload was one contiguous 9.3 MiB
-  text node, which the 8 MiB token bound caught by accident, masking the missing per-part cap.
-  The cap test now uses ten sibling nodes so the token bound cannot mask it, and asserts the
-  per-part message. At HEAD that part reached `validate_package`, proving the gap.
-- The drawing subtest never injected its relationship, because the fixture has no
-  `xl/worksheets/_rels/sheet1.xml.rels`, so it screened nothing and passed for the wrong reason.
-  The test now creates that part.
-
-A probe also showed that skipping missing relationship targets would have been dead code: a
-dangling target still aborts the remaining scan at the content-type check one line later. That
-branch was removed and the test pins the real 422 instead of pretending otherwise.
-
-LOW disposition, all closed:
-
-| Finding | Resolution |
-| --- | --- |
-| HEAD requests have side effects | `70de160` |
-| Bad confirm input burns the preview | `b1c7339` |
-| Non-numeric content-length gives a 500 | `2395420` |
-| Percent-encoded targets, ZIP directories rejected | `a49e195` |
-| Self-closing defined names merge | `a49e195` |
-| Literal `_x000D_` not escaped | `a49e195` |
-| `.xlsm` export of an `.xlsx` template | `a49e195` |
-| Spoofable compression ratio | `cc14e1c` |
-| Role coverage for chart/drawing | `d5bc084` |
-| Unknown template hash may 500 | `e6d1059` |
-| Shared-string text picks up phonetic runs | already fixed, covered by `test_template_importer.py:370` and `test_transfer_upload.py:666` |
-| Redo of an upload undo untested | `13418ef`, coverage gap not a bug |
-| Client cell limit relaxed too broadly | non-issue, pinned by `132c825`; `authorizedInputs` has one call site in `invertOp` and paste caps independently at `grid-data.mjs:201` |
+After the change both raise `EntitiesForbidden`/`DTDForbidden`.
 
 ## TESTS
 
-Red captured before each fix, at HEAD source with the new tests in place:
+- `bandit -r app ops -ll`: exit 1 before, exit 0 after, 0 MEDIUM and 0 HIGH remaining.
+- Full Python: 754 of 754 twice (187.967 s, 185.953 s). 752 before this branch's tests.
+- `ops/content_guard.py --all`: exit 0.
+- Ruff, whole tree, `app ops tests`: 698 findings now and 698 at the `d2a45ca` baseline,
+  0 introduced and 0 removed, compared per file and rule in a scratch worktree.
+- Focused: `tests.test_core`, `tests.test_demo`, `tests.test_p0_regressions` 36/36;
+  `tests.test_runtime`, `tests.test_launchers_v2` 13/13.
 
-- Oversized 9.3 MiB chart part passed every upload bound and reached `validate_package`.
-- Crafted provenance (nonexistent copy plus unknown hash) returned `500 template_missing`.
-- Three inherited role subtests returned `invalid_workbook` instead of `unsafe_xml`.
+Not run: web suite (no `web/node_modules` in this worktree; no `web/` file was touched),
+browser acceptance, Office/Excel, real workbook, semgrep, pip-audit, gitleaks. No external
+model review was attempted; the runner instruction forbids it and review is the supervisor's.
 
-Green, twice for the focused sets:
+## Scope I checked and deliberately did not change
 
-- focused role tests 4/4 twice (1.138s, 1.086s)
-- unknown template hash 2/2 twice (0.308s, 0.290s)
-- upload module 60/60 (17.644s)
-- related transfer, adversarial, export, security 81/81 (17.682s)
-- web 109/109 (4.650s); operations file 13/13
-- full Python 421/421 (80.634s)
+`pp/` is not in the CI bandit scan and still carries 39 findings, mostly B314. I checked
+whether that is a live hole rather than assuming either way, by driving real entity bombs
+through `_validate_archive` on the synthetic fixture.
 
-Gates:
+It is already defended. `_validate_xml_members` walks every XML member with an expat parser
+whose `StartDoctypeDeclHandler` is `_unsafe_xml`, and that screen runs before any
+`ET.fromstring`/`iterparse` in the upload path. Bombing `[Content_Types].xml` and
+`docProps/custom.xml` returned `422 unsafe_xml`; `xl/workbook.xml` and `xl/styles.xml`
+returned `422 invalid_workbook`. `pp/upload.py` and `pp/export/transfer.py` were already
+converted in `d2a45ca`, and `_read_workbook` is only reachable after `_validate_archive`.
 
-- changed-file Ruff clean
-- full-tree Ruff 141 findings, 0 introduced and 0 removed signatures against
-  `results-private/transfer/ruff-baseline.json`
-- `ops/content_guard.py --all` exit 0
-- `npm run format:check` pass; the Prettier gate covers `src/*.mjs` only, and
-  `web/test/operations.test.mjs` was already non-compliant at baseline, so it was not reformatted
-- full Python run once only; the XML timing assertion is load-sensitive and previously flaked
-  under heavy load, so a second run is still owed
+So the remaining `pp/` findings are not an unmitigated vulnerability. Widening the scan to
+`pp` would add 39 failures without closing a reachable hole, so I left the CI scope alone and
+am flagging it rather than silently changing the gate.
+
+One caveat on my own probe, since it nearly gave a false answer: my first version rewrote
+only parts that already existed in the fixture, so two bombs were never written and the
+screen looked like it had missed them. The numbers above come from the corrected probe that
+adds the part. Recorded because the same trap would hide a real bug.
 
 ## NEXT
 
 Open, in order:
 
-1. Exact clean `claude-opus-5-5` re-review of the corrected source. Skipped this session: the
-   runner instruction forbids calling external AI CLIs, and review is the supervisor's job.
-2. Independent planner closure.
-3. Second full Python run on the corrected source, ideally with low host load.
-4. Fresh single-TaskSpace browser acceptance. The earlier browser receipt is stale because both
-   upload and web source changed after it. No runtime or TaskSpace was started this session.
-5. Three HIGH hypotheses from the review (self-closing cell freezing, upload metadata memory
-   bounds, stale-upload two-way merge) are recorded as addressed by earlier commits but were not
-   re-verified this session.
+1. Supervisor review of the three commits. No external AI CLI was called this session, as
+   instructed.
+2. Decide whether to widen `bandit -r app ops` to include `pp`. On the evidence above it
+   would fail on defended code; the honest options are to leave the scope as is, or to
+   suppress per finding class with a written reason.
+3. Run the security job's other gates, which I did not run: semgrep (p/python, p/javascript,
+   p/owasp-top-ten, p/secrets), `pip-audit --require-hashes -r requirements.lock`, gitleaks
+   over history including the three new commits.
+4. Web suite, if `web/` is ever touched. No web file changed here.
+5. `backend-security.md` still records the pending final repair scan and reviewer assessment.
+   That file was not updated because it describes the `feat/v2-backend` track, and I did not
+   want to rewrite another track's record; the reviewer may want it reconciled.
 
-No push, merge or deployment. Dependency symlinks `.venv` and `web/node_modules` remain
-untracked. No real or private workbook, Docker or dependency change.
+No push, merge, PR or deployment. `.venv` and `web/node_modules` remain untracked. No
+dependency change: `defusedxml==0.7.1` was already pinned and vendored before this work.
+No real or private workbook was read.
 
-One observation for the reviewer, not fixed because it is outside this session's findings: in
-`invertOp`, a malformed op whose `cells` are not covered by `before` throws a bare TypeError
-rather than a validation error. It is reachable only from a hand-built op object, not from
-server or grid state, so it was left alone rather than widening scope.
+## Incident to report
+
+While taking the ruff baseline I ran `git stash -q` in a worktree with no uncommitted
+changes. It had nothing to stash, so the following `git stash pop -q` popped
+`stash@{0}`, which belonged to another branch (`feat/v2-dashboard`, "dashboard wip docs+dist
+before merge"), and conflicted on `.planning/STATE.md` and two `static/dist` files.
+
+No work was lost. The three commits were already committed, and the conflicting files are
+build artifacts and docs. `git reset --hard HEAD` restored this worktree and the stash
+remains at `stash@{0}` with all seven of its files. I verified the stash content afterward.
+
+Reported rather than hidden: the stash belongs to someone else's branch, so whoever owns it
+should confirm they still want it. The lesson is to use a scratch worktree for baselines,
+which is what I switched to and what produced the verified 0-introduced number above.
+
+Most important thing you may be missing: CI scans `app` and `ops`, but the v2 application
+lives in `pp/`. The gate that went red today was the smallest part of the codebase, so a
+green `bandit` line is not evidence about the code people actually run.
