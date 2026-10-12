@@ -39,6 +39,11 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
    (macro buttons of the template; `from`/`to` are zero-based cells with pixel offsets, `size` for one-cell anchors;
    snapshots imported before buttons existed have `buttons: []` until the template is reimported)
   `refreshable: bool` is true when the template has data connections (Power Query) that "Refresh data" can run.
+  Slicers: each sheet's `slicers` entry is the merged in-grid slicer shape. Excel-only slicers (P6.4: their pivot
+  is fed by a Power Query connection) carry `engine: "excel"`, `cache` (the slicer cache name), `caption`, `anchor`,
+  `column_count` and `items: [{caption, cache_index, selected, no_data}]`; `selected` is the copy's stored
+  selection (the template's own when none was stored). Sheets with Excel-only pivots list them in
+  `excel_pivots: [{name, location, page_count}]` (their output cells are Excel's, never input).
    styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, font_name, border: {t,r,b,l}}]}`
 - `GET /api/copies/{id}/sheets/{sheet}/rows?start={r}&count={n<=500}` ->
   `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, input?, input_value?, ver?, by?, at?}}}}`
@@ -74,6 +79,16 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   Microsoft Excel.") when there is no Excel engine or the template is `cached`; 502 `macro_failed` with
   "The macro did not finish in Excel." or, past the 600 s limit, "The macro ran too long and was stopped."
   (nothing is committed on 502). If the server dies after the commit, the normal calculation replay publishes it.
+- `POST /api/copies/{id}/slicers {op_id, cache, selected: [caption]}` (owner/editor; viewers 403, same CSRF and
+  pipeline rules as macros). Selects exactly the named items of one Excel slicer (`cache` from the workbook's
+  `slicers`), recalculates the pivot in Excel and commits one revision with history action `slicer` (pivot output
+  is published, not logged as cell history unless a cell changed). The selection is stored per copy and every
+  later calculation re-applies it on a fresh Excel. Forks copy it. Same-selection requests change nothing.
+  Response `200 {messages, changed, input_revision, selected}`; `op_id` replays as for macros.
+  Errors: 404 `unknown_slicer`; 409 `slicers_unavailable` ("Slicers change on the office server, where the app uses
+  Microsoft Excel."); 422 `invalid` (not a list of texts), `empty_selection` (Excel needs one item), `unknown_item`;
+  502 `macro_failed` with "The slicer change ran too long and was stopped." or "The slicer change did not finish in
+  Excel." (nothing committed).
 - `POST /api/copies/{id}/refresh {op_id}` (owner/editor; viewers 403, same CSRF and pipeline rules as macros). Runs
   Excel's own `RefreshAll` on the copy's private Excel, waits for the background queries, and records what it wrote
   exactly like a macro: one revision with history action `refresh`. Response, replay and `op_id` rules are the
