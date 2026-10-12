@@ -35,6 +35,9 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
 - `GET /api/copies/{id}/workbook` -> `{template: {hash, name}, input_revision, calculated_revision,
    sheets: [{index, name, hidden, rows, cols, freeze: {rows, cols}, col_widths: {c: px}, row_heights: {r: px},
    hidden_rows: [r], hidden_cols: [c], merges: [[r1,c1,r2,c2]]}],
+   buttons: [{id, sheet, from: {row, col, dx, dy}, to: {row, col, dx, dy} | size: {w, h}, label, macro}]}
+   (macro buttons of the template; `from`/`to` are zero-based cells with pixel offsets, `size` for one-cell anchors;
+   snapshots imported before buttons existed have `buttons: []` until the template is reimported)
    styles: [{id, nf, bold, italic, color, fill, align, valign, wrap, font_size, font_name, border: {t,r,b,l}}]}`
 - `GET /api/copies/{id}/sheets/{sheet}/rows?start={r}&count={n<=500}` ->
   `{calculated_revision, input_revision, start, rows: {"r": {"c": {v, s, k, input?, input_value?, ver?, by?, at?}}}}`
@@ -59,6 +62,8 @@ Display formatting is client-side from `nf` (Excel number-format code) in the st
   text are rejected 422 ("Formulas can't be typed into input cells"). Identical retry of an op_id returns the
   stored ack; same op_id with different payload -> 409 `{error: "op_id_reused"}`.
 - Undo = client sends a new op with `action: "undo"` restoring `before` values with current versions.
+- `POST /api/copies/{id}/macros {button, op_id}` (owner/editor; viewers 403) -> 404 `{error: "unknown_button"}` for an
+  id not in `buttons`; 409 `{error: "macros_unavailable", message}` until the office-server run lands (macro track M3).
 
 ## Export
 - `GET /api/copies/{id}/export.xlsm` -> the original template with this copy's input values written in; Excel

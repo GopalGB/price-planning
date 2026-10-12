@@ -24,6 +24,8 @@ class TemplateSnapshot:
             )
         self.styles = _read_json(self.path / "styles.json")
         self.input_mask = frozenset(_read_json(self.path / "input_mask.json"))
+        buttons = self.path / "buttons.json"
+        self.buttons = _read_json(buttons) if buttons.exists() else []
         self.hash = self.meta["hash"]
         self.results = self.meta.get("results", "engine")
         self.name = self.meta["name"]
@@ -184,7 +186,8 @@ class WorkbookService:
                    "merges": item["merges"]} for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
-                "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles}
+                "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
+                "buttons": snapshot.buttons}
 
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:
@@ -268,6 +271,20 @@ class WorkbookService:
             copy = self._copy(connection, query.copy_id, query.user_id)
             rows = _history_rows(connection, copy, query)
         return {"entries": [_history_entry(item) for item in rows]}
+
+    def macro_request(self, copy_id: str, user_id: str, button_id, op_id) -> None:
+        if not isinstance(op_id, str) or not op_id:
+            raise AppError(422, "invalid", "Operation identifier is required")
+        with self.database.connect() as connection:
+            copy = self._copy(connection, copy_id, user_id)
+            if effective_role(connection, copy_id, user_id) not in {"owner", "editor"}:
+                raise AppError(403, "forbidden", "Editor access is required")
+            snapshot = self.templates.get(connection, copy["template_id"])
+        if button_id not in {button["id"] for button in snapshot.buttons}:
+            raise AppError(404, "unknown_button", "Macro button not found")
+        # Track M3 replaces this with the office-server run.
+        raise AppError(409, "macros_unavailable",
+                       "Macros run on the office server, where the app uses Microsoft Excel.")
 
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:

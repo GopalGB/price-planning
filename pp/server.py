@@ -123,6 +123,7 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/sheets/{sheet:int}/cell", _cell, methods=["GET"]),
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
+        Route("/api/copies/{copy_id}/macros", _macros, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
         Route("/api/copies/{copy_id}/downloads", _prepare_download, methods=["POST"]),
@@ -303,6 +304,13 @@ async def _ops(request: Request):
         if created:
             await _calculate_and_publish(services, copy_id, ack["input_revision"])
     return JSONResponse(ack)
+
+
+async def _macros(request: Request):
+    services, user, _ = _write_auth(request)
+    payload = await _body(request)
+    services.workbooks.macro_request(request.path_params["copy_id"], user["id"],
+                                     payload.get("button"), payload.get("op_id"))
 
 
 async def _calculate_and_publish(services, copy_id, revision):
