@@ -492,6 +492,24 @@ class CachedStartupTests(unittest.TestCase):
             self.assertEqual(engine.get(0, 9, 25), 12)
             self.assertIn((0, 9, 25, 12), changes)
 
+    def test_trace_budget_beyond_native_u32_is_capped(self):
+        """Whole-column references on a large template overflow the native budget type."""
+        from pp.engine.formualizer import FormualizerAdapter, TraceBudget
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "huge-budget.xlsx"
+            workbook = Workbook()
+            workbook.active["A1"] = 1
+            workbook.active["B1"] = "=A1*2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet1.xml": {"B1": ("2", None)}})
+            engine = FormualizerAdapter.load(source)
+            engine.trace_budget = TraceBudget(2**40, 2**40, 2**40)
+
+            changes = engine.apply([(0, 0, 0, 5)])
+
+            self.assertIn((0, 0, 1, 10), changes)
+
     def test_cached_dynamic_formula_recalculates_its_downstream_closure(self):
         from pp.engine.formualizer import FormualizerAdapter
 

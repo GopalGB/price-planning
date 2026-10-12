@@ -72,6 +72,9 @@ class FormulaOutputs(Set):
         )
 
 
+TRACE_U32_MAX = 2**32 - 1
+
+
 @dataclass(frozen=True)
 class TraceBudget:
     nodes: int
@@ -648,8 +651,9 @@ class FormualizerEngine:
         self.stale = frozenset((self.stale | pending) - self.evaluated)
 
     def _dependent_targets(self, roots, include_dynamic=True):
-        node_budget = max(self.trace_budget.nodes + len(roots), 1)
-        link_budget = max(self.trace_budget.links, node_budget)
+        # The native trace takes u32 budgets; a capped trace that truncates still fails closed below.
+        node_budget = min(max(self.trace_budget.nodes + len(roots), 1), TRACE_U32_MAX)
+        link_budget = min(max(self.trace_budget.links, node_budget), TRACE_U32_MAX)
         work_budget = node_budget + link_budget + 1
         native_roots = [(self.names[sheet], row + 1, col + 1) for sheet, row, col in roots]
         self.workbook.get_eval_plan(native_roots)
@@ -657,7 +661,7 @@ class FormualizerEngine:
             [_qualified(self.names[sheet], row, col) for sheet, row, col in roots],
             direction=formualizer.TraceDirection.Dependents, max_depth=node_budget,
             max_nodes=node_budget, max_links=link_budget, max_work=work_budget,
-            range_member_budget=max(self.trace_budget.range_members, 1),
+            range_member_budget=min(max(self.trace_budget.range_members, 1), TRACE_U32_MAX),
             include_values=False)
         if trace.truncation.incomplete:
             raise EngineError("dependency trace truncated")
