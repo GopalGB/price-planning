@@ -123,7 +123,15 @@ async function openCopy(copy) {
   }
   const { PlanningGrid } = await import("./grid.mjs");
   if (visit !== navigation) return;
-  grid = new PlanningGrid({ api, copy, meta, user, toast, inputHighlight });
+  grid = new PlanningGrid({
+    api,
+    copy,
+    meta,
+    user,
+    toast,
+    dialog: messageModal,
+    inputHighlight,
+  });
   await grid.start();
   if (visit !== navigation) return;
   const highlight = $("input-highlight");
@@ -194,6 +202,9 @@ function modal(title, body, submit, label = "Save") {
     }
   };
   $("modal").showModal();
+}
+function messageModal(title, body) {
+  modal(title, body, () => {}, "OK");
 }
 function uploadModal(copy = null) {
   const currentCategory =
