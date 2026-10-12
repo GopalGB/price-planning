@@ -5,11 +5,40 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 import multiprocessing
+import os
 from pathlib import Path
+import shutil
+import tempfile
 import threading
 
 from .formualizer import EngineError, MacroTimeout
 from .worker import worker_loop
+
+
+def spool_root() -> Path:
+    return Path(tempfile.gettempdir()) / "pp-engine-spool"
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _sweep_spools(root: Path) -> None:
+    """Remove spool folders whose server process is gone (killed before its pool closed)."""
+    # shortcut: Windows sweeps nothing, since os.kill(pid, 0) sends Ctrl+C there; add a process lookup if
+    # killed servers start filling the office disk
+    if os.name == "nt" or not root.is_dir():
+        return
+    for entry in root.iterdir():
+        owner = entry.name.split("-", 1)[0]
+        if owner.isdigit() and int(owner) != os.getpid() and not _alive(int(owner)):
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 class _WorkerUnavailable(EngineError):
@@ -116,10 +145,11 @@ class SlicerRequest:
 
 
 class _CopyWorker:
-    def __init__(self, context, copy_id: str, engine: str = "formualizer"):
+    def __init__(self, context, copy_id: str, engine: str = "formualizer", spool: Path | None = None):
         parent, child = context.Pipe()
         self.connection = parent
-        self.process = context.Process(target=worker_loop, args=(child, copy_id, engine), daemon=True)
+        self.process = context.Process(target=worker_loop, args=(child, copy_id, engine, spool and str(spool)),
+                                       daemon=True)
         self.process.start()
         child.close()
         self.busy = False
@@ -182,6 +212,12 @@ class EnginePool:
         self.memory_budget = MemoryBudget(
             limit_bytes=None if memory_budget_mb is None else memory_budget_mb * 1024 * 1024)
         self.protection = Protection()
+        # formualizer spools big loads into TMPDIR and leaves them when a worker is killed;
+        # workers spool here instead and close() removes the folder
+        root = spool_root()
+        _sweep_spools(root)
+        root.mkdir(parents=True, exist_ok=True)
+        self.spool = Path(tempfile.mkdtemp(prefix=f"{os.getpid()}-", dir=root))
 
     @property
     def kind(self) -> str:
@@ -252,7 +288,7 @@ class EnginePool:
                 self._condition.wait()
 
     def _create(self, copy_id: str) -> _CopyWorker:
-        worker = _CopyWorker(self._context, copy_id, self._engine)
+        worker = _CopyWorker(self._context, copy_id, self._engine, self.spool)
         worker.busy = True
         self._workers[copy_id] = worker
         return worker
@@ -313,3 +349,4 @@ class EnginePool:
             self._condition.notify_all()
         for worker in workers:
             worker.close()
+        shutil.rmtree(self.spool, ignore_errors=True)

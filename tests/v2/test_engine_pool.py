@@ -11,12 +11,55 @@ ROOT = Path(__file__).resolve().parents[2]
 TMP = ROOT / "results-private" / "tmp"
 
 
-def die_on_request(connection, copy_id):
+def die_on_request(connection, copy_id, *_):
     connection.recv()
     os._exit(17)
 
 
 class EnginePoolTests(unittest.TestCase):
+    def test_engine_spool_files_live_in_a_folder_the_pool_removes(self):
+        """formualizer spools big loads into TMPDIR; files a killed worker leaves must not pile up there."""
+        import subprocess
+        import sys
+        from pp.engine import pool as pool_module
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as root:
+            dead = subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"],
+                                  capture_output=True, text=True, check=True).stdout.strip()
+            stale = Path(root) / f"{dead}-left"
+            stale.mkdir()
+            (stale / ".tmpLEFT").write_bytes(b"FZFR")
+            live = Path(root) / f"{os.getpid()}-other"
+            live.mkdir()
+            with mock.patch.object(pool_module, "spool_root", return_value=Path(root)):
+                pool = pool_module.EnginePool(max_workers=1)
+            spool = pool.spool
+            (spool / ".tmpUSED").write_bytes(b"FZFR")
+            pool.close()
+
+            self.assertEqual(spool.parent, Path(root))
+            self.assertFalse(spool.exists())
+            self.assertTrue(live.exists())  # another pool of a running server keeps its folder
+            if os.name != "nt":
+                self.assertFalse(stale.exists())
+
+    def test_worker_points_engine_temp_files_at_the_spool(self):
+        from pp.engine.worker import worker_loop
+
+        class Closed:
+            def recv(self):
+                return None
+
+            def close(self):
+                pass
+
+        before = tempfile.gettempdir()
+        with mock.patch.dict(os.environ), mock.patch.object(tempfile, "tempdir", before):
+            worker_loop(Closed(), "copy-a", "formualizer", "spool-here")
+            self.assertEqual({os.environ[name] for name in ("TMPDIR", "TMP", "TEMP")}, {"spool-here"})
+            self.assertEqual(tempfile.gettempdir(), before)  # Python temp files and the engine cache stay put
+
     def test_calculation_runs_in_spawned_child_for_requested_revision(self):
         """Running calculations in the ASGI process must make this fail."""
         from pp.engine.pool import CalculationRequest, EnginePool

@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+import tempfile
 from tempfile import TemporaryDirectory
 
 from .excel import REFRESH_ALL
@@ -226,8 +227,11 @@ def _serve(copy: WarmCopy, request: tuple) -> dict:
     return copy.apply(revision, template_path, WorkerBatch(changes, base_revision, rest[0] if rest else None))
 
 
-def worker_loop(connection, copy_id: str, engine: str = "formualizer") -> None:
+def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: str | None = None) -> None:
     """Serve one copy serially inside its dedicated spawned process."""
+    if spool:
+        tempfile.tempdir = tempfile.gettempdir()  # Python temp files and the engine cache stay where they are
+        os.environ.update(TMPDIR=spool, TMP=spool, TEMP=spool)  # only the engine's own files move
     copy = WarmCopy(copy_id, engine)
     try:
         while True:
