@@ -1,3 +1,24 @@
+# STATE
+
+## 2026-10-12 11:45 IST (Claude)
+
+Branch feat/v2-integration at c530436 (unpushed; Sir runs `git push`, answers y).
+- P6.3 macros merged (M1 buttons, M2 engine, M3 flow): the template's 5 buttons are read from its
+  drawings and drawn on their sheets; pressing one runs the real VBA in the copy's private Excel,
+  presses OK on its message boxes, saves what it changed as one `macro` revision (values, plain
+  cells and new formulas) and publishes results. Mac and values-only mode answer 409.
+- Speed fix 1ade04f: rows on big protected sheets took 3-9 s per window (a 16,384-column scan;
+  BU RECAP sent 1.9M empty editable cells, the browser grew to 4 GB). Now 5-130 ms warm, about
+  1.3 s cold on BU RECAP; sheet switch 1.7-3.4 s in the browser, heap under 100 MB. Editable empty
+  cells stop at the sheet's used width (documented shortcut).
+- c530436: zero-size leftover VML button skipped (5 buttons, not 6). IMPORT_VERSION 9: servers
+  reimport the template once at start.
+- Tests: 629 Python OK, 118 web OK, ruff clean (pp, tests/v2), content guard 0.
+Office server next (Sir): `"engine": "excel"` in settings.json, then
+`.venv\Scripts\python ops\excel_smoke.py` and `... excel_smoke.py --macros`; both must print PASS.
+Next here: P6.5 Power Query refresh on the Excel engine (RefreshAll + the macro diff path); the old
+feat/v2-refresh worktree (pqtools, based on bcba313) is superseded and left untouched.
+
 ## 2026-10-12 (Claude, M3 macros flow)
 
 Branch feat/v2-macros-flow: template buttons run end to end on the Excel engine (P6.3 M3). Press ->
@@ -6,8 +27,6 @@ pipeline lock -> Excel run on a worker -> one `macro` revision (inputs, plain va
 Rows and export show non-input overrides and write formulas as formulas. `ops/excel_smoke.py --macros`
 is the office check (prints counts only). Not run here: the office `--macros` smoke (no Excel on the Mac).
 Next: Sir runs `excel_smoke.py --macros` on the office server; then the browser check of each button.
-
-# STATE
 
 ## 2026-10-12 10:00 IST (Claude)
 
