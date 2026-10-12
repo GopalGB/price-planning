@@ -553,7 +553,7 @@ def _write_input_mask(path: Path, database: sqlite3.Connection, protected: set[i
         stream.write("]")
 
 
-def _import_archive(source: CapturedSource, staging: Path) -> None:
+def _import_archive(source: CapturedSource, staging: Path, results: str = "engine") -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
     database.execute("CREATE TABLE formulas (sheet INTEGER, id INTEGER, row INTEGER, col INTEGER, formula TEXT, PRIMARY KEY(sheet,id))")
@@ -575,12 +575,14 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
             database.commit()
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
-        _synchronize_formula_results(source.path, FormulaSync(staging, database, metadata))
+        if results == "engine":
+            _synchronize_formula_results(source.path, FormulaSync(staging, database, metadata))
         _apply_input_mask(staging, database, protected)
         _write_input_mask(staging / "input_mask.json", database, protected)
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
-                    "import_version": IMPORT_VERSION, "sheets": metadata, "defined_names": names})
+                    "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,
+                    "defined_names": names})
         _write_json(staging / "progress.json", {"complete": True,
                     "sheets_completed": len(metadata), "sheets_total": len(metadata)})
     finally:
@@ -588,20 +590,21 @@ def _import_archive(source: CapturedSource, staging: Path) -> None:
         (staging / "import.sqlite").unlink(missing_ok=True)
 
 
-def _snapshot_current(destination: Path) -> bool:
+def _snapshot_current(destination: Path, results: str = "engine") -> bool:
     try:
         meta = json.loads((destination / "meta.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
     return (meta.get("hash") == destination.name
             and meta.get("import_version") == IMPORT_VERSION
+            and meta.get("results", "engine") == results
             and (destination / "source.xlsm").is_file())
 
 
-def _build_snapshot(source: CapturedSource, destination: Path) -> Path:
+def _build_snapshot(source: CapturedSource, destination: Path, results: str = "engine") -> Path:
     staging = staging_directory(destination.parent)
     try:
-        _import_archive(source, staging)
+        _import_archive(source, staging, results)
         source.path.replace(staging / "source.xlsm")
         if destination.exists():
             return replace_snapshot(staging, destination)
@@ -616,13 +619,13 @@ def _build_snapshot(source: CapturedSource, destination: Path) -> Path:
         raise
 
 
-def import_template(source: str | Path, data_dir: str | Path) -> Path:
+def import_template(source: str | Path, data_dir: str | Path, results: str = "engine") -> Path:
     source, data_dir = Path(source), Path(data_dir)
     captured = _capture_source(source, data_dir / "templates")
     destination = data_dir / "templates" / captured.digest
     try:
-        if _snapshot_current(destination):
+        if _snapshot_current(destination, results):
             return destination
-        return _build_snapshot(captured, destination)
+        return _build_snapshot(captured, destination, results)
     finally:
         captured.path.unlink(missing_ok=True)

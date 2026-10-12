@@ -43,6 +43,8 @@ const COPY_SNAPSHOT_ATTEMPTS = 3;
 export class PlanningGrid {
   constructor({ api, copy, meta, user, toast, inputHighlight = true }) {
     Object.assign(this, { api, copy, meta, user, toast, inputHighlight });
+    // Values-only templates cannot recalculate, so every copy opens read only.
+    if (meta.calculation === "cached") this.copy = { ...copy, my_role: "viewer" };
     this.styleMap = new Map(
       (meta.styles ?? []).map((style) => [String(style.id), style]),
     );

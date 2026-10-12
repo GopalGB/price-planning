@@ -20,7 +20,7 @@ class WorkbookAPIContractTests(unittest.TestCase):
         workbook = self.client.get(f"/api/copies/{copy_id}/workbook")
         self.assertEqual(workbook.status_code, 200)
         body = workbook.json()
-        self.assertEqual(set(body), {"template", "input_revision", "calculated_revision", "sheets", "styles"})
+        self.assertEqual(set(body), {"template", "input_revision", "calculated_revision", "calculation", "sheets", "styles"})
         self.assertEqual([sheet["name"] for sheet in body["sheets"]], ["Inputs", "Lookup", "Calc"])
         self.assertEqual(set(body["sheets"][0]), {"index", "name", "hidden", "rows", "cols", "freeze",
                                                    "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges"})

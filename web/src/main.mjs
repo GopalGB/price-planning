@@ -118,6 +118,8 @@ async function openCopy(copy) {
   grid = new PlanningGrid({ api, copy, meta, user, toast, inputHighlight });
   await grid.start();
   if (visit !== navigation) return;
+  if (meta.calculation === "cached")
+    $("edit-status").textContent = "Read only: Excel's saved values, editing paused";
   const highlight = $("input-highlight");
   highlight.onclick = () => {
     const enabled = highlight.getAttribute("aria-pressed") !== "true";

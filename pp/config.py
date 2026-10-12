@@ -26,6 +26,7 @@ class Config:
     replay_window: int
     engine_memory_budget_mb: int
     brand: dict | None = None
+    template_results: str = "engine"
 
 
 BRAND_ASSETS = ("logo", "favicon", "touch_icon")
@@ -293,4 +294,12 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
                   origins, cookie_secure, replay_window, engine_memory,
-                  _brand(root, settings.get("brand")))
+                  _brand(root, settings.get("brand")), _template_results(settings))
+
+
+def _template_results(settings) -> str:
+    # "cached" shows Excel's saved results and pauses editing until the engine can hold the template.
+    value = settings.get("template_results", "engine")
+    if value not in ("engine", "cached"):
+        raise ValueError("template_results must be 'engine' or 'cached'")
+    return value

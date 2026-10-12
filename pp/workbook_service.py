@@ -25,6 +25,7 @@ class TemplateSnapshot:
         self.styles = _read_json(self.path / "styles.json")
         self.input_mask = frozenset(_read_json(self.path / "input_mask.json"))
         self.hash = self.meta["hash"]
+        self.results = self.meta.get("results", "engine")
         self.name = self.meta["name"]
         self.sheets = self.meta["sheets"]
         self.source_path = self.path / "source.xlsm"
@@ -157,7 +158,7 @@ class WorkbookService:
                    "merges": item["merges"]} for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": copy["calculated_revision"],
-                "sheets": sheets, "styles": snapshot.styles}
+                "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles}
 
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:

@@ -38,7 +38,7 @@ def create_runtime(root: str | Path) -> Runtime:
     config = load_config(root)
     if config.template_path is None or not config.template_path.is_file():
         raise ValueError("template_path must name an existing .xlsm file")
-    snapshot_path = import_template(config.template_path, config.data_dir)
+    snapshot_path = import_template(config.template_path, config.data_dir, config.template_results)
     snapshot = TemplateSnapshot(snapshot_path)
     database = Database(config.database_path)
     database.initialize()
