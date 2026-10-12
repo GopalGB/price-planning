@@ -6,7 +6,6 @@ import hashlib
 import json
 import logging
 import math
-import posixpath
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -22,6 +21,8 @@ from openpyxl.utils.cell import get_column_letter
 from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .colors import Palette, indexed_palette, theme_colors
+from .drawings import (DRAWING_A, DRAWING_REL, DRAWING_XDR, VML_REL, _anchor_point, _emu_pixels,
+                       drawing_objects, sheet_drawing_parts)
 from .dashboard import DashboardUnsupported, read_dashboard_metadata
 from .store import publish, replace_snapshot, staging_directory
 
@@ -564,30 +565,13 @@ def _write_input_mask(path: Path, database: sqlite3.Connection, protected: set[i
         stream.write("]")
 
 
-DRAWING_XDR = "{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}"
-DRAWING_A = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 VML = "{urn:schemas-microsoft-com:vml}"
 EXCEL_VML = "{urn:schemas-microsoft-com:office:excel}"
-PACKAGE_RELS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
-DRAWING_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
-VML_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing"
-EMU_PER_PIXEL = 9525
 
 
 def _macro_name(text: str | None) -> str:
     # "[0]!name" and "'Book.xlsm'!name" both name the same macro; "Sheet13.name" keeps its module.
     return (text or "").strip().rsplit("!", 1)[-1].strip()
-
-
-def _emu_pixels(value: str | None) -> float:
-    return round(int(value or 0) / EMU_PER_PIXEL, 2)
-
-
-def _anchor_point(node: ET.Element) -> dict:
-    return {"row": int(node.findtext(f"{DRAWING_XDR}row", "0")),
-            "col": int(node.findtext(f"{DRAWING_XDR}col", "0")),
-            "dx": _emu_pixels(node.findtext(f"{DRAWING_XDR}colOff")),
-            "dy": _emu_pixels(node.findtext(f"{DRAWING_XDR}rowOff"))}
 
 
 def _drawing_buttons(root: ET.Element) -> list[dict]:
@@ -637,29 +621,25 @@ def _vml_buttons(root: ET.Element) -> list[dict]:
     return buttons
 
 
-def _sheet_button_parts(archive: zipfile.ZipFile, sheet_part: str) -> list[tuple[str, str]]:
-    directory, name = posixpath.split(sheet_part)
-    rels_part = posixpath.join(directory, "_rels", f"{name}.rels")
-    if rels_part not in archive.namelist():
-        return []
-    parts = []
-    for item in ET.fromstring(archive.read(rels_part)).findall(f"{PACKAGE_RELS}Relationship"):
-        target = item.get("Target", "")
-        resolved = target.lstrip("/") if target.startswith("/") else posixpath.normpath(
-            posixpath.join(directory, target))
-        if item.get("Type") in {DRAWING_REL, VML_REL} and resolved in archive.namelist():
-            parts.append((item.get("Type"), resolved))
-    return parts
-
-
 def _button_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict]:
     found = []
     for spec in sheet_specs:
-        for rel_type, part in _sheet_button_parts(archive, spec["part"]):
+        for rel_type, part in sheet_drawing_parts(archive, spec["part"]):
             root = ET.fromstring(archive.read(part))
             extracted = _vml_buttons(root) if rel_type == VML_REL else _drawing_buttons(root)
             found.extend({"sheet": spec["index"], **button} for button in extracted)
     return [{"id": f"b{number}", **button} for number, button in enumerate(found)]
+
+
+def _drawing_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict]:
+    palette = Palette(theme_colors(archive))
+    found = []
+    for spec in sheet_specs:
+        for rel_type, part in sheet_drawing_parts(archive, spec["part"]):
+            if rel_type == DRAWING_REL:
+                root = ET.fromstring(archive.read(part))
+                found.extend({"sheet": spec["index"], **item} for item in drawing_objects(root, part, archive, palette))
+    return [{"id": f"d{number}", **item} for number, item in enumerate(found)]
 
 
 def _has_data_connections(archive: zipfile.ZipFile) -> bool:
@@ -705,6 +685,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
                 LOGGER.info("Template import progress: sheet %d/%d", len(metadata), len(sheet_specs))
             database.commit()
             buttons = _button_data(archive, sheet_specs)
+            drawings = _drawing_data(archive, sheet_specs)
             refreshable = _has_data_connections(archive)
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])
@@ -713,6 +694,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
         _apply_input_mask(staging, database, protected)
         _write_input_mask(staging / "input_mask.json", database, protected)
         _write_json(staging / "buttons.json", buttons)
+        _write_json(staging / "drawings.json", drawings)
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
                     "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,

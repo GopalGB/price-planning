@@ -37,7 +37,7 @@ export function macroRect(sheet, button) {
 }
 
 // Scroll state from Univer: the sheet pixel position of the viewport's top-left corner.
-function scrollOrigin(sheet, scroll) {
+export function scrollOrigin(sheet, scroll) {
   if (!scroll) return { x: 0, y: 0 };
   const { x, y } = axes(sheet);
   return {

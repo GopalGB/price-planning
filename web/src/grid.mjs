@@ -24,6 +24,7 @@ import {
   runMacroButton,
   runRefresh,
 } from "./macros.mjs";
+import { drawingsView, linkTarget } from "./drawings.mjs";
 import {
   makeSnapshot,
   displayWidth,
@@ -168,6 +169,15 @@ export class PlanningGrid {
     $("macro-layer").onclick = (event) => {
       const id = event.target.closest?.("button[data-macro]")?.dataset.macro;
       if (id !== undefined) this.pressMacro(id);
+      const link = linkTarget(this.meta, event.target.closest?.("[data-link-sheet]"));
+      if (link) this.attempt(() => this.followLink(link));
+    };
+    $("macro-layer").onkeydown = (event) => {
+      const link = linkTarget(this.meta, event.target.closest?.("[data-link-sheet]"));
+      if (link && (event.key === "Enter" || event.key === " ")) {
+        event.preventDefault();
+        this.attempt(() => this.followLink(link));
+      }
     };
     this.on("BeforeSheetEditStart", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
@@ -1435,18 +1445,28 @@ export class PlanningGrid {
   renderMacros() {
     const layer = $("macro-layer");
     if (!layer || this.closed) return;
-    const buttons = (this.meta.buttons ?? []).some(
-      (button) => button.sheet === this.sheet,
-    );
-    layer.innerHTML = buttons
-      ? macroButtonsView(this.meta, this.sheet, {
-          scroll: this.u
-            .getActiveWorkbook()
-            ?.getScrollStateBySheetId(`s${this.sheet}`),
-          copyRole: this.copy.my_role,
-          busy: this.macroBusy,
-        })
-      : "";
+    const onSheet = (item) => item.sheet === this.sheet;
+    if (
+      !(this.meta.buttons ?? []).some(onSheet) &&
+      !(this.meta.drawings ?? []).some(onSheet)
+    ) {
+      layer.innerHTML = "";
+      return;
+    }
+    const scroll = this.u
+      .getActiveWorkbook()
+      ?.getScrollStateBySheetId(`s${this.sheet}`);
+    layer.innerHTML =
+      drawingsView(this.meta, this.sheet, { scroll }) +
+      macroButtonsView(this.meta, this.sheet, {
+        scroll,
+        copyRole: this.copy.my_role,
+        busy: this.macroBusy,
+      });
+  }
+  async followLink({ sheet, cell }) {
+    if (sheet !== this.sheet) await this.switchSheet(sheet);
+    await this.goTo(cell);
   }
   async pressMacro(id) {
     if (this.macroBusy.has(id) || this.copy.my_role === "viewer") return;

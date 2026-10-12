@@ -30,6 +30,8 @@ class TemplateSnapshot:
         self.input_mask = frozenset(_read_json(self.path / "input_mask.json"))
         buttons = self.path / "buttons.json"
         self.buttons = _read_json(buttons) if buttons.exists() else []
+        drawings = self.path / "drawings.json"
+        self.drawings = _read_json(drawings) if drawings.exists() else []
         self.refreshable = bool(self.meta.get("refreshable", False))
         self.hash = self.meta["hash"]
         self.results = self.meta.get("results", "engine")
@@ -254,7 +256,7 @@ class WorkbookService:
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
-                "buttons": snapshot.buttons, "refreshable": snapshot.refreshable}
+                "buttons": snapshot.buttons, "drawings": snapshot.drawings, "refreshable": snapshot.refreshable}
 
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:

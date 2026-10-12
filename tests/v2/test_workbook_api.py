@@ -21,7 +21,7 @@ class WorkbookAPIContractTests(unittest.TestCase):
         self.assertEqual(workbook.status_code, 200)
         body = workbook.json()
         self.assertEqual(set(body), {"template", "input_revision", "calculated_revision", "calculation", "sheets", "styles",
-                                     "buttons", "refreshable"})
+                                     "buttons", "drawings", "refreshable"})
         self.assertEqual([sheet["name"] for sheet in body["sheets"]], ["Inputs", "Lookup", "Calc"])
         self.assertEqual(set(body["sheets"][0]), {"index", "name", "hidden", "rows", "cols", "freeze",
                                                    "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges",
