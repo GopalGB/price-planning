@@ -17,6 +17,8 @@ import os
 import pickle
 import shutil
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +32,9 @@ from .native_load import prepared_template
 BLOCK_ROWS = 256
 # COM reports a cell error as the HRESULT 0x800A0000 + Excel's CVErr number.
 COM_ERROR_BASE = -2146828288
+XL_CELL_TYPE_FORMULAS = -4123
+NO_CELLS = -2146827284  # SpecialCells found no cells (0x800A03EC)
+DIALOG_CLASS = "#32770"
 EXCEL_ERRORS = {2000: "#NULL!", 2007: "#DIV/0!", 2015: "#VALUE!", 2023: "#REF!", 2029: "#NAME?",
                 2036: "#NUM!", 2042: "#N/A", 2043: "#GETTING_DATA", 2045: "#SPILL!",
                 2047: "#BLOCKED!", 2048: "#UNKNOWN!", 2049: "#FIELD!", 2050: "#CALC!"}
@@ -60,12 +65,27 @@ def to_com(value):
     return value
 
 
+def _formula_text(value):
+    """The formula of a ``{"formula": "=..."}`` value, or None for a plain value."""
+    if isinstance(value, dict) and set(value) == {"formula"}:
+        text = value["formula"]
+        if not isinstance(text, str) or not text.startswith("="):
+            raise EngineError("formulas must be text starting with =")
+        return text
+    return None
+
+
 class ExcelHost:
     """What the engine needs from Excel. Coordinates are zero-based."""
 
     def write(self, sheet: int, cells: list[tuple[int, int, object]]) -> None: ...
+    def write_formulas(self, sheet: int, cells: list[tuple[int, int, str]]) -> None: ...
     def calculate(self) -> None: ...
     def read(self, sheet: int, top: int, left: int, bottom: int, right: int) -> list[list]: ...
+    def read_formulas(self, sheet: int, top: int, left: int, bottom: int, right: int) -> list[list]: ...
+    def formula_areas(self, sheet: int) -> list[tuple[int, int, int, int]]: ...
+    def used_range(self, sheet: int) -> tuple[int, int, int, int] | None: ...
+    def run_macro(self, name: str, timeout: float) -> list[str]: ...
     def memory_bytes(self) -> int: ...
     def close(self) -> None: ...
 
@@ -87,7 +107,7 @@ class ComExcelHost(ExcelHost):
         try:
             for name, value in (("Visible", False), ("DisplayAlerts", False), ("ScreenUpdating", False),
                                 ("EnableEvents", False), ("AskToUpdateLinks", False),
-                                ("AutomationSecurity", 3)):  # 3 = msoAutomationSecurityForceDisable
+                                ("AutomationSecurity", 1)):  # 1 = msoAutomationSecurityLow: macros allowed
                 setattr(self.app, name, value)
             self.book = self.app.Workbooks.Open(str(self.path), UpdateLinks=0, ReadOnly=False,
                                                 IgnoreReadOnlyRecommended=True, AddToMru=False,
@@ -103,6 +123,11 @@ class ComExcelHost(ExcelHost):
         for row, col, value in cells:
             worksheet.Cells(row + 1, col + 1).Value2 = to_com(value)
 
+    def write_formulas(self, sheet, cells):
+        worksheet = self.sheets[sheet]
+        for row, col, formula in cells:
+            worksheet.Cells(row + 1, col + 1).Formula2 = formula
+
     def calculate(self):
         self.app.Calculate()
 
@@ -113,6 +138,65 @@ class ComExcelHost(ExcelHost):
         if not isinstance(values, tuple):
             return [[values]]
         return [list(row) for row in values]
+
+    def read_formulas(self, sheet, top, left, bottom, right):
+        worksheet = self.sheets[sheet]
+        texts = worksheet.Range(worksheet.Cells(top + 1, left + 1),
+                                worksheet.Cells(bottom + 1, right + 1)).Formula2
+        if not isinstance(texts, tuple):
+            texts = ((texts,),)
+        return [[text if isinstance(text, str) and text.startswith("=") else None for text in row]
+                for row in texts]
+
+    def formula_areas(self, sheet):
+        try:
+            cells = self.sheets[sheet].UsedRange.SpecialCells(XL_CELL_TYPE_FORMULAS)
+        except Exception as exc:
+            if getattr(exc, "hresult", None) == NO_CELLS:
+                return []
+            raise
+        areas = []
+        for index in range(1, cells.Areas.Count + 1):
+            area = cells.Areas.Item(index)
+            top, left = area.Row - 1, area.Column - 1
+            areas.append((top, left, top + area.Rows.Count - 1, left + area.Columns.Count - 1))
+        return areas
+
+    def used_range(self, sheet):
+        used = self.sheets[sheet].UsedRange
+        rows, cols = used.Rows.Count, used.Columns.Count
+        if rows == 1 and cols == 1 and used.Value2 is None:
+            return None
+        top, left = used.Row - 1, used.Column - 1
+        return (top, left, top + rows - 1, left + cols - 1)
+
+    def run_macro(self, name, timeout):
+        """Run a workbook macro; a watcher thread presses OK on its dialogs and enforces the limit."""
+        dialogs, done, timed_out = [], threading.Event(), threading.Event()
+        deadline = time.monotonic() + timeout
+
+        def watch():
+            seen = set()
+            while not done.is_set():
+                if time.monotonic() >= deadline:
+                    timed_out.set()
+                    _kill(self.pid)
+                    return
+                _press_dialogs(self.pid, seen, dialogs)
+                done.wait(0.1)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            self.app.Run(f"'{self.book.Name}'!{name}")
+        except Exception as exc:
+            raise EngineError("macro timed out" if timed_out.is_set() else "macro failed") from exc
+        finally:
+            done.set()
+            watcher.join()
+        if timed_out.is_set():
+            raise EngineError("macro timed out")
+        return dialogs
 
     def memory_bytes(self):
         import win32api
@@ -158,18 +242,79 @@ def _kill(pid):
         pass
 
 
+def _press_dialogs(pid, seen, dialogs):
+    """Record each new dialog of the Excel process and press its OK; a poll that races a closing window is retried."""
+    import win32con
+    import win32gui
+    import win32process
+
+    try:
+        handles = []
+
+        def visit(hwnd, _):
+            if win32gui.GetClassName(hwnd) == DIALOG_CLASS and win32process.GetWindowThreadProcessId(hwnd)[1] == pid:
+                handles.append(hwnd)
+            return True
+
+        win32gui.EnumWindows(visit, None)
+        for hwnd in handles:
+            if hwnd in seen:
+                continue
+            texts = []
+
+            def read(child, _):
+                if win32gui.GetClassName(child) == "Static":
+                    texts.append(win32gui.GetWindowText(child))
+                return True
+
+            win32gui.EnumChildWindows(hwnd, read, None)
+            win32gui.PostMessage(hwnd, win32con.WM_COMMAND, win32con.IDOK, 0)
+            seen.add(hwnd)
+            dialogs.append("\n".join(text for text in texts if text))
+    except Exception:
+        pass
+
+
 class FormualizerHost(ExcelHost):
     """Test stand-in: formualizer computes what Excel would for small workbooks."""
 
     def __init__(self, workbook: Path, sheet_names: list[str]):
         import formualizer
+        from openpyxl import load_workbook
 
         self.book = formualizer.load_workbook(str(workbook))
         self.names = sheet_names
+        self.formulas = {}  # (sheet, row, col) -> "=..."
+        self.extent = {}  # sheet -> (rows, cols) that hold anything
+        self.macros = {}  # name -> callable(host) returning the dialog texts
+        opened = load_workbook(workbook, read_only=True)
+        try:
+            for index, name in enumerate(sheet_names):
+                for row, cells in enumerate(opened[name].iter_rows()):
+                    for col, cell in enumerate(cells):
+                        if isinstance(cell.value, str) and cell.value.startswith("="):
+                            self.formulas[(index, row, col)] = cell.value
+                        if cell.value is not None:
+                            self._grow(index, row, col)
+        finally:
+            opened.close()
+
+    def _grow(self, sheet, row, col):
+        rows, cols = self.extent.get(sheet, (0, 0))
+        self.extent[sheet] = (max(rows, row + 1), max(cols, col + 1))
 
     def write(self, sheet, cells):
         for row, col, value in cells:
             self.book.set_value(self.names[sheet], row + 1, col + 1, value)
+            self.formulas.pop((sheet, row, col), None)
+            if value is not None:
+                self._grow(sheet, row, col)
+
+    def write_formulas(self, sheet, cells):
+        for row, col, formula in cells:
+            self.book.set_formula(self.names[sheet], row + 1, col + 1, formula)
+            self.formulas[(sheet, row, col)] = formula
+            self._grow(sheet, row, col)
 
     def calculate(self):
         pass
@@ -182,6 +327,20 @@ class FormualizerHost(ExcelHost):
         width = right - left + 1
         values = [_json_value(self.book.get_value(*cell), False) for cell in cells]
         return [values[index:index + width] for index in range(0, len(values), width)]
+
+    def read_formulas(self, sheet, top, left, bottom, right):
+        return [[self.formulas.get((sheet, row, col)) for col in range(left, right + 1)]
+                for row in range(top, bottom + 1)]
+
+    def formula_areas(self, sheet):
+        return [(row, col, row, col) for s, row, col in sorted(self.formulas) if s == sheet]
+
+    def used_range(self, sheet):
+        rows, cols = self.extent.get(sheet, (0, 0))
+        return (0, 0, rows - 1, cols - 1) if rows else None
+
+    def run_macro(self, name, timeout):
+        return self.macros[name](self)
 
     def memory_bytes(self):
         return 0
@@ -231,6 +390,11 @@ class ExcelEngine:
     current: dict = field(default_factory=dict)  # formula cells whose value now differs
     overlay_upserts: dict = field(default_factory=dict)
     overlay_removals: set = field(default_factory=set)
+    prepared: Path | None = None
+    names: list = field(default_factory=list)
+    formula_overrides: dict = field(default_factory=dict)  # (sheet, row, col) -> "=..." set by macros or edits
+    override_baseline: set = field(default_factory=set)  # override cells whose baseline we created
+    override_index: DependencyIndex | None = None
     handles_clears = True
 
     @classmethod
@@ -247,7 +411,7 @@ class ExcelEngine:
         except Exception as exc:
             raise EngineError("Excel calculation engine failed to load") from exc
         baseline = {key: from_com(cached.get(key)) for key in cells}
-        return cls(host, index, frozenset(cells), baseline)
+        return cls(host, index, frozenset(cells), baseline, prepared=prepared, names=names)
 
     @property
     def formula_cells(self):
@@ -258,18 +422,130 @@ class ExcelEngine:
         if not changes:
             return []
         try:
-            by_sheet: dict[int, list] = {}
-            for sheet, row, col, value in changes:
-                by_sheet.setdefault(sheet, []).append((row, col, value))
-            for sheet, cells in by_sheet.items():
+            baselines = self._baselines(changes)
+            plain, formulas = self._track(changes, baselines)
+            for sheet, cells in plain.items():
                 self.host.write(sheet, cells)
+            for sheet, cells in formulas.items():
+                self.host.write_formulas(sheet, cells)
             self.host.calculate()
-            affected = self.index.cone([(sheet, row, col) for sheet, row, col, _ in changes])
-            return self._publish(affected)
+            return self._publish(self._affected([(sheet, row, col) for sheet, row, col, _ in changes]))
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("Excel calculation engine failed to apply changes") from exc
+
+    def run_macro(self, macro: str, timeout: float = 600) -> dict:
+        """Run a template macro in Excel and record exactly what it changed (see P6.3 decision 5)."""
+        self.overlay_upserts, self.overlay_removals = {}, set()
+        try:
+            before = self._read_values()
+            messages = self.host.run_macro(macro, timeout)
+            self.host.calculate()
+            now = set()
+            areas = [(sheet, rect) for sheet in range(len(self.names))
+                     for rect in self.host.formula_areas(sheet)]
+            for sheet, (top, left, bottom, right) in areas:
+                now.update((sheet, row, col) for row in range(top, bottom + 1) for col in range(left, right + 1))
+            new = now - self.formula_anchors
+            detached = self.formula_anchors - now
+            texts = {}
+            for sheet, top, left, bottom, right, members in _blocks(new):
+                grid = self.host.read_formulas(sheet, top, left, bottom, right)
+                for row, col in members:
+                    text = grid[row - top][col - left]
+                    if text is None:
+                        raise EngineError("macro formula could not be read")
+                    texts[(sheet, row, col)] = text
+            after = self._read_values()
+            moved = {key for key in set(before) | set(after) if key not in now
+                     and not exactly_equal(before.get(key), after.get(key))}
+            contents = [(*key, {"formula": texts[key]}) for key in new]
+            contents += [(*key, after.get(key)) for key in moved | detached]
+            contents.sort(key=lambda item: item[:3])
+            self._track(contents, {key: before.get(key) for key in new})
+            changes = self._publish(self._affected([item[:3] for item in contents]))
+            return {"messages": messages, "changes": changes, "contents": contents}
+        except EngineError:
+            raise
+        except Exception as exc:
+            raise EngineError("Excel calculation engine failed to run the macro") from exc
+
+    def _read_values(self) -> dict:
+        """Every non-empty value of every used range, read in row blocks."""
+        values = {}
+        for sheet in range(len(self.names)):
+            box = self.host.used_range(sheet)
+            if box is None:
+                continue
+            top, left, bottom, right = box
+            for start in range(top, bottom + 1, BLOCK_ROWS):
+                stop = min(start + BLOCK_ROWS - 1, bottom)
+                for offset, row in enumerate(self.host.read(sheet, start, left, stop, right)):
+                    for position, raw in enumerate(row):
+                        if raw is not None:
+                            values[(sheet, start + offset, left + position)] = from_com(raw)
+        return values
+
+    def _baselines(self, changes) -> dict:
+        """The value a cell had before it becomes a formula override (read before the write)."""
+        return {(sheet, row, col): self.get(sheet, row, col) for sheet, row, col, value in changes
+                if _formula_text(value) is not None and (sheet, row, col) not in self.formula_anchors}
+
+    def _track(self, changes, baselines) -> tuple[dict, dict]:
+        """Update formula state for the changes; returns the plain and formula writes for the host."""
+        plain, formulas, added, removed, overrides_changed = {}, {}, set(), set(), False
+        for sheet, row, col, value in changes:
+            key = (sheet, row, col)
+            text = _formula_text(value)
+            if text is None:
+                plain.setdefault(sheet, []).append((row, col, value))
+                if self.formula_overrides.pop(key, None) is not None:
+                    overrides_changed = True
+                    if key in self.override_baseline:
+                        self.override_baseline.discard(key)
+                        self.baseline.pop(key, None)
+                if key in self.formula_anchors:
+                    removed.add(key)
+            else:
+                formulas.setdefault(sheet, []).append((row, col, text))
+                self.formula_overrides[key] = text
+                overrides_changed = True
+                if key not in self.formula_anchors:
+                    added.add(key)
+                    self.baseline[key] = baselines.get(key)
+                    self.override_baseline.add(key)
+        for key in removed:
+            self.current.pop(key, None)
+            self.overlay_upserts.pop(key, None)
+            self.overlay_removals.add(key)
+        if added or removed:
+            self.formula_anchors = frozenset((self.formula_anchors | added) - removed)
+        if overrides_changed:
+            self.override_index = None
+        return plain, formulas
+
+    def _override_index(self) -> DependencyIndex | None:
+        if not self.formula_overrides:
+            return None
+        if self.override_index is None:
+            self.override_index = DependencyIndex.build(self.prepared, dict(self.formula_overrides), self.names)
+        return self.override_index
+
+    def _affected(self, edited) -> set:
+        """Formulas an edit can reach, through the template index and the override index until nothing new."""
+        found = {key for key in edited if key in self.formula_anchors}
+        override = self._override_index()
+        frontier = set(edited)
+        while frontier:
+            reached = set(self.index.cone(frontier))
+            if override is not None:
+                reached |= override.cone(frontier)
+            frontier = {key for key in reached if key in self.formula_anchors} - found
+            found |= frontier
+            if override is None:
+                break
+        return found
 
     def _publish(self, affected) -> list[tuple[int, int, int, object]]:
         published = []
