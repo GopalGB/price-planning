@@ -27,6 +27,7 @@ class Config:
     engine_memory_budget_mb: int
     brand: dict | None = None
     template_results: str = "engine"
+    engine: str = "formualizer"
 
 
 BRAND_ASSETS = ("logo", "favicon", "touch_icon")
@@ -294,7 +295,15 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
                   origins, cookie_secure, replay_window, engine_memory,
-                  _brand(root, settings.get("brand")), _template_results(settings))
+                  _brand(root, settings.get("brand")), _template_results(settings), _engine(settings))
+
+
+def _engine(settings) -> str:
+    # "excel" calculates copies in Microsoft Excel (Windows server with Excel installed).
+    value = settings.get("engine", "formualizer")
+    if value not in ("formualizer", "excel"):
+        raise ValueError("engine must be 'formualizer' or 'excel'")
+    return value
 
 
 def _template_results(settings) -> str:

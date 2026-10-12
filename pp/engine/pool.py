@@ -91,10 +91,10 @@ class CalculationRequest:
 
 
 class _CopyWorker:
-    def __init__(self, context, copy_id: str):
+    def __init__(self, context, copy_id: str, engine: str = "formualizer"):
         parent, child = context.Pipe()
         self.connection = parent
-        self.process = context.Process(target=worker_loop, args=(child, copy_id), daemon=True)
+        self.process = context.Process(target=worker_loop, args=(child, copy_id, engine), daemon=True)
         self.process.start()
         child.close()
         self.busy = False
@@ -129,13 +129,15 @@ class _CopyWorker:
 
 
 class EnginePool:
-    def __init__(self, max_workers: int, memory_budget_mb: int | None = None):
+    def __init__(self, max_workers: int, memory_budget_mb: int | None = None,
+                 engine: str = "formualizer"):
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
         if memory_budget_mb is not None and memory_budget_mb < 1:
             raise ValueError("memory_budget_mb must be positive")
         self._context = multiprocessing.get_context("spawn")
         self._max_workers = max_workers
+        self._engine = engine
         self._workers: OrderedDict[str, _CopyWorker] = OrderedDict()
         self._condition = threading.Condition()
         self._closed = False
@@ -208,7 +210,7 @@ class EnginePool:
                 self._condition.wait()
 
     def _create(self, copy_id: str) -> _CopyWorker:
-        worker = _CopyWorker(self._context, copy_id)
+        worker = _CopyWorker(self._context, copy_id, self._engine)
         worker.busy = True
         self._workers[copy_id] = worker
         return worker

@@ -21,8 +21,9 @@ class WorkerBatch:
 
 
 class WarmCopy:
-    def __init__(self, copy_id: str):
+    def __init__(self, copy_id: str, engine: str = "formualizer"):
         self.copy_id = copy_id
+        self.kind = engine
         self.engine = None
         self.source = None
         self.baseline = {}
@@ -41,7 +42,7 @@ class WarmCopy:
             if self.baseline.get(coordinate, MISSING) is None
         )
         reload_clears = cleared | restored_blanks
-        if reload_clears != self.cleared:
+        if not getattr(self.engine, "handles_clears", False) and reload_clears != self.cleared:
             self._reload_with_clears(template_path, reload_clears)
             self.overrides = {coordinate: None for coordinate in cleared}
             reset = True
@@ -70,6 +71,19 @@ class WarmCopy:
                 "changes": calculated, "results": results, "removals": removals,
                 "delta": delta, "base_revision": batch.base_revision}
 
+    def close(self) -> None:
+        """Release the engine; an Excel engine quits its private Excel."""
+        engine, self.engine = self.engine, None
+        if engine is not None and hasattr(engine, "close"):
+            try:
+                engine.close()
+            except Exception:
+                pass
+
+    def engine_bytes(self) -> int:
+        external = getattr(self.engine, "memory_bytes", None)
+        return _engine_bytes() + (external() if external else 0)
+
     def _template_value(self, coordinate):
         formula_cells = getattr(self.engine, "formula_cells", ())
         formula_anchors = getattr(self.engine, "formula_anchors", ())
@@ -80,7 +94,11 @@ class WarmCopy:
     def _load(self, template_path: str) -> bool:
         if self.engine is None:
             self.source = template_path
-            self.engine = FormualizerAdapter.load(Path(template_path))
+            if self.kind == "excel":
+                from .excel import ExcelEngine
+                self.engine = ExcelEngine.load(Path(template_path))
+            else:
+                self.engine = FormualizerAdapter.load(Path(template_path))
             return True
         elif template_path != self.source:
             raise EngineError("copy template changed while its worker was active")
@@ -123,9 +141,9 @@ def _engine_bytes():
     return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
-def worker_loop(connection, copy_id: str) -> None:
+def worker_loop(connection, copy_id: str, engine: str = "formualizer") -> None:
     """Serve one copy serially inside its dedicated spawned process."""
-    copy = WarmCopy(copy_id)
+    copy = WarmCopy(copy_id, engine)
     try:
         while True:
             request = connection.recv()
@@ -139,10 +157,12 @@ def worker_loop(connection, copy_id: str) -> None:
                 batch = WorkerBatch(changes, base_revision)
             try:
                 result = copy.apply(revision, template_path, batch)
-                result["engine_bytes"] = _engine_bytes()
+                result["engine_bytes"] = copy.engine_bytes()
                 connection.send((True, result))
             except Exception as exc:
-                copy = WarmCopy(copy_id)
+                copy.close()
+                copy = WarmCopy(copy_id, engine)
                 connection.send((False, type(exc).__name__))
     finally:
+        copy.close()
         connection.close()
