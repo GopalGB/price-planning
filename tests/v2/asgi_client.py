@@ -19,8 +19,8 @@ class ASGIClient:
         self.origin = origin
         self.cookies = {}
 
-    def request(self, method, path, json_body=None, headers=None):
-        response = asyncio.run(self._request(method, path, json_body, headers or {}))
+    def request(self, method, path, json_body=None, headers=None, raw_body=None):
+        response = asyncio.run(self._request(method, path, json_body, headers or {}, raw_body))
         cookie = response.headers.get("set-cookie")
         if cookie:
             name, value = cookie.split(";", 1)[0].split("=", 1)
@@ -30,11 +30,11 @@ class ASGIClient:
                 self.cookies.pop(name, None)
         return response
 
-    async def _request(self, method, path, json_body, headers):
+    async def _request(self, method, path, json_body, headers, raw_body=None):
         parsed = urlsplit(path)
-        body = b"" if json_body is None else json.dumps(json_body).encode()
+        body = raw_body if raw_body is not None else b"" if json_body is None else json.dumps(json_body).encode()
         request_headers = {"origin": self.origin, "host": "testserver", **headers}
-        if body:
+        if body and raw_body is None:
             request_headers["content-type"] = "application/json"
         if self.cookies:
             request_headers["cookie"] = "; ".join(f"{key}={value}" for key, value in self.cookies.items())
@@ -74,3 +74,6 @@ class ASGIClient:
 
     def patch(self, path, body=None, headers=None):
         return self.request("PATCH", path, body, headers)
+
+    def raw(self, method, path, body, headers=None):
+        return self.request(method, path, headers=headers, raw_body=body)

@@ -69,7 +69,7 @@ export function homeView(categories, copies, categoryId, template) {
   const firstCategory = categories.length
     ? ""
     : '<section class="empty-panel"><h2>Create your planning workspace</h2><p>Start with a category for your team.</p><button id="category-first-create" class="primary" data-action="create-category">Create your first category</button></section>';
-  return `<section class="home"><nav class="home-nav" aria-label="Categories"><h2>Categories</h2>${nav}<button id="category-create">New category</button>${category?.role === "manager" ? '<button id="category-members">Manage members</button>' : ""}</nav><main class="home-main">${template ? `<div class="template-card"><div><small>Template</small><b>${e(template.name)}</b><span>${template.visible} tabs${template.sheets > template.visible ? ` · ${template.sheets - template.visible} hidden` : ""} · master copy, never changed</span></div><button id="template-copy" class="primary" ${category ? "" : "disabled"}>New copy from template</button></div>` : ""}<div class="home-heading"><div><h1>Copies</h1><p>${e(shared ? "All copies shared with you" : (category?.name ?? "Create a category to begin"))} · Your team's planning workspace</p></div><button id="copy-create" class="primary" ${category ? "" : "disabled"}>+ Create copy</button></div>${firstCategory}<table class="copies-table"><thead><tr><th>Copy name</th><th>Owner</th><th>Visibility / role</th><th>Last edit</th><th>Members</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No copies here yet. Create one to start planning.</td></tr>'}</tbody></table><p class="home-tip">Share a copy for live co-editing, or fork a private scenario at one revision.</p></main></section>`;
+  return `<section class="home"><nav class="home-nav" aria-label="Categories"><h2>Categories</h2>${nav}<button id="category-create">New category</button>${category?.role === "manager" ? '<button id="category-members">Manage members</button>' : ""}</nav><main class="home-main">${template ? `<div class="template-card"><div><small>Template</small><b>${e(template.name)}</b><span>${template.visible} tabs${template.sheets > template.visible ? ` · ${template.sheets - template.visible} hidden` : ""} · master copy, never changed</span></div><button id="template-copy" class="primary" ${category ? "" : "disabled"}>New copy from template</button></div>` : ""}<div class="home-heading"><div><h1>Copies</h1><p>${e(shared ? "All copies shared with you" : (category?.name ?? "Create a category to begin"))} · Your team's planning workspace</p></div><div><button id="upload-home" ${categories.length ? "" : "disabled"}>Upload Excel</button> <button id="copy-create" class="primary" ${category ? "" : "disabled"}>+ Create copy</button></div></div>${firstCategory}<table class="copies-table"><thead><tr><th>Copy name</th><th>Owner</th><th>Visibility / role</th><th>Last edit</th><th>Members</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No copies here yet. Create one to start planning.</td></tr>'}</tbody></table><p class="home-tip">Share a copy for live co-editing, or fork a private scenario at one revision.</p></main></section>`;
 }
 export function dispatchHomeAction(button, actions) {
   if (button?.dataset?.action !== "create-category") return false;
@@ -95,5 +95,55 @@ export function writeInputHighlightPreference(enabled, storage) {
 }
 export function workspaceView(copy, inputHighlight = true) {
   const viewer = copy.my_role === "viewer";
-  return `<div class="toolbar" role="toolbar" aria-label="Workbook tools"><button id="undo-button" ${viewer ? "disabled" : ""}>↶ Undo</button><button id="redo-button" ${viewer ? "disabled" : ""}>↷ Redo</button><span class="divider"></span><button id="copy-button">Copy</button><button id="paste-button" ${viewer ? "disabled" : ""}>Paste</button><button id="fill-down" ${viewer ? "disabled" : ""}>Fill down</button><button id="fill-right" ${viewer ? "disabled" : ""}>Fill right</button><span class="divider"></span><button id="input-highlight" aria-pressed="${inputHighlight}">Highlight inputs</button><button id="history-button" aria-expanded="false">History</button><button id="hidden-button" ${copy.my_role === "owner" ? "" : "hidden"}>Show hidden sheets</button><div class="find-wrap"><input id="find-input" aria-label="Find in workbook" placeholder="Find · Ctrl+F"><button id="find-button">Find</button></div><select id="zoom" aria-label="Zoom"><option>100%</option><option>125%</option><option>150%</option><option>75%</option></select></div><div class="formula-bar"><input id="name-box" aria-label="Go to cell" value="B2"><span class="fx">fx</span><input id="formula-input" aria-label="Cell value or formula"><span id="formula-note" class="muted"></span></div><div class="workbench"><div class="sheet-area"><div id="grid"></div><div class="tab-bar"><div class="tab-arrows"><button id="tabs-first" aria-label="First sheet" title="First sheet">⏮</button><button id="tabs-prev" aria-label="Previous sheet" title="Previous sheet">◀</button><button id="tabs-next" aria-label="Next sheet" title="Next sheet">▶</button><button id="tabs-last" aria-label="Last sheet" title="Last sheet">⏭</button></div><nav id="sheet-tabs" class="sheet-tabs" aria-label="Sheets"></nav></div></div><aside id="history-panel" hidden><div class="panel-title"><h2 id="history-title">Cell history</h2><button id="history-close" aria-label="Close history">×</button></div><p id="last-editor"></p><h3>Cell edits</h3><div id="cell-history"></div><h3>Copy activity</h3><div id="copy-activity"></div></aside></div><footer class="statusbar"><span id="edit-status">Ready</span><span id="role-status">${viewer ? "Viewer · Read only" : "Input cells are editable"}</span><span id="copy-status">${e(copy.visibility)}</span><span id="selection-stats"></span><a id="export-link" href="/api/copies/${e(copy.id)}/export.xlsm">Download .xlsm</a></footer>`;
+  return `<div class="toolbar" role="toolbar" aria-label="Workbook tools"><button id="undo-button" ${viewer ? "disabled" : ""}>↶ Undo</button><button id="redo-button" ${viewer ? "disabled" : ""}>↷ Redo</button><span class="divider"></span><button id="copy-button">Copy</button><button id="paste-button" ${viewer ? "disabled" : ""}>Paste</button><button id="fill-down" ${viewer ? "disabled" : ""}>Fill down</button><button id="fill-right" ${viewer ? "disabled" : ""}>Fill right</button><span class="divider"></span><button id="input-highlight" aria-pressed="${inputHighlight}">Highlight inputs</button><button id="history-button" aria-expanded="false">History</button><button id="hidden-button" ${copy.my_role === "owner" ? "" : "hidden"}>Show hidden sheets</button><button id="upload-button">Upload Excel</button><button id="download-button">Download</button><div class="find-wrap"><input id="find-input" aria-label="Find in workbook" placeholder="Find · Ctrl+F"><button id="find-button">Find</button></div><select id="zoom" aria-label="Zoom"><option>100%</option><option>125%</option><option>150%</option><option>75%</option></select></div><div class="formula-bar"><input id="name-box" aria-label="Go to cell" value="B2"><span class="fx">fx</span><input id="formula-input" aria-label="Cell value or formula"><span id="formula-note" class="muted"></span></div><div class="workbench"><div class="sheet-area"><div id="grid"></div><div class="tab-bar"><div class="tab-arrows"><button id="tabs-first" aria-label="First sheet" title="First sheet">⏮</button><button id="tabs-prev" aria-label="Previous sheet" title="Previous sheet">◀</button><button id="tabs-next" aria-label="Next sheet" title="Next sheet">▶</button><button id="tabs-last" aria-label="Last sheet" title="Last sheet">⏭</button></div><nav id="sheet-tabs" class="sheet-tabs" aria-label="Sheets"></nav></div></div><aside id="history-panel" hidden><div class="panel-title"><h2 id="history-title">Cell history</h2><button id="history-close" aria-label="Close history">×</button></div><p id="last-editor"></p><h3>Cell edits</h3><div id="cell-history"></div><h3>Copy activity</h3><div id="copy-activity"></div></aside></div><footer class="statusbar"><span id="edit-status">Ready</span><span id="role-status">${viewer ? "Viewer · Read only" : "Input cells are editable"}</span><span id="copy-status">${e(copy.visibility)}</span><span id="selection-stats"></span><a id="export-link" href="/api/copies/${e(copy.id)}/export.xlsm">Download .xlsm</a></footer>`;
+}
+export function downloadView(sheets) {
+  const choices = sheets
+    .map(
+      (sheet) =>
+        `<label><input type="checkbox" name="sheets" value="${e(sheet.name)}" checked>${e(sheet.name)}${sheet.hidden ? " (hidden)" : ""}</label>`,
+    )
+    .join("");
+  return `<p>Choose a file format and the sheets to include.</p><label>Format<select name="format"><option value="xlsx" selected>.xlsx</option><option value="xlsm">.xlsm</option></select></label><p><button type="button" id="download-select-all">Select all</button> <button type="button" id="download-select-none">Select none</button></p><fieldset><legend>Sheets</legend>${choices}</fieldset>`;
+}
+
+const uploadValue = (value) =>
+  e(
+    value !== null && typeof value === "object"
+      ? JSON.stringify(value)
+      : String(value ?? "(blank)"),
+  );
+
+export function uploadPreviewView(preview, categories, categoryId) {
+  const conflicts = new Set(preview.conflicts.map((item) => item.key));
+  const rows = preview.changes
+    .map((item) => {
+      const choose = conflicts.has(item.key)
+        ? `<input type="checkbox" name="include_conflict" value="${e(item.key)}" checked aria-label="Include conflicting change ${e(item.sheet)} ${e(item.cell)}">`
+        : "";
+      return `<tr><td>${choose}${e(item.sheet)}!${e(item.cell)}</td><td>${uploadValue(item.old)}</td><td>${uploadValue(item.new)}</td></tr>`;
+    })
+    .join("");
+  const warnings = preview.conflicts
+    .map(
+      (item) =>
+        `<li>${e(item.sheet)}!${e(item.cell)} changed by ${e(item.by?.name ?? "another editor")} at ${e(item.at ?? "an unknown time")}</li>`,
+    )
+    .join("");
+  const ignored = preview.ignored
+    .map(
+      (item) =>
+        `<li>${e(item.sheet ? `${item.sheet}${item.cell ? `!${item.cell}` : ""}: ` : "")}${e(item.reason)}</li>`,
+    )
+    .join("");
+  const options = categories
+    .map(
+      (category) =>
+        `<option value="${e(category.id)}" ${category.id === categoryId ? "selected" : ""}>${e(category.name)}</option>`,
+    )
+    .join("");
+  const update = preview.can_update
+    ? '<label><input type="radio" name="mode" value="update" checked>Update this copy</label>'
+    : "";
+  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(preview.filename.replace(/\.[^.]+$/, ""))}"></label>`;
 }

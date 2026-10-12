@@ -1,10 +1,12 @@
 import "./style.css";
 import "@univerjs/preset-sheets-core/lib/index.css";
-import { ApiClient } from "./client.mjs";
+import { ApiClient, completeUpload, startDownload } from "./client.mjs";
 import {
   authView,
   homeView,
   workspaceView,
+  downloadView,
+  uploadPreviewView,
   escapeHTML as e,
   roleOptions,
   loadHome,
@@ -100,6 +102,7 @@ async function showHome() {
   if ($("template-copy")) $("template-copy").onclick = createCopyModal;
   $("category-create").onclick = categoryModal;
   if ($("category-members")) $("category-members").onclick = membersModal;
+  $("upload-home").onclick = () => uploadModal();
 }
 async function openCopy(copy) {
   const visit = ++navigation;
@@ -114,8 +117,10 @@ async function openCopy(copy) {
     `${categories.find((c) => c.id === copy.category_id)?.name ?? ""} / ${copy.name}`;
   const meta = await api.request(`/copies/${copy.id}/workbook`);
   if (visit !== navigation) return;
-  if (meta.calculation === "cached")
+  if (meta.calculation === "cached") {
     $("role-status").textContent = "Read only · Excel's saved values, editing paused";
+    if ($("upload-button")) $("upload-button").hidden = true;
+  }
   const { PlanningGrid } = await import("./grid.mjs");
   if (visit !== navigation) return;
   grid = new PlanningGrid({ api, copy, meta, user, toast, inputHighlight });
@@ -145,6 +150,8 @@ async function openCopy(copy) {
   $("zoom").onchange = (event) =>
     grid.setZoom(parseInt(event.target.value, 10) / 100);
   $("hidden-button").onclick = () => grid.toggleHidden();
+  $("download-button").onclick = () => downloadModal(meta);
+  $("upload-button").onclick = () => uploadModal(activeCopy);
   $("name-box").onkeydown = (event) => {
     if (event.key === "Enter") safe(grid.goTo(event.target.value));
   };
@@ -176,8 +183,10 @@ function modal(title, body, submit, label = "Save") {
     event.preventDefault();
     $("modal-submit").disabled = true;
     try {
-      await submit(Object.fromEntries(new FormData(event.target)));
-      $("modal").close();
+      const result = await submit(
+        Object.fromEntries(new FormData(event.target)),
+      );
+      if (result !== false) $("modal").close();
     } catch (error) {
       $("modal-error").textContent = error.message;
     } finally {
@@ -185,6 +194,90 @@ function modal(title, body, submit, label = "Save") {
     }
   };
   $("modal").showModal();
+}
+function uploadModal(copy = null) {
+  const currentCategory =
+    copy?.category_id ?? categoryId ?? categories[0]?.id ?? "";
+  const copyOptions = copy
+    ? ""
+    : copies
+        .map((item) => `<option value="${e(item.id)}">${e(item.name)}</option>`)
+        .join("");
+  const categoryOptions = categories
+    .map(
+      (category) =>
+        `<option value="${e(category.id)}" ${category.id === currentCategory ? "selected" : ""}>${e(category.name)}</option>`,
+    )
+    .join("");
+  const target = copy
+    ? `<p>Upload into <b>${e(copy.name)}</b> or create a new copy.</p>`
+    : `<label>Existing copy (optional)<select name="copy_id"><option value="">Use workbook metadata</option>${copyOptions}</select></label>`;
+  modal(
+    "Upload Excel",
+    `${target}<label>Category<select name="category_id">${categoryOptions}</select></label><label>Workbook<input name="workbook" type="file" accept=".xlsx,.xlsm" required></label>`,
+    async (body) => {
+      const query = new URLSearchParams({ category_id: body.category_id });
+      if (body.copy_id) query.set("copy_id", body.copy_id);
+      const path = copy
+        ? `/copies/${encodeURIComponent(copy.id)}/uploads/preview`
+        : `/uploads/preview?${query}`;
+      const preview = await api.request(path, {
+        method: "POST",
+        body: body.workbook,
+        filename: body.workbook.name,
+      });
+      showUploadPreview(preview, body.category_id, copy);
+      return false;
+    },
+    "Preview changes",
+  );
+}
+function showUploadPreview(preview, currentCategory, copy) {
+  $("modal-body").innerHTML = uploadPreviewView(
+    preview,
+    categories,
+    currentCategory,
+  );
+  $("modal-submit").textContent = "Apply upload";
+  $("modal-form").onsubmit = async (event) => {
+    event.preventDefault();
+    $("modal-submit").disabled = true;
+    try {
+      const data = new FormData(event.target),
+        included = new Set(data.getAll("include_conflict"));
+      const payload = {
+        mode: data.get("mode"),
+        category_id: data.get("category_id"),
+        name: data.get("name"),
+        excluded_conflicts: preview.conflicts
+          .filter((item) => !included.has(item.key))
+          .map((item) => item.key),
+      };
+      const result = await api.request(
+        `/uploads/${encodeURIComponent(preview.token)}/confirm`,
+        {
+          method: "POST",
+          body: payload,
+        },
+      );
+      await finishUpload(result, copy);
+      $("modal").close();
+    } catch (error) {
+      $("modal-error").textContent = error.message;
+    } finally {
+      $("modal-submit").disabled = false;
+    }
+  };
+}
+async function finishUpload(result, copy) {
+  const message = await completeUpload(result, {
+    currentCopy: copy,
+    openCopy,
+    showHome,
+    recordUpload: (operation) => grid?.controller.recordUpload(operation),
+    resync: async () => grid?.resync(),
+  });
+  toast(message);
 }
 function createCopyModal() {
   modal(
@@ -199,6 +292,31 @@ function createCopyModal() {
     },
     "Create copy",
   );
+}
+function downloadModal(meta) {
+  modal(
+    "Download workbook",
+    downloadView(meta.sheets),
+    async (body) => {
+      const sheets = [
+        ...document.querySelectorAll('input[name="sheets"]:checked'),
+      ].map((input) => input.value);
+      await startDownload(api, {
+        copyId: activeCopy.id,
+        format: body.format,
+        sheets,
+      });
+    },
+    "Download",
+  );
+  $("download-select-all").onclick = () =>
+    document.querySelectorAll('input[name="sheets"]').forEach((input) => {
+      input.checked = true;
+    });
+  $("download-select-none").onclick = () =>
+    document.querySelectorAll('input[name="sheets"]').forEach((input) => {
+      input.checked = false;
+    });
 }
 function forkModal(copy) {
   modal(

@@ -11,6 +11,13 @@ from tests.v2.api_support import APIFixture
 from tests.v2.test_template_importer import default_style_fixture, rewrite_member
 
 
+def _close_loaded(workbook, package):
+    if workbook.vba_archive is not None:
+        workbook.vba_archive.close()
+    workbook.close()
+    package.close()
+
+
 class ExportRouteTests(unittest.TestCase):
     def test_implicit_blank_input_round_trips_via_ops_and_export(self):
         """An unlocked missing XML cell must be created with OOXML-safe text intact."""
@@ -40,8 +47,9 @@ class ExportRouteTests(unittest.TestCase):
                 with zipfile.ZipFile(io.BytesIO(response.body)) as archive:
                     exported = archive.read("xl/worksheets/sheet1.xml")
                 self.assertIn(b'r="B2"', exported)
-                workbook = load_workbook(io.BytesIO(response.body), keep_vba=True)
-                self.addCleanup(workbook.close)
+                package = io.BytesIO(response.body)
+                workbook = load_workbook(package, keep_vba=True)
+                self.addCleanup(_close_loaded, workbook, package)
                 self.assertEqual(unescape(workbook["Styled Inputs"]["B2"].value), value)
 
     def test_edited_input_download_preserves_the_package(self):
@@ -62,11 +70,17 @@ class ExportRouteTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"].lower(),
                          "application/vnd.ms-excel.sheet.macroenabled.12")
         with zipfile.ZipFile(source) as original, zipfile.ZipFile(io.BytesIO(response.body)) as exported:
-            self.assertEqual(original.namelist(), exported.namelist())
+            self.assertEqual(
+                original.namelist() + ["docProps/custom.xml"], exported.namelist()
+            )
             changed = {name for name in original.namelist() if original.read(name) != exported.read(name)}
-            self.assertEqual(changed, {"xl/workbook.xml", "xl/worksheets/sheet1.xml"})
-        workbook = load_workbook(io.BytesIO(response.body), keep_vba=True)
-        self.addCleanup(workbook.close)
+            self.assertEqual(changed, {
+                "xl/workbook.xml", "xl/worksheets/sheet1.xml", "[Content_Types].xml",
+                "_rels/.rels",
+            })
+        package = io.BytesIO(response.body)
+        workbook = load_workbook(package, keep_vba=True)
+        self.addCleanup(_close_loaded, workbook, package)
         self.assertEqual(workbook["Inputs"]["B2"].value, 12)
         self.assertEqual(workbook["Calc"]["B2"].value, "=Inputs!B2*2")
         self.assertTrue(workbook.calculation.fullCalcOnLoad)

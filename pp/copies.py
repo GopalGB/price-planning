@@ -31,21 +31,25 @@ class CopyService:
                     if (role := effective_role(connection, row["id"], user_id)) is not None]
 
     def create(self, user_id: str, payload: dict, session_check=None) -> dict:
-        name, category_id, visibility, default_role = _copy_fields(payload)
         with self.database.transaction() as connection:
-            _require_session(connection, user_id, session_check)
-            member = connection.execute(
-                "SELECT 1 FROM pp_category_members WHERE category_id=? AND user_id=?", (category_id, user_id)
-            ).fetchone()
-            if member is None:
-                raise AppError(403, "forbidden", "Category membership is required")
-            copy_id, now = uuid.uuid4().hex, _now()
-            connection.execute(
-                "INSERT INTO pp_copies(id,name,category_id,owner_id,template_id,visibility,default_role,input_revision,calculated_revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (copy_id, name, category_id, user_id, self.template_id, visibility, default_role, 0, -1, now, now),
-            )
-            _queue_baseline(connection, copy_id, now)
-            return _copy(connection, connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone(), "owner")
+            return self.create_in_transaction(connection, user_id, payload, session_check)
+
+    def create_in_transaction(self, connection, user_id, payload, session_check=None):
+        name, category_id, visibility, default_role = _copy_fields(payload)
+        _require_session(connection, user_id, session_check)
+        member = connection.execute(
+            "SELECT 1 FROM pp_category_members WHERE category_id=? AND user_id=?", (category_id, user_id)
+        ).fetchone()
+        if member is None:
+            raise AppError(403, "forbidden", "Category membership is required")
+        copy_id, now = uuid.uuid4().hex, _now()
+        connection.execute(
+            "INSERT INTO pp_copies(id,name,category_id,owner_id,template_id,visibility,default_role,input_revision,calculated_revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (copy_id, name, category_id, user_id, self.template_id, visibility, default_role, 0, -1, now, now),
+        )
+        _queue_baseline(connection, copy_id, now)
+        row = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
+        return _copy(connection, row, "owner")
 
     def fork(self, user_id: str, copy_id: str, name: object, session_check=None) -> dict:
         if not isinstance(name, str) or not name.strip():

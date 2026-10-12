@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import tempfile
+from urllib.parse import unquote
 from uuid import uuid4
 import threading
 import time
 
 from starlette.applications import Starlette
-from starlette.background import BackgroundTask
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -28,14 +30,20 @@ from .db import token_hash
 from .engine.pool import CalculationRequest
 from .config import BRAND_TYPES
 from .errors import AppError
-from .export.xlsm import export_xlsm
+from .export.transfer import TransferRequest, export_transfer
 from .live import LiveHub, serve_live
 from .ops import OperationService
+from .upload import ConfirmRequest, PreviewRequest, UploadDependencies, UploadService
 from .workbook_service import CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService
 
 
 LOGGER = logging.getLogger(__name__)
 BODY_LIMIT = 2 * 1024 * 1024
+MAX_PREPARED_DOWNLOADS = 32
+MAX_PREPARED_DOWNLOAD_BYTES = 512 * 1024 * 1024
+MAX_ACTIVE_TRANSFERS = 2
+MAX_PENDING_TRANSFERS = 4
+PREPARED_DOWNLOAD_SECONDS = 2 * 60
 
 
 @dataclass(frozen=True)
@@ -46,21 +54,52 @@ class ServiceContext:
     engine_pool: object = None
 
 
+@dataclass(frozen=True)
+class ExportJob:
+    snapshot: dict
+    copy_id: str
+    fmt: str
+    selected: set[str] | None
+    path: Path
+
+
+@dataclass(frozen=True)
+class PreparedArtifact:
+    path: Path
+    user_id: str
+    session_hash: str
+    copy_id: str
+    filename: str
+    expires: float
+
+
 class Services:
     def __init__(self, context: ServiceContext):
         self.database = context.database
         self.snapshot = context.snapshot
         self.config = context.config
+        _sweep_transfer_files(context.config.data_dir)
         templates = TemplateCatalog(context.database, context.snapshot)
         self.auth = AuthService(context.database, context.config)
         self.categories = CategoryService(context.database)
         self.copies = CopyService(context.database, context.snapshot.hash)
         self.workbooks = WorkbookService(context.database, templates)
         self.operations = OperationService(context.database, templates)
+        self.uploads = UploadService(UploadDependencies(
+            context.database, templates, self.copies, self.operations,
+            Path(context.config.data_dir) / "uploads" / "previews",
+        ))
         self.calculations = CalculationService(context.database, templates)
         self.engine_pool = context.engine_pool
         self.hub = LiveHub(context.database, context.config.replay_window)
         self.writes = WriteLimiter()
+        self.downloads = PreparedDownloadStore()
+        self.transfer_limiter = threading.BoundedSemaphore(MAX_ACTIVE_TRANSFERS)
+        self.transfer_admission = threading.BoundedSemaphore(MAX_PENDING_TRANSFERS)
+
+    def close(self):
+        self.downloads.close()
+        self.uploads.close()
 
     def auth_origin(self, connection):
         require_origin(connection.headers.get("origin"), self.config.allowed_origins)
@@ -85,17 +124,35 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/history", _history, methods=["GET"]),
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
+        Route("/api/copies/{copy_id}/export.xlsx", _export, methods=["GET"]),
+        Route("/api/copies/{copy_id}/downloads", _prepare_download, methods=["POST"]),
+        Route("/api/downloads/{token}", _prepared_download, methods=["GET"]),
+        Route("/api/uploads/preview", _upload_preview, methods=["POST"]),
+        Route("/api/copies/{copy_id}/uploads/preview", _upload_preview, methods=["POST"]),
+        Route("/api/uploads/{token}/confirm", _upload_confirm, methods=["POST"]),
         WebSocketRoute("/api/copies/{copy_id}/ws", _websocket),
         Route("/api/brand", _brand, methods=["GET"]),
         Route("/api/{path:path}", _api_not_found),
         Route("/brand/{asset}", _brand_asset, methods=["GET"]),
         Route("/{path:path}", _static),
     ]
-    app = Starlette(routes=routes, exception_handlers={AppError: _app_error, HTTPException: _http_error})
+    app = Starlette(
+        routes=routes,
+        exception_handlers={AppError: _app_error, HTTPException: _http_error},
+        lifespan=_lifespan,
+    )
     app.state.services = services
     app.state.engine_pool = context.engine_pool
     app.add_middleware(SecurityBoundaryMiddleware)
     return app
+
+
+@asynccontextmanager
+async def _lifespan(app):
+    try:
+        yield
+    finally:
+        app.state.services.close()
 
 
 async def _signup(request: Request):
@@ -309,19 +366,277 @@ async def _run_calculation(services, request):
 
 
 async def _export(request: Request):
+    _reject_head(request)
     services, user = _read_auth(request)
-    source, overrides = services.workbooks.source_and_overrides(request.path_params["copy_id"], user["id"])
-    output_dir = Path(services.config.data_dir) / "exports"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"price-plan-{uuid4().hex}.xlsm"
-    cells = [(*coordinate, value) for coordinate, value in sorted(overrides.items())]
+    admission = _admit_transfer(services)
     try:
-        await asyncio.to_thread(export_xlsm, source, cells, path)
+        copy_id = request.path_params["copy_id"]
+        snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+        selected = _selected_sheets(request.query_params, snapshot["sheets"])
+        _require_export_ready(snapshot, selected)
+        if request.query_params.get("check") == "1":
+            return Response(status_code=204)
+        fmt = "xlsx" if request.url.path.endswith(".xlsx") else "xlsm"
+        path = _export_path(services, fmt, False)
+        await _build_export(ExportJob(
+            snapshot, copy_id, fmt, selected, path,
+        ), services.transfer_limiter)
+        return DisposableFileResponse(
+            path, media_type=_export_media(fmt), filename=f"price-plan.{fmt}",
+        )
+    finally:
+        admission.release()
+
+
+async def _prepare_download(request: Request):
+    services, user, _ = _write_auth(request)
+    admission = _admit_transfer(services)
+    try:
+        payload = await _body(request)
+        fmt = _download_format(payload.get("format"))
+        copy_id = request.path_params["copy_id"]
+        snapshot = services.workbooks.export_snapshot(copy_id, user["id"])
+        selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
+        _require_export_ready(snapshot, selected)
+        path = _export_path(services, fmt, True)
+        await _build_export(ExportJob(
+            snapshot, copy_id, fmt, selected, path,
+        ), services.transfer_limiter)
+        artifact = PreparedArtifact(
+            path, user["id"], token_hash(request.cookies.get("pp_session", "")),
+            copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
+        )
+        token = services.downloads.add(artifact)
+        return JSONResponse({"download_url": f"/api/downloads/{token}"}, status_code=201)
+    finally:
+        admission.release()
+
+
+async def _prepared_download(request: Request):
+    _reject_head(request)
+    services = _services(request)
+    token = request.path_params["token"]
+    artifact = None
+    try:
+        user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
+        artifact = services.downloads.take(
+            token, user["id"], token_hash(request.cookies.get("pp_session", "")),
+        )
+        services.copies.get(user["id"], artifact.copy_id)
+        return DisposableFileResponse(
+            artifact.path, media_type=_export_media(artifact.path.suffix[1:]),
+            filename=artifact.filename,
+        )
     except BaseException:
-        path.unlink(missing_ok=True)
+        if artifact is None:
+            services.downloads.discard(token)
+        else:
+            artifact.path.unlink(missing_ok=True)
         raise
-    return FileResponse(path, media_type="application/vnd.ms-excel.sheet.macroenabled.12",
-                        filename="price-plan.xlsm", background=BackgroundTask(path.unlink, missing_ok=True))
+
+
+async def _build_export(job, limiter=None):
+    cancelled = threading.Event()
+    try:
+        await _run_bounded(
+            limiter or threading.BoundedSemaphore(1), _write_export_job, (job, cancelled),
+        )
+    except ValueError as exc:
+        job.path.unlink(missing_ok=True)
+        if str(exc).startswith("current calculation result"):
+            raise AppError(409, "calculation_required", str(exc)) from exc
+        raise
+    except BaseException:
+        cancelled.set()
+        job.path.unlink(missing_ok=True)
+        raise
+
+
+def _write_export(job):
+    cells = [(*coordinate, value)
+             for coordinate, value in sorted(job.snapshot["overrides"].items())]
+    export_transfer(TransferRequest(
+        template_path=job.snapshot["source"], cells=cells, out_path=job.path,
+        template_hash=job.snapshot["template_id"], copy_id=job.copy_id,
+        input_revision=job.snapshot["input_revision"], fmt=job.fmt,
+        selected=job.selected, results=job.snapshot["results"],
+    ))
+
+
+def _write_export_job(payload):
+    job, cancelled = payload
+    try:
+        _write_export(job)
+    finally:
+        if cancelled.is_set():
+            job.path.unlink(missing_ok=True)
+
+
+def _call_bounded(limiter, function, value):
+    with limiter:
+        return function(value)
+
+
+async def _run_bounded(limiter, function, value):
+    worker = asyncio.create_task(asyncio.to_thread(_call_bounded, limiter, function, value))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        try:
+            await worker
+        except BaseException:
+            pass
+        raise
+
+
+def _require_export_ready(snapshot, selected):
+    if (selected is not None and len(selected) < len(snapshot["sheets"])
+            and snapshot["calculated_revision"] != snapshot["input_revision"]):
+        raise AppError(
+            409, "calculation_required",
+            "Workbook calculation is pending; wait for current results before downloading a sheet subset",
+        )
+
+
+def _download_format(value):
+    if value not in {"xlsx", "xlsm"}:
+        raise AppError(422, "invalid_selection", "Download format is invalid")
+    return value
+
+
+def _export_path(services, fmt, prepared):
+    directory = Path(services.config.data_dir) / "exports"
+    if prepared:
+        directory /= "prepared"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"price-plan-{uuid4().hex}.{fmt}"
+
+
+def _export_media(fmt):
+    return ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx"
+            else "application/vnd.ms-excel.sheet.macroenabled.12")
+
+
+def _declared_length(request) -> int:
+    raw = request.headers.get("content-length", "")
+    if not raw:
+        return 0
+    try:
+        length = int(raw)
+    except ValueError as exc:
+        raise AppError(400, "invalid_length", "Content-Length header is not a number") from exc
+    return max(length, 0)
+
+
+def _reject_head(request) -> None:
+    if request.method == "HEAD":
+        raise AppError(405, "method_not_allowed", "Use GET to download this file")
+
+
+async def _upload_preview(request: Request):
+    services, user, _ = _write_auth(request)
+    admission = _admit_transfer(services)
+    try:
+        return await _admitted_upload_preview(request, services, user)
+    finally:
+        admission.release()
+
+
+async def _admitted_upload_preview(request, services, user):
+    limit = getattr(services.config, "upload_max_mb", 100) * 1024 * 1024
+    length = _declared_length(request)
+    if length > limit:
+        raise AppError(413, "too_large", "Upload exceeds the configured size limit")
+    directory = Path(services.config.data_dir) / "uploads"
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = tempfile.NamedTemporaryFile(prefix="preview-", suffix=".xlsx", dir=directory, delete=False)
+    path = Path(handle.name)
+    try:
+        size = 0
+        with handle:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > limit:
+                    raise AppError(413, "too_large", "Upload exceeds the configured size limit")
+                handle.write(chunk)
+        if size == 0:
+            raise AppError(422, "invalid_workbook", "Upload is empty")
+        preview = PreviewRequest(
+            path=path,
+            filename=unquote(request.headers.get("x-upload-filename", "")),
+            user_id=user["id"],
+            session_hash=token_hash(request.cookies.get("pp_session", "")),
+            target_copy_id=(request.path_params.get("copy_id")
+                            or request.query_params.get("copy_id")),
+            category_id=request.query_params.get("category_id"),
+        )
+        body = await _run_bounded(services.transfer_limiter, services.uploads.preview, preview)
+        return JSONResponse(body)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _admit_transfer(services):
+    if not services.transfer_admission.acquire(blocking=False):
+        raise AppError(503, "transfer_busy", "Workbook transfers are busy; try again shortly")
+    return services.transfer_admission
+
+
+async def _upload_confirm(request: Request):
+    services, user, _ = _write_auth(request)
+    payload = await _body(request)
+    mode = payload.get("mode")
+    confirmation = ConfirmRequest(
+        token=request.path_params["token"], payload=payload, user_id=user["id"],
+        session_hash=token_hash(request.cookies.get("pp_session", "")),
+        session_check=_session_check(request, services),
+    )
+    body = await asyncio.to_thread(services.uploads.confirm, confirmation)
+    if body.get("accepted"):
+        copy_id = body.get("copy_id") or body["copy"]["id"]
+        await _calculate_and_publish(services, copy_id, body["input_revision"])
+    elif mode == "new_copy":
+        body["copy"] = await _calculate_baseline(services, body["copy"], user["id"])
+    return JSONResponse(body, status_code=201 if mode == "new_copy" else 200)
+
+
+def _selected_sheets(query, sheets):
+    values = query.getlist("sheets")
+    if not values:
+        return None
+    known = {sheet["name"] for sheet in sheets}
+    selected = []
+    try:
+        for value in values:
+            if value.startswith("["):
+                decoded = json.loads(value)
+                if not isinstance(decoded, list) or not all(isinstance(item, str) for item in decoded):
+                    raise ValueError
+                selected.extend(decoded)
+            elif value in known:
+                selected.append(value)
+            else:
+                selected.extend(value.split(","))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise AppError(422, "invalid_selection", "Sheet selection is invalid") from exc
+    return _validate_selection(selected, sheets)
+
+
+def _selected_values(values, sheets):
+    if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
+        raise AppError(422, "invalid_selection", "Sheet selection is invalid")
+    return _validate_selection(values, sheets)
+
+
+def _validate_selection(values, sheets):
+    selected = set(values)
+    known = {sheet["name"] for sheet in sheets}
+    if not selected or selected - known:
+        raise AppError(422, "invalid_selection", "Select known workbook sheets")
+    chosen = [sheet for sheet in sheets if sheet["name"] in selected]
+    if not any(sheet["hidden"] not in {"hidden", "veryHidden"} for sheet in chosen):
+        raise AppError(422, "invalid_selection", "Select at least one visible sheet")
+    return selected
 
 
 async def _websocket(websocket):
@@ -353,7 +668,7 @@ def _write_auth(request):
 
 
 async def _body(request: Request) -> dict:
-    length = int(request.headers.get("content-length", "0") or 0)
+    length = _declared_length(request)
     if length > BODY_LIMIT:
         raise AppError(413, "too_large", "Request body is too large")
     try:
@@ -458,6 +773,20 @@ async def _static(request):
     raise AppError(404, "not_found", "File not found")
 
 
+def _sweep_transfer_files(data_dir):
+    root = Path(data_dir)
+    for directory in (root / "exports", root / "uploads" / "previews"):
+        if not directory.is_dir():
+            continue
+        for path in directory.rglob("*"):
+            if path.is_file():
+                path.unlink(missing_ok=True)
+    uploads = root / "uploads"
+    if uploads.is_dir():
+        for path in uploads.glob("preview-*.xlsx"):
+            path.unlink(missing_ok=True)
+
+
 class WriteLimiter:
     def __init__(self, limit=240):
         self.limit = limit
@@ -472,6 +801,78 @@ class WriteLimiter:
                 raise AppError(429, "rate_limited", "Write rate limit exceeded")
             entries.append(now)
             self._entries[key] = entries
+
+
+class PreparedDownloadStore:
+    def __init__(self):
+        self._items = {}
+        self._lock = threading.Lock()
+
+    def add(self, artifact):
+        token = uuid4().hex
+        try:
+            size = artifact.path.stat().st_size
+            if size > MAX_PREPARED_DOWNLOAD_BYTES:
+                raise AppError(
+                    413, "download_too_large", "Prepared download exceeds the safe disk limit"
+                )
+            with self._lock:
+                self._purge()
+                while (len(self._items) >= MAX_PREPARED_DOWNLOADS
+                       or self._stored_bytes() + size > MAX_PREPARED_DOWNLOAD_BYTES):
+                    removed = self._items.pop(next(iter(self._items)))
+                    removed.path.unlink(missing_ok=True)
+                self._items[token] = artifact
+        except BaseException:
+            artifact.path.unlink(missing_ok=True)
+            raise
+        return token
+
+    def take(self, token, user_id, session_hash):
+        with self._lock:
+            self._purge()
+            artifact = self._items.pop(token, None)
+        if artifact is None:
+            raise AppError(404, "download_expired", "Download expired; prepare it again")
+        if artifact.user_id != user_id or artifact.session_hash != session_hash:
+            artifact.path.unlink(missing_ok=True)
+            raise AppError(404, "download_expired", "Download expired; prepare it again")
+        return artifact
+
+    def close(self):
+        with self._lock:
+            artifacts = tuple(self._items.values())
+            self._items.clear()
+        for artifact in artifacts:
+            artifact.path.unlink(missing_ok=True)
+
+    def discard(self, token):
+        with self._lock:
+            artifact = self._items.pop(token, None)
+        if artifact is not None:
+            artifact.path.unlink(missing_ok=True)
+
+    def _purge(self):
+        now = time.monotonic()
+        for token, artifact in tuple(self._items.items()):
+            if artifact.expires <= now:
+                del self._items[token]
+                artifact.path.unlink(missing_ok=True)
+
+    def _stored_bytes(self):
+        return sum(artifact.path.stat().st_size for artifact in self._items.values())
+
+
+class DisposableFileResponse(FileResponse):
+    def __init__(self, path, **kwargs):
+        self.cleanup_path = Path(path)
+        super().__init__(path, **kwargs)
+
+    async def __call__(self, scope, receive, send):
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            self.cleanup_path.unlink(missing_ok=True)
 
 
 class SecurityBoundaryMiddleware:

@@ -28,6 +28,7 @@ class Config:
     brand: dict | None = None
     template_results: str = "engine"
     engine: str = "formualizer"
+    upload_max_mb: int = 100
 
 
 BRAND_ASSETS = ("logo", "favicon", "touch_icon")
@@ -274,6 +275,7 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
     replay_window = _positive(settings.get("replay_window", 1000), "replay_window", 1_000_000)
     engine_memory = _positive(settings.get("engine_memory_budget_mb", _default_engine_memory_mb()),
                               "engine_memory_budget_mb", 1_000_000)
+    upload_max = _positive(settings.get("upload_max_mb", 100), "upload_max_mb", 10_000)
     demo_mode = settings.get("demo_mode", False)
     if not isinstance(demo_mode, bool):
         raise ValueError("demo_mode must be boolean")
@@ -295,7 +297,8 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
                   origins, cookie_secure, replay_window, engine_memory,
-                  _brand(root, settings.get("brand")), _template_results(settings), _engine(settings))
+                  _brand(root, settings.get("brand")), _template_results(settings), _engine(settings),
+                  upload_max)
 
 
 def _engine(settings) -> str:

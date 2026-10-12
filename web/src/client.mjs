@@ -4,15 +4,25 @@ export class ApiClient {
     this.fetcher = fetcher;
     this.csrf = "";
   }
-  async request(path, { method = "GET", body } = {}) {
+  async request(path, { method = "GET", body, filename } = {}) {
+    const raw = typeof Blob !== "undefined" && body instanceof Blob;
     const response = await this.fetcher(`/api${path}`, {
       method,
       credentials: "same-origin",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type": raw
+          ? body.type || "application/octet-stream"
+          : "application/json",
+        ...(raw
+          ? {
+              "X-Upload-Filename": encodeURIComponent(
+                filename ?? body.name ?? "workbook.xlsx",
+              ),
+            }
+          : {}),
         ...(method === "GET" ? {} : { "X-CSRF-Token": this.csrf }),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     });
     const result = response.status === 204 ? {} : await response.json();
     if (!response.ok)
@@ -24,6 +34,36 @@ export class ApiClient {
     if (result.csrf) this.csrf = result.csrf;
     return result;
   }
+}
+export async function startDownload(
+  api,
+  { copyId, format, sheets },
+  documentRef = document,
+) {
+  if (!sheets.length) throw new Error("Select at least one sheet");
+  const extension = format === "xlsm" ? "xlsm" : "xlsx";
+  const prepared = await api.request(
+    `/copies/${encodeURIComponent(copyId)}/downloads`,
+    { method: "POST", body: { format: extension, sheets } },
+  );
+  const link = documentRef.createElement("a");
+  link.href = prepared.download_url;
+  documentRef.body.append(link);
+  link.click();
+  link.remove();
+}
+export async function completeUpload(result, context) {
+  if (result.copy_id) {
+    if (!context.currentCopy) await context.openCopy(result.copy);
+    if (!result.operation) return "No uploaded input changes to apply";
+    context.recordUpload(result.operation);
+    await context.resync();
+    return `Applied ${result.accepted} uploaded input changes`;
+  }
+  await context.showHome();
+  return result.copy
+    ? `Created ${result.copy.name}`
+    : `Applied ${result.accepted} uploaded input changes`;
 }
 export class EditController {
   constructor({
@@ -71,7 +111,9 @@ export class EditController {
     this.paint(op.cells);
     let accepted = false;
     try {
-      const body = { op_id: op.op_id, action: op.action, cells: op.cells };
+      const body = op.sourceOpId
+        ? { op_id: op.op_id, action: "undo", source_op_id: op.sourceOpId }
+        : { op_id: op.op_id, action: op.action, cells: op.cells };
       const ack = await this.api.request(`/copies/${this.copyId}/ops`, {
         method: "POST",
         body,
@@ -159,6 +201,44 @@ export class EditController {
       this.paint();
     }
   }
+  recordUpload(receipt) {
+    if (!receipt?.cells?.length) return;
+    const before = {},
+      afterVersions = {},
+      inputKeys = [];
+    for (const item of receipt.cells) {
+      const key = keyOf(item),
+        current = this.store.get(item.sheet, item.r, item.c);
+      inputKeys.push(key);
+      before[key] = {
+        ...(current ?? { k: "i" }),
+        v: item.before,
+        ...(current?.input === true ? { input_value: item.before } : {}),
+        ver: item.before_version,
+      };
+      afterVersions[key] = item.after_version;
+      if (!current || (current.ver ?? -1) < item.after_version)
+        this.store.cells.set(key, {
+          ...(current ?? { k: "i" }),
+          v: current?.input === true ? current.v : item.v,
+          ...(current?.input === true ? { input_value: item.v } : {}),
+          ver: item.after_version,
+          lastOpId: receipt.op_id,
+        });
+    }
+    this.undoStack.push({
+      op_id: receipt.op_id,
+      action: receipt.action,
+      cells: receipt.cells,
+      before,
+      afterVersions,
+      inputKeys,
+      uploadLineage: true,
+    });
+    if (this.undoStack.length > 100) this.undoStack.shift();
+    this.redoStack = [];
+    this.paint(receipt.cells);
+  }
   async undo(redo = false) {
     if (this.role === "viewer" || this.busy) return false;
     const source = redo ? this.redoStack : this.undoStack,
@@ -170,6 +250,10 @@ export class EditController {
     }
     try {
       const inverse = invertOp(this.store, entry);
+      if (entry.uploadLineage) {
+        inverse.sourceOpId = entry.op_id;
+        inverse.uploadLineage = true;
+      }
       this.busy = true;
       inverse.interruptions = entry.interruptions;
       inverse.lineage = Object.fromEntries(
