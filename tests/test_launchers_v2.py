@@ -81,6 +81,18 @@ class OfficeRun(unittest.TestCase):
         # an existing settings.json is never rewritten
         self.assertIn('if exist settings.json goto have_settings', text)
 
+    def test_pull_gets_user_git_then_clones_or_updates(self):
+        import re
+
+        raw = (ROOT / 'office_pull.bat').read_bytes()
+        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''))
+        text = raw.decode('ascii')
+        labels = set(re.findall(r'^:(\w+)', text, re.M))
+        self.assertLessEqual(set(re.findall(r'\bgoto :?(\w+)', text, re.I)), labels)
+        for must in ('%LOCALAPPDATA%\\MinGit', 'MinGit-', '-64-bit.zip', '--ssl-no-revoke',
+                     'http.schannelCheckRevoke=false', 'clone --branch feat/v2-integration', 'pull --ff-only'):
+            self.assertIn(must, text)
+
 
 class DeployDocV2(unittest.TestCase):
     def test_deploy_doc_covers_v2(self):

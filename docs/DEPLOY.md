@@ -16,8 +16,12 @@
 
 Make a folder (for example `C:\PricePlanning`), put the template `.xlsm` in it, open CMD in that folder:
 
-    if exist app\.git (git -C app pull --ff-only) else (git clone --branch feat/v2-integration https://github.com/GopalGB/price-planning.git app)
+    curl.exe --ssl-no-revoke -sL -o pull.bat https://raw.githubusercontent.com/GopalGB/price-planning/feat/v2-integration/office_pull.bat && pull.bat
     app\office_run.bat
+
+`office_pull.bat` needs no installed Git and no admin: on first use it unpacks MinGit into
+`%LOCALAPPDATA%\MinGit`, then clones the app into `app\` or fast-forwards it (Windows certificate store,
+revocation check off, the same as `curl.exe --ssl-no-revoke`).
 
 `office_run.bat` uses the first `.xlsm` in that folder (`PP_TEMPLATE_PATH`), keeps engine caches in
 `engine-cache\` there, writes `settings.json` with the Excel engine on first use (never rewrites it), installs
