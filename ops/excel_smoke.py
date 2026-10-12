@@ -53,6 +53,9 @@ def main():
           f"{engine.memory_bytes() // 2**20} MB", flush=True)
     failures = 0
     try:
+        start = time.time()
+        cells = len(full_read(engine, snapshot))
+        print(f"full read of every sheet: {time.time() - start:.1f} s, {cells} non-empty cells", flush=True)
         inputs = sorted(snapshot.input_mask)
         random.seed(7)
         for key in random.sample(inputs, min(args.edits, len(inputs))):
