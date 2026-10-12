@@ -1,7 +1,9 @@
 #!/bin/sh
-# Max HQ sensitive-info gate when present on the development Mac (sibling checkout or the standard Max HQ path).
+# Max HQ sensitive-info gate when present on the development Mac.
+# Worktrees can live outside Max HQ, so also look beside the shared git directory.
+COMMON="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 for MAXHQ_HOOK in "$(git rev-parse --show-toplevel)/../security/tools/pre-push-hook.sh" \
-                  "$HOME/Desktop/Max HQ/security/tools/pre-push-hook.sh"; do
+                  "$COMMON/../../security/tools/pre-push-hook.sh"; do
   [ -f "$MAXHQ_HOOK" ] && exec bash "$MAXHQ_HOOK" "$@"
 done
 exit 0
