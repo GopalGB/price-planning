@@ -60,6 +60,28 @@ class LaunchersV2(unittest.TestCase):
         self.assertIn('\r\n', (ROOT / 'run_v2.bat').read_bytes().decode())
 
 
+class OfficeRun(unittest.TestCase):
+    """office_run.bat: the one command Sir runs on the office PC."""
+
+    def test_labels_files_and_line_endings(self):
+        import re
+
+        raw = (ROOT / 'office_run.bat').read_bytes()
+        raw.decode('ascii')
+        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''))  # CRLF only: cmd misreads labels on bare LF
+        text = raw.decode('ascii')
+        labels = set(re.findall(r'^:(\w+)', text, re.M))
+        targets = set(re.findall(r'\b(?:goto|call) :?(\w+)', text, re.I)) - {'eof'}
+        self.assertLessEqual(targets, labels)
+        for path in ('ops\\install_env.py', 'ops\\excel_smoke.py', 'run_v2.py'):
+            self.assertIn(path, text)
+            self.assertTrue((ROOT / path.replace('\\', '/')).is_file(), path)
+        for flag in ('--macros', '--refresh', '--slicers', '--ssl-no-revoke', 'PP_TEMPLATE_PATH', 'PP_ENGINE_CACHE_DIR'):
+            self.assertIn(flag, text)
+        # an existing settings.json is never rewritten
+        self.assertIn('if exist settings.json goto have_settings', text)
+
+
 class DeployDocV2(unittest.TestCase):
     def test_deploy_doc_covers_v2(self):
         text = (ROOT / 'docs' / 'DEPLOY.md').read_text(encoding='utf-8')

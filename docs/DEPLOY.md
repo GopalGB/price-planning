@@ -12,6 +12,19 @@
 5. Copy each printed `Share with your team` URL to colleagues. A detected `10.x` address is listed first,
    followed by other usable local addresses.
 
+## Office PC: one command to pull, one to run
+
+Make a folder (for example `C:\PricePlanning`), put the template `.xlsm` in it, open CMD in that folder:
+
+    if exist app\.git (git -C app pull --ff-only) else (git clone --branch feat/v2-integration https://github.com/GopalGB/price-planning.git app)
+    app\office_run.bat
+
+`office_run.bat` uses the first `.xlsm` in that folder (`PP_TEMPLATE_PATH`), keeps engine caches in
+`engine-cache\` there, writes `settings.json` with the Excel engine on first use (never rewrites it), installs
+Python 3.12 for the user when no 3.10 to 3.12 exists (`curl --ssl-no-revoke` for proxies that block revocation
+checks), installs the wheels offline, runs the four Excel checks on the first run only (`checks-done.txt`;
+`app\office_run.bat check` runs them again), then starts the app.
+
 ## Backup (online, safe while the app is running)
 `run_v2.bat --backup` writes a verified copy of the resolved live database into `backups\` using the SQLite online
 backup API (never a file copy of the live database). Database precedence is: `--db`, then `PP_DATABASE_PATH`, then
