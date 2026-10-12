@@ -134,7 +134,11 @@ async def _logout(request: Request):
 async def _me(request: Request):
     services = _services(request)
     user, csrf = services.auth.authenticate(request.cookies.get("pp_session"))
-    return JSONResponse({"user": user, "csrf": csrf})
+    snapshot = services.snapshot
+    template = {"name": snapshot.name, "sheets": len(snapshot.sheets),
+                "visible": sum(not sheet["hidden"] for sheet in snapshot.sheets),
+                "calculation": getattr(snapshot, "results", "engine")}
+    return JSONResponse({"user": user, "csrf": csrf, "template": template})
 
 
 async def _categories(request: Request):

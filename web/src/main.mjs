@@ -70,13 +70,13 @@ async function showHome() {
   $("logout-button").hidden = false;
   $("save-chip").textContent = user.name;
   $("save-chip").classList.remove("busy");
-  const home = await loadHome(api, categoryId);
+  const [home, me] = await Promise.all([loadHome(api, categoryId), api.request("/me")]);
   categories = home.categories;
   copies = home.copies;
   categoryId = home.categoryId;
   $("breadcrumb").textContent =
     `${categoryId === null ? "Shared with me" : (categories.find((c) => c.id === categoryId)?.name ?? "Your workspace")} / Copies`;
-  $("view").innerHTML = homeView(categories, copies, categoryId);
+  $("view").innerHTML = homeView(categories, copies, categoryId, me.template);
   $("view").onclick = (event) => {
     const button = event.target.closest("button");
     if (!button) return;
@@ -97,6 +97,7 @@ async function showHome() {
       shareModal(copies.find((c) => c.id === button.dataset.share));
   };
   $("copy-create").onclick = createCopyModal;
+  if ($("template-copy")) $("template-copy").onclick = createCopyModal;
   $("category-create").onclick = categoryModal;
   if ($("category-members")) $("category-members").onclick = membersModal;
 }

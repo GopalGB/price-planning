@@ -33,6 +33,8 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
             "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
         }, {"x-csrf-token": csrf})
         self.assertEqual(meta["calculation"], "cached")
+        template = client.get("/api/me").json()["template"]
+        self.assertEqual((template["sheets"], template["calculation"]), (len(meta["sheets"]), "cached"))
         rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=5").json()
         self.assertEqual((meta["calculated_revision"], rows["calculated_revision"]),
                          (meta["input_revision"], rows["input_revision"]))
@@ -59,6 +61,10 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
                                                    "visibility": "private", "default_role": "viewer"},
                                    {"x-csrf-token": csrf})
         self.assertEqual(response.status_code, 201)
+        with mock.patch("pp.engine.pool.EnginePool.apply") as engine:
+            restarted = create_runtime(root)  # the queued baseline must not be recovered with the engine
+        restarted.close()
+        engine.assert_not_called()
 
 
 if __name__ == "__main__":

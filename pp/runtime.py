@@ -54,7 +54,8 @@ def create_runtime(root: str | Path) -> Runtime:
             request = CalculationRequest(copy_id, revision, source, changes, base_revision)
             return pool.apply(request)
 
-        recover_unfinished(database, calculate, snapshot)
+        if config.template_results != "cached":
+            recover_unfinished(database, calculate, snapshot)
         # A values-only template never calculates, so copies must not start engine workers.
         calculator = None if config.template_results == "cached" else pool
         app = create_app(ServiceContext(database, snapshot, config, calculator))
