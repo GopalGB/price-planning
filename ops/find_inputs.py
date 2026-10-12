@@ -1,7 +1,7 @@
 # ops/find_inputs.py
 """List input cells: unlocked cells on protected sheets. Streams the XML; never loads the whole sheet."""
 import re, sys, zipfile
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 from pathlib import Path
 NS = '{http://schemas.openxmlformats.org/spreadsheetml/2006/main}'
 RNS = '{http://schemas.openxmlformats.org/officeDocument/2006/relationships}'

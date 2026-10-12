@@ -438,7 +438,7 @@ def _cached_index(prepared: Path, formulas: dict, names: list[str]) -> Dependenc
     path = prepared.with_name(f"{prepared.name}.index-{code}.pickle")
     try:
         with path.open("rb") as handle:
-            return pickle.load(handle)
+            return pickle.load(handle)  # nosec B301 # per-user engine cache written only by this app
     except FileNotFoundError:
         pass
     except Exception:

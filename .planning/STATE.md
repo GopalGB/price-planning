@@ -1,5 +1,58 @@
 # STATE
 
+## 2026-10-12 (OpenCode runner, pp under bandit)
+
+fix/bandit-hardening at 9f330df. CI now scans the v2 server too: `bandit -r app ops pp -ll`, exit 0.
+- XML hardening (34 B314 in pp/): every workbook parse in pp/ now goes through defusedxml -
+  importer, upload, transfer, xlsm, dashboard, drawings, colors, native_load, formualizer.
+  No B314 nosec was needed: defusedxml covered all of them, including the custom-target parse
+  in dashboard.py (SafeET.parse with SafeET.XMLParser(forbid_dtd=True); its hand-rolled
+  _DashboardXML.doctype guard was dropped because DefusedXMLParser does not dispatch to
+  target.doctype, so the guard was silently dead once the parser was swapped).
+- Five reviewed false positives annotated, no logic touched: B104 pp/config.py, B608 pp/db.py
+  and pp/workbook_service.py, B301 in both engine caches.
+- Two tests patched onto pp.upload.SafeET / pp.export.transfer.SafeET. Both had been patching
+  ET.parse and ET.iterparse, names the modules no longer use, so the guard they assert was
+  already inert; they now guard the parser actually in the path.
+- Measured cost: defusedxml iterparse is ~1.6-2.9x slower than the stdlib parser on a 20 MB
+  synthetic sheet (min-of-4, A/B, same process). The export budget test
+  (test_55mb_xml_subset_path_stays_within_budget, 30 s) measured 21.9/23.1 s at HEAD and
+  22.1/28.1 s after, on a host running another suite. Headroom is now thin; watch it.
+- Tests: 132 template/upload/transfer OK, 104 upload/db/config/p0 OK, 57 export/db/api OK,
+  28 security/ops OK, 26 native, 68 engine, 17 workbook/ops/end-to-end. bandit 0, semgrep 0,
+  content guard 0, Ruff whole tree 698 now and 698 at baseline, 0 introduced.
+- Not run: the whole suite (another agent holds it), web suite, Office/Excel.
+  No external model review; the supervisor owns that.
+- Report: .planning/oc-report.md.
+
+## 2026-10-12 (OpenCode runner, bandit hardening)
+
+fix/bandit-hardening at 8394df1 (3 commits after d2a45ca). CI's `bandit -r app ops -ll` was
+exiting 1 on 18 MEDIUM findings; it now exits 0.
+- XML hardening (51e301e): 11 B314 findings closed. This was a real defect, not a lint nit.
+  Entity expansion was live: a 200 kB literal through six levels expanded 64x (12.8 MB)
+  before expat's ceiling refused it. app/workbook.py, ops/find_inputs.py and the ops
+  dashboard fixture now parse through defusedxml, already pinned and vendored since d2a45ca.
+  Two tests in tests/test_p0_regressions.py (XmlEntityRefusal) pin refusal at both entry
+  points; both failed before the change.
+- B104 (76690a1): bandit's rule fires on the literal 0.0.0.0 wherever it appears, including
+  the two comparisons that reject it as a public origin, so one deliberate LAN deployment
+  choice produced six findings. The literal now lives in one ALL_INTERFACES constant with
+  the justification and a scoped nosec. Behaviour unchanged.
+- B608 (8394df1): both findings concatenated fixed literals, so nothing was injectable, but
+  bandit reads a BinOp and cannot see that. Complete statements now; no suppression added.
+- Checked pp/ (39 B314 findings, outside the CI scan) by driving real entity bombs through
+  _validate_archive: already defended. The DOCTYPE screen runs before any parser, returning
+  422 unsafe_xml or 422 invalid_workbook. Not widened, and reported rather than assumed.
+- Tests: 754 Python OK twice (187.967s, 185.953s), bandit exit 0, content guard 0, Ruff whole
+  tree 698 findings now and 698 at baseline, 0 introduced and 0 removed.
+- Not run: web suite (no node_modules, no web file touched), semgrep, pip-audit, gitleaks,
+  browser, Office/Excel. No external model review; the supervisor owns that.
+- Incident: a `git stash pop` with nothing to stash popped another branch's stash@{0}
+  (feat/v2-dashboard). Nothing lost; stash preserved and verified. Baselines now use a
+  scratch worktree.
+- Report: .planning/oc-report.md.
+
 ## 2026-10-12 14:35 IST (Claude, P6.2 look: colors, pictures, shapes)
 
 feat/v2-integration at 6dd69b4 (5 commits after 78bbe4c). IMPORT_VERSION 15 (8765 reimported).

@@ -6,10 +6,13 @@ import logging
 import posixpath
 import re
 import math
+from io import BytesIO
 from urllib.parse import unquote, urlsplit
 import zipfile
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 
+from defusedxml.common import DefusedXmlException
 from openpyxl.styles.numbers import BUILTIN_FORMATS
 
 
@@ -44,11 +47,6 @@ class DashboardUnsupported(DashboardMetadataError):
     """A valid pivot this app cannot rebuild from cells; the template keeps Excel's saved values."""
 
 
-class _DashboardXML(ET.TreeBuilder):
-    def doctype(self, name, pubid, system):
-        raise DashboardMetadataError("dashboard XML DTDs are forbidden")
-
-
 def _bool(value, default=False):
     if value is None:
         return default
@@ -71,11 +69,13 @@ def _integer(value, label, minimum=0):
 
 def _part_xml(archive, part):
     try:
-        return ET.fromstring(archive.read(part), parser=ET.XMLParser(target=_DashboardXML()))
+        return SafeET.parse(BytesIO(archive.read(part)), parser=SafeET.XMLParser(forbid_dtd=True)).getroot()
     except KeyError as exc:
         raise DashboardMetadataError("dashboard relationship target is missing") from exc
     except ET.ParseError as exc:
         raise DashboardMetadataError("dashboard related part is malformed") from exc
+    except DefusedXmlException as exc:
+        raise DashboardMetadataError("dashboard XML DTDs and entities are forbidden") from exc
 
 
 def _relationship_part(source_part):

@@ -20,7 +20,12 @@ import webbrowser
 ROOT = Path(__file__).resolve().parents[1]
 WHEEL = ROOT / 'vendor/waitress-3.0.2-py3-none-any.whl'
 WHEEL_SHA256 = 'c56d67fd6e87c2ee598b76abdd4e96cfad1f24cacdea5078d382b1f9d7b5ed2e'
-DEFAULTS = dict(bind='0.0.0.0', port=8000, public_origin='auto', demo_mode=True,
+# The team server is meant to be reachable from the office network, so binding every
+# interface is the supported deployment, not an oversight. Reaching it still requires
+# a signed-in account, and `configure` asks for it explicitly. Keeping the literal in
+# one named constant also stops bandit's B104 from firing on every comparison below.
+ALL_INTERFACES = '0.0.0.0'  # nosec B104
+DEFAULTS = dict(bind=ALL_INTERFACES, port=8000, public_origin='auto', demo_mode=True,
                 cookie_secure=False, threads=8, data_dir='data')
 
 
@@ -54,7 +59,7 @@ def validate_settings(settings):
         origin = urllib.parse.urlsplit(cfg['public_origin'])
         if origin.scheme not in ('http', 'https') or not origin.hostname or origin.username or origin.password or origin.path not in ('', '/') or origin.query or origin.fragment:
             raise ValueError('public_origin must be an HTTP/HTTPS address without a path, credentials, or query.')
-        if origin.hostname in ('0.0.0.0', '::'):
+        if origin.hostname in (ALL_INTERFACES, '::'):
             raise ValueError('public_origin must use the server name or IP address that people open in their browser.')
         if cfg['cookie_secure'] != (origin.scheme == 'https'):
             raise ValueError('cookie_secure must be true for HTTPS and false for HTTP.')
@@ -99,7 +104,7 @@ def configure(path):
     if choice == '1':
         bind, origin = '127.0.0.1', 'http://localhost:%s' % port
     elif choice == '2':
-        bind = '0.0.0.0'
+        bind = ALL_INTERFACES
         origin = input('Team address, for example http://10.0.0.25:%s: ' % port).strip()
         if not origin.startswith('http://'):
             raise ValueError('Use an http:// server address for direct LAN access.')
@@ -144,7 +149,7 @@ def resolve_addresses(cfg):
     """Resolve on each startup so changing server IPs are not saved forever."""
     if cfg['public_origin'] != 'auto':
         return cfg['public_origin'], [cfg['public_origin']]
-    interfaces = lan_addresses() if cfg['bind'] == '0.0.0.0' else []
+    interfaces = lan_addresses() if cfg['bind'] == ALL_INTERFACES else []
     local = ['http://localhost:%s' % cfg['port'], 'http://127.0.0.1:%s' % cfg['port']]
     team = ['http://%s:%s' % (ip, cfg['port']) for ip in interfaces]
     origins = team + local
@@ -310,8 +315,8 @@ def main(argv=None):
         if args.demo and not (args.configure or args.backup or args.source_refresh):
             # Preserve a deliberately configured LAN URL. Older loopback setups
             # become reachable when launched through the demo batch file.
-            origin = cfg['public_origin'] if cfg['demo_mode'] and cfg['bind'] == '0.0.0.0' else 'auto'
-            cfg = validate_settings(cfg | dict(bind='0.0.0.0', public_origin=origin,
+            origin = cfg['public_origin'] if cfg['demo_mode'] and cfg['bind'] == ALL_INTERFACES else 'auto'
+            cfg = validate_settings(cfg | dict(bind=ALL_INTERFACES, public_origin=origin,
                                                demo_mode=True, cookie_secure=False))
         data = apply_environment(cfg)
         if args.backup:

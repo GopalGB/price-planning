@@ -13,7 +13,6 @@ import shutil
 import tempfile
 from pathlib import Path
 from urllib.parse import unquote
-import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as SafeET
 from xml.parsers import expat
 from xml.sax.saxutils import escape
@@ -276,7 +275,7 @@ def _relationship_graph(archive):
 
 
 def _sheet_records(workbook_xml, graph):
-    root = ET.fromstring(workbook_xml)
+    root = SafeET.fromstring(workbook_xml)
     relationships = {item["id"]: item for item in graph["xl/workbook.xml"]}
     records = []
     for index, node in enumerate(item for item in root.iter() if _local(item.tag) == "sheet"):
@@ -429,7 +428,7 @@ def _removed_pivot_ids(context, state):
         item["id"] for item in context.graph["xl/workbook.xml"]
         if item["target"] in state.removed and item["type"].endswith("/pivotCacheDefinition")
     }
-    root = ET.fromstring(context.workbook_xml)
+    root = SafeET.fromstring(context.workbook_xml)
     return {
         node.get("cacheId") for node in root.iter()
         if (_local(node.tag) == "pivotCache"
@@ -672,7 +671,7 @@ def _cell_formula(cell):
 
 def _iter_cells(stream):
     stack = []
-    for event, element in ET.iterparse(stream, events=("start", "end")):
+    for event, element in SafeET.iterparse(stream, events=("start", "end")):
         if event == "start":
             stack.append(element)
             continue
@@ -1055,7 +1054,7 @@ def _custom_state(existing):
             f'<?xml version="1.0" encoding="utf-8"?><cp:Properties xmlns:cp="{CUSTOM_NS}" '
             f'xmlns:vt="{VT_NS}"></cp:Properties>'
         ).encode()
-    ET.fromstring(existing)
+    SafeET.fromstring(existing)
     root = re.search(rb"<(?P<prefix>[A-Za-z_][\w.-]*:)?Properties\b[^>]*>", existing)
     if root is None:
         raise ValueError("custom properties root is malformed")
@@ -1335,7 +1334,7 @@ def _transform_cleanups(state):
 
 
 def _content_types(archive):
-    root = ET.fromstring(archive.read("[Content_Types].xml"))
+    root = SafeET.fromstring(archive.read("[Content_Types].xml"))
     defaults, overrides = {}, {}
     for node in root:
         if _local(node.tag) == "Default":
@@ -1347,7 +1346,7 @@ def _content_types(archive):
 
 def _relationship_references(stream):
     references, stack = set(), []
-    for event, element in ET.iterparse(stream, events=("start", "end")):
+    for event, element in SafeET.iterparse(stream, events=("start", "end")):
         if event == "start":
             stack.append(element)
             continue
@@ -1403,7 +1402,7 @@ def _validate_package_member(archive, info, state):
             references = _relationship_references(stream)
     elif name.endswith(".rels"):
         with archive.open(info) as stream:
-            for _, element in ET.iterparse(stream, events=("end",)):
+            for _, element in SafeET.iterparse(stream, events=("end",)):
                 element.clear()
     if name != "[Content_Types].xml" and not name.endswith(".rels"):
         extension = name.rsplit(".", 1)[-1] if "." in name else ""

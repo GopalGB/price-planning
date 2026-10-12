@@ -223,7 +223,7 @@ def _derived_origins(bind: str, port: int) -> tuple[str, ...]:
     origins = [http_origin("localhost", port), http_origin("127.0.0.1", port)]
     if hostname and all(char.isascii() and (char.isalnum() or char in ".-") for char in hostname):
         origins.append(http_origin(hostname, port))
-    if bind not in {"0.0.0.0", "::"}:
+    if bind not in {"0.0.0.0", "::"}:  # nosec B104 # LAN app: colleagues connect over the office network; origins are checked
         origins.append(http_origin(bind, port))
     origins.extend(http_origin(address, port) for address in _detected_ipv4())
     return tuple(dict.fromkeys(origins))

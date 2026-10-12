@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 
 from openpyxl.formula.translate import Translator
 from openpyxl.styles.numbers import BUILTIN_FORMATS
@@ -210,7 +211,7 @@ def _style_record(style: StyleDefinition, root: ET.Element, palette: Palette) ->
 def _style_data(archive: zipfile.ZipFile) -> tuple[list[dict], set[int]]:
     if "xl/styles.xml" not in archive.namelist():
         return [_default_style()], set()
-    root = ET.fromstring(archive.read("xl/styles.xml"))
+    root = SafeET.fromstring(archive.read("xl/styles.xml"))
     palette = Palette(theme_colors(archive), indexed_palette(root))
     bases = list(root.findall(f"{NS}cellStyleXfs/{NS}xf"))
     styles, unlocked = [], set()
@@ -231,8 +232,8 @@ def _default_style() -> dict:
 
 
 def _workbook_data(archive: zipfile.ZipFile) -> tuple[list[dict], list[dict]]:
-    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
-    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    workbook = SafeET.fromstring(archive.read("xl/workbook.xml"))
+    rels = SafeET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     targets = {item.get("Id"): item.get("Target") for item in rels}
     sheets = []
     for index, node in enumerate(workbook.findall(f"{NS}sheets/{NS}sheet")):
@@ -254,7 +255,7 @@ def _shared_strings(archive: zipfile.ZipFile, database: sqlite3.Connection) -> N
         return
     with archive.open("xl/sharedStrings.xml") as stream:
         stack, index = [], 0
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in SafeET.iterparse(stream, events=("start", "end")):
             if event == "start":
                 stack.append(element)
                 continue
@@ -396,7 +397,7 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
     state = SheetState(block_rows, metadata, CellContext(context.database, index, context.unlocked))
     with context.archive.open(sheet_info["part"]) as stream:
         stack = []
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in SafeET.iterparse(stream, events=("start", "end")):
             if event == "start":
                 stack.append(element)
                 continue
@@ -627,7 +628,7 @@ def _button_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dict
     found = []
     for spec in sheet_specs:
         for rel_type, part in sheet_drawing_parts(archive, spec["part"]):
-            root = ET.fromstring(archive.read(part))
+            root = SafeET.fromstring(archive.read(part))
             extracted = _vml_buttons(root) if rel_type == VML_REL else _drawing_buttons(root, part, archive, palette)
             found.extend({"sheet": spec["index"], **button} for button in extracted)
     return [{"id": f"b{number}", **button} for number, button in enumerate(found)]
@@ -639,7 +640,7 @@ def _drawing_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dic
     for spec in sheet_specs:
         for rel_type, part in sheet_drawing_parts(archive, spec["part"]):
             if rel_type == DRAWING_REL:
-                root = ET.fromstring(archive.read(part))
+                root = SafeET.fromstring(archive.read(part))
                 found.extend({"sheet": spec["index"], **item} for item in drawing_objects(root, part, archive, palette))
     return [{"id": f"d{number}", **item} for number, item in enumerate(found)]
 
@@ -648,7 +649,7 @@ def _has_data_connections(archive: zipfile.ZipFile) -> bool:
     """True when the workbook has at least one Power Query or other data connection Excel can refresh."""
     if "xl/connections.xml" not in archive.namelist():
         return False
-    return ET.fromstring(archive.read("xl/connections.xml")).find(f"{NS}connection") is not None
+    return SafeET.fromstring(archive.read("xl/connections.xml")).find(f"{NS}connection") is not None
 
 
 def _dashboard_or_saved_values(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> dict:

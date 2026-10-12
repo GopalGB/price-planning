@@ -18,7 +18,7 @@ import hashlib
 import os
 import posixpath
 import re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import tempfile
 import zipfile
 from dataclasses import dataclass, field
@@ -198,8 +198,8 @@ def _column(table, name):
 def read_tables(archive) -> dict:
     """Map each table's display name (casefolded) to its sheet and layout."""
     names = archive.namelist()
-    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
-    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    workbook = SafeET.fromstring(archive.read("xl/workbook.xml"))
+    rels = SafeET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     targets = {item.get("Id"): item.get("Target") for item in rels}
     tables = {}
     for sheet in workbook.iter(f"{MAIN_NS}sheet"):
@@ -208,11 +208,11 @@ def read_tables(archive) -> dict:
                                     posixpath.basename(part) + ".rels")
         if sheet_rels not in names:
             continue
-        for rel in ET.fromstring(archive.read(sheet_rels)).iter(f"{REL_NS}Relationship"):
+        for rel in SafeET.fromstring(archive.read(sheet_rels)).iter(f"{REL_NS}Relationship"):
             if not rel.get("Type", "").endswith("/table"):
                 continue
             table_part = _part(posixpath.dirname(part), rel.get("Target", ""))
-            node = ET.fromstring(archive.read(table_part))
+            node = SafeET.fromstring(archive.read(table_part))
             columns = [OOXML_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), column.get("name", ""))
                        for column in node.iter(f"{MAIN_NS}tableColumn")]
             tables[node.get("displayName", node.get("name", "")).casefold()] = Table(

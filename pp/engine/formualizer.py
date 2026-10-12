@@ -7,7 +7,7 @@ import importlib.metadata
 import os
 import pickle
 import re
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import zipfile
 from collections import Counter
 from collections.abc import Iterator, Set
@@ -137,8 +137,8 @@ def _require_version() -> None:
 
 
 def _sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
-    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
-    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    workbook = SafeET.fromstring(archive.read("xl/workbook.xml"))
+    rels = SafeET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
     targets = {item.get("Id"): item.get("Target") for item in rels}
     parts = []
     for sheet in workbook.findall(f"{NS}sheets/{NS}sheet"):
@@ -149,7 +149,7 @@ def _sheet_parts(archive: zipfile.ZipFile) -> list[tuple[str, str]]:
 
 def _uses_1904_date_system(path: Path) -> bool:
     with zipfile.ZipFile(path) as archive:
-        workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+        workbook = SafeET.fromstring(archive.read("xl/workbook.xml"))
     properties = workbook.find(f"{NS}workbookPr")
     return properties is not None and properties.get("date1904", "").lower() in {"1", "true"}
 
@@ -172,7 +172,7 @@ def _cached_formula_map(prepared: Path):
     path = prepared.with_name(f"{prepared.name}.map-{code}.pickle")
     try:
         with path.open("rb") as handle:
-            return pickle.load(handle)
+            return pickle.load(handle)  # nosec B301 # per-user engine cache written only by this app
     except FileNotFoundError:
         pass
     except Exception:
@@ -236,7 +236,7 @@ def _formula_map(path: Path):
 
 
 def _defined_name_ranges(archive, names):
-    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    workbook = SafeET.fromstring(archive.read("xl/workbook.xml"))
     ranges = {}
     for item in workbook.findall(f"{NS}definedNames/{NS}definedName"):
         name, expression = item.get("name"), (item.text or "").lstrip("=")
@@ -405,7 +405,7 @@ def _is_own_cell_array(extent, reference):
                (own.group("col").upper(), int(own.group("row"))) for match in cells)
 
 
-def _formula_cells(stream, parser=ET.iterparse):
+def _formula_cells(stream, parser=SafeET.iterparse):
     stack = []
     for event, element in parser(stream, events=("start", "end")):
         if event == "start":
