@@ -6,6 +6,8 @@ import tempfile
 import zipfile
 import xml.etree.ElementTree as ET
 
+import defusedxml.ElementTree as SafeET
+
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Protection
@@ -71,7 +73,7 @@ def _write_base(path, row_count):
 
 
 def _xml(data):
-    return ET.fromstring(data)
+    return SafeET.fromstring(data)
 
 
 def _serialized(root):

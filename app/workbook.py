@@ -1,7 +1,7 @@
 """Streaming, read-only OOXML ingestion; never rewrites the supplied XLSM."""
 import hashlib,json,re,time,zipfile
 from pathlib import Path
-from xml.etree import ElementTree as E
+import defusedxml.ElementTree as E
 from .db import ROOT, DB, init_schema
 
 NS={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}

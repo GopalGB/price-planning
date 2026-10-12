@@ -302,5 +302,61 @@ class Finding10(unittest.TestCase):
             self.assertEqual(picks['worst'][0], 1)
 
 
+class XmlEntityRefusal(unittest.TestCase):
+    """B314: the stdlib parser expands entities, so workbook parts from a file are parsed with defusedxml."""
+
+    NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+
+    @staticmethod
+    def entity_bomb(body, reference='&g;'):
+        """A part whose single attribute expands 2**6 copies of a 200 kB literal."""
+        text = 'a' * 200_000
+        declarations = ''.join(
+            '<!ENTITY {0} "{1}">'.format(
+                chr(ord('b') + step),
+                ''.join('&{0};'.format(chr(ord('a') + step)) for _ in range(2)))
+            for step in range(6))
+        return ('<?xml version="1.0"?><!DOCTYPE s [<!ENTITY a "{0}">{1}]>{2}'.format(
+            text, declarations, body)).encode()
+
+    def test_find_inputs_refuses_a_styles_part_with_entity_expansion(self):
+        from defusedxml import DTDForbidden, EntitiesForbidden
+        body = ('<styleSheet xmlns="{0}" note="&g;">'
+                '<cellStyleXfs count="1"><xf/></cellStyleXfs>'
+                '<cellXfs count="1"><xf xfId="0"/></cellXfs></styleSheet>').format(self.NS)
+        with zipfile.ZipFile(io.BytesIO(zip_bytes({'xl/styles.xml': self.entity_bomb(body)}))) as archive:
+            with self.assertRaises((EntitiesForbidden, DTDForbidden)):
+                find_inputs._unlocked_style_ids(archive)
+
+    def test_import_workbook_refuses_a_styles_part_with_entity_expansion(self):
+        from defusedxml import DTDForbidden, EntitiesForbidden
+        from app.db import DB, init_schema
+        from app.workbook import import_workbook
+        workbook = zip_bytes({
+            'xl/workbook.xml': (
+                '<?xml version="1.0"?><workbook xmlns="{0}" '
+                'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                '<sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>').format(self.NS),
+            'xl/_rels/workbook.xml.rels': (
+                '<?xml version="1.0"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/>'
+                '</Relationships>'),
+            'xl/worksheets/sheet1.xml': (
+                '<?xml version="1.0"?><worksheet xmlns="{0}">'
+                '<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData>'
+                '</worksheet>').format(self.NS),
+            'xl/styles.xml': self.entity_bomb(
+                '<styleSheet note="&g;"><cellXfs count="1"><xf/></cellXfs></styleSheet>'),
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'entity-bomb.xlsm'
+            path.write_bytes(workbook)
+            with DB() as db:
+                init_schema(db)
+                with self.assertRaises((EntitiesForbidden, DTDForbidden)):
+                    import_workbook(path, db)
+
+
 if __name__ == '__main__':
     unittest.main()
