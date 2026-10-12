@@ -14,6 +14,13 @@ calculated (no "Calculating..."), recovery skipped in values-only mode.
 Export verified on the real copy: 22 sheets, VBA kept, 7.9 s.
 Not started: import (upload into copy or new copy), macros, data refresh.
 
+09:30 update: visible-window evaluation on an edit also passed 3.5 GB, so
+formualizer cannot run realistic edits on this file within the Mac or office
+memory. Sir confirmed the office Windows server has Microsoft Excel. Decision:
+real Excel via COM as the engine (exact results, VBA macros, Power Query).
+All 12 branches pushed to the private repo (gitleaks clean, no office files).
+Pre-push hook fixed to find the Max HQ gate from worktrees (fb50ed7, unpushed).
+
 ## 2026-10-12 08:10 IST (Claude)
 
 Sir asked again to see the whole template with every tab. Values-only mode
