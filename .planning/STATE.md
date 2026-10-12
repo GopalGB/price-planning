@@ -17,7 +17,10 @@ feat/v2-integration at 6dd69b4 (5 commits after 78bbe4c). IMPORT_VERSION 15 (876
 - Verified in Ego Lite on 8765 (geometry/counts only): open + live socket, toolbar bound, picture
   loads, shapes clickable, link lands on its cell, 150% zoom scales overlays 1.5x.
 - Tests: 743 Python OK, 161 web OK, ruff clean, guard 0.
-- Known: zoom resets to 100% on sheet switch while the dropdown keeps its value (pre-existing).
+- Fixed 2026-10-12 (2c7f158): each sheet keeps its own zoom; the dropdown follows the sheet.
+- Fixed 2026-10-12 (e607dfd): engine workers spool into <temp>/pp-engine-spool/<pid>-*, removed on pool
+  close, dead-server folders swept on start (not on Windows). Tests use a throwaway PP_ENGINE_CACHE_DIR.
+  Tests: 751 Python OK, 162 web OK, content guard 0, prettier clean.
   Hatch pattern fills and group shapes are not drawn (none in this template).
 
 ## 2026-10-12 12:34 IST (Claude)
