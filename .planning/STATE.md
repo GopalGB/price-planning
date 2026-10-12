@@ -1,5 +1,19 @@
 # STATE
 
+## 2026-10-12 09:15 IST (Claude)
+
+Engine on the real file: load now 1.0-1.2 GB (was >25 GB) after trusting
+Excel's own-cell array results (b08bb15; 664,077 t="array" cells, none spill).
+Trace budgets capped at u32 (TRACE_U32_MAX). Formula map cached per prepared
+template (04e9426). First native dependency trace on an edit still passed
+3.5 GB: next is replacing _dependent_targets with a precomputed reverse index
+(scratchpad reach.py logic), evaluating visible targets only (formualizer
+evaluate_cells recomputes stale chains on demand, verified).
+UI: sheet arrows, template card on home, values-only copies report
+calculated (no "Calculating..."), recovery skipped in values-only mode.
+Export verified on the real copy: 22 sheets, VBA kept, 7.9 s.
+Not started: import (upload into copy or new copy), macros, data refresh.
+
 ## 2026-10-12 08:10 IST (Claude)
 
 Sir asked again to see the whole template with every tab. Values-only mode
