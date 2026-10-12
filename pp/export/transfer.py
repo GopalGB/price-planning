@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 from xml.parsers import expat
 from xml.sax.saxutils import escape
 import zipfile
@@ -261,7 +262,7 @@ def _relationship_graph(archive):
         if source is None:
             continue
         with archive.open(info) as stream:
-            root = ET.parse(stream).getroot()
+            root = SafeET.parse(stream).getroot()
         for node in root:
             if _local(node.tag) != "Relationship":
                 continue
@@ -333,7 +334,7 @@ def _object_sources_removed(context, removed_names, affected_names):
         if name not in context.parts or not name.endswith(".xml"):
             continue
         with context.archive.open(name) as stream:
-            root = ET.parse(stream).getroot()
+            root = SafeET.parse(stream).getroot()
         for node in root.iter():
             source_name = (node.get("name") or "").casefold()
             if (_local(node.tag) == "worksheetSource"
@@ -442,7 +443,7 @@ def _remove_timeline_caches(context, state):
         return
     for part in _targets_by_role(context, "/TimelineCache") - state.removed:
         with context.archive.open(part) as stream:
-            root = ET.parse(stream).getroot()
+            root = SafeET.parse(stream).getroot()
         if any(_local(node.tag) == "state" and node.get("pivotCacheId") in pivot_ids
                for node in root.iter()):
             state.removed.add(part)
@@ -452,7 +453,7 @@ def _removed_cache_names(context, state, role):
     names = set()
     for part in _targets_by_role(context, role) & state.removed:
         with context.archive.open(part) as stream:
-            name = ET.parse(stream).getroot().get("name")
+            name = SafeET.parse(stream).getroot().get("name")
         if name:
             names.add(name.casefold())
     return names
@@ -465,7 +466,7 @@ def _remove_named_views(context, state, kind):
         return
     for part in _targets_by_role(context, view_role) - state.removed:
         with context.archive.open(part) as stream:
-            root = ET.parse(stream).getroot()
+            root = SafeET.parse(stream).getroot()
         nodes = [node for node in root.iter() if _local(node.tag) == local]
         affected = [node for node in nodes if (node.get("cache") or "").casefold() in cache_names]
         for node in affected:
@@ -486,7 +487,7 @@ def _removed_table_names(context, state):
             if not relationship["type"].endswith("/table") or target not in context.parts:
                 continue
             with context.archive.open(target) as stream:
-                root = ET.parse(stream).getroot()
+                root = SafeET.parse(stream).getroot()
             name = root.get("displayName") or root.get("name")
             if name:
                 names.add(name.casefold())

@@ -15,6 +15,7 @@ import time
 from uuid import uuid4
 import zipfile
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import xml.parsers.expat as expat
 
 from openpyxl.formula.translate import Translator
@@ -526,7 +527,7 @@ def _xml_members(archive):
     content_types = archive.getinfo("[Content_Types].xml")
     _screen_xml(archive, content_types, MAX_TREE_XML)
     with archive.open(content_types) as stream:
-        root = ET.parse(stream).getroot()
+        root = SafeET.parse(stream).getroot()
     defaults = {
         node.get("Extension") for node in root if _local(node.tag) == "Default"
         and _is_xml_content_type(node.get("ContentType"))

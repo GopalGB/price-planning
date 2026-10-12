@@ -1074,3 +1074,19 @@ class LargeXmlSubsetBenchmarkTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HardenedXmlParseTests(unittest.TestCase):
+    def test_relationship_parts_with_entities_are_refused(self):
+        """The shared transfer parser must refuse entity tricks even where no upload screen ran first."""
+        from defusedxml import EntitiesForbidden
+        from pp.export.transfer import _relationship_graph
+
+        bomb = ('<?xml version="1.0"?><!DOCTYPE r [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;">]>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="&b;" Type="x" Target="sheet1.xml"/></Relationships>')
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("xl/_rels/workbook.xml.rels", bomb)
+        with zipfile.ZipFile(buffer) as archive, self.assertRaises(EntitiesForbidden):
+            _relationship_graph(archive)
