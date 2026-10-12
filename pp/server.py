@@ -26,6 +26,7 @@ from .calc_service import (
 from .copies import CopyService, ShareChange
 from .db import token_hash
 from .engine.pool import CalculationRequest
+from .config import BRAND_TYPES
 from .errors import AppError
 from .export.xlsm import export_xlsm
 from .live import LiveHub, serve_live
@@ -85,7 +86,9 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/copies/{copy_id}/ops", _ops, methods=["POST"]),
         Route("/api/copies/{copy_id}/export.xlsm", _export, methods=["GET"]),
         WebSocketRoute("/api/copies/{copy_id}/ws", _websocket),
+        Route("/api/brand", _brand, methods=["GET"]),
         Route("/api/{path:path}", _api_not_found),
+        Route("/brand/{asset}", _brand_asset, methods=["GET"]),
         Route("/{path:path}", _static),
     ]
     app = Starlette(routes=routes, exception_handlers={AppError: _app_error, HTTPException: _http_error})
@@ -421,6 +424,22 @@ async def _http_error(request, exc: HTTPException):
 
 async def _api_not_found(request):
     raise AppError(404, "not_found", "Endpoint not found")
+
+
+async def _brand(request):
+    brand = getattr(_services(request).config, "brand", None)
+    if not brand:
+        return JSONResponse({})
+    return JSONResponse({"name": brand["name"], "colors": brand["colors"],
+                         "assets": sorted(brand["assets"])})
+
+
+async def _brand_asset(request):
+    brand = getattr(_services(request).config, "brand", None) or {}
+    path = brand.get("assets", {}).get(request.path_params["asset"])
+    if path is None:
+        raise AppError(404, "not_found", "File not found")
+    return FileResponse(path, media_type=BRAND_TYPES[path.suffix.lower()])
 
 
 async def _static(request):
