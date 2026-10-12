@@ -88,6 +88,7 @@ class CalculationRequest:
     template_path: Path
     changes: list[tuple[int, int, int, object]]
     base_revision: int | None = None
+    pivot_state: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,19 @@ class MacroRequest:
     base_revision: int | None
     macro: str
     timeout: float = 600
+    pivot_state: dict | None = None
+
+
+@dataclass(frozen=True)
+class SlicerRequest:
+    copy_id: str
+    revision: int
+    template_path: Path
+    changes: list[tuple[int, int, int, object]]
+    base_revision: int | None
+    cache: str
+    selected: list[str]
+    pivot_state: dict | None = None
 
 
 class _CopyWorker:
@@ -114,11 +128,15 @@ class _CopyWorker:
 
     def calculate(self, request: CalculationRequest) -> dict:
         return self._exchange((request.revision, str(request.template_path), request.changes,
-                               request.base_revision))
+                               request.base_revision, request.pivot_state))
 
     def macro(self, request: MacroRequest) -> dict:
         return self._exchange(("macro", request.revision, str(request.template_path), request.changes,
-                               request.base_revision, request.macro, request.timeout))
+                               request.base_revision, request.macro, request.timeout, request.pivot_state))
+
+    def slicer(self, request: SlicerRequest) -> dict:
+        return self._exchange(("slicer", request.revision, str(request.template_path), request.changes,
+                               request.base_revision, request.cache, request.selected, request.pivot_state))
 
     def _exchange(self, message: tuple) -> dict:
         if not self.process.is_alive():
@@ -244,6 +262,9 @@ class EnginePool:
 
     def run_macro(self, request: MacroRequest) -> dict:
         return self._run(request, _CopyWorker.macro)
+
+    def run_slicer(self, request: SlicerRequest) -> dict:
+        return self._run(request, _CopyWorker.slicer)
 
     def _run(self, request, call) -> dict:
         for attempt in range(2):

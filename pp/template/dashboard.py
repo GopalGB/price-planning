@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import posixpath
 import re
 import math
@@ -23,6 +24,7 @@ CACHE_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships
 DRAWING_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing"
 SLICER_REL = "http://schemas.microsoft.com/office/2007/relationships/slicer"
 SLICER_CACHE_REL = "http://schemas.microsoft.com/office/2007/relationships/slicerCache"
+LOGGER = logging.getLogger(__name__)
 CELL_RANGE = re.compile(r"\$?[A-Z]{1,3}\$?[1-9][0-9]*(?::\$?[A-Z]{1,3}\$?[1-9][0-9]*)?")
 
 SUBTOTALS = {
@@ -344,6 +346,26 @@ def _pivot_cache_id(cache, fallback):
     return _integer(extension.get("pivotCacheId"), "pivot cache id") if extension is not None else fallback
 
 
+def _external_pivot(root, cache, cache_id, number_formats):
+    """A pivot fed by a Power Query connection: Excel runs it, so only its slicer links are kept.
+
+    Fields are read for the slicers; a cache that cannot be read yields no fields, so its slicers drop.
+    """
+    try:
+        fields = _cache_fields(cache, number_formats)
+    except DashboardMetadataError as exc:
+        LOGGER.warning("external pivot fields left unread: %s", exc)
+        fields = []
+    try:
+        location = _pivot_location(root)
+    except DashboardMetadataError:
+        location = None  # no output area known: the cell rules then cannot protect it, the slicers still load
+    # the output area (body and report filters) stays Excel's: the cell rules must not treat it as input
+    return {"name": root.get("name", ""), "cache_id": _pivot_cache_id(cache, cache_id),
+            "external": True, "fields": fields, "location": location,
+            "page_count": len(root.findall(f"{MAIN}pageFields/{MAIN}pageField"))}
+
+
 def _read_pivot(archive, part, context):
     sheet_names, number_formats = context
     root = _part_xml(archive, part)
@@ -352,6 +374,9 @@ def _read_pivot(archive, part, context):
         raise DashboardMetadataError("pivot table must have one cache definition")
     cache = _part_xml(archive, cache_parts[0])
     cache_id = _integer(root.get("cacheId"), "pivot cache id")
+    source_node = cache.find(f"{MAIN}cacheSource")
+    if source_node is not None and source_node.get("type") == "external":
+        return _external_pivot(root, cache, cache_id, number_formats)
     cache_fields = cache.findall(f"{MAIN}cacheFields/{MAIN}cacheField")
     source = _cache_source(cache, sheet_names)
     start_row, start_col, _, end_col = _bounds(source["ref"])
@@ -467,7 +492,7 @@ def _read_slicer(view, cache, linked):
     if len(fields) != 1:
         raise DashboardMetadataError("slicer field is missing or ambiguous")
     field = fields[0]
-    return {
+    slicer = {
         "name": view.get("name", ""), "cache": cache["name"],
         "caption": view.get("caption", cache["source_name"]), "field": field["index"],
         "source_name": cache["source_name"], "pivot_cache_id": cache["pivot_cache_id"],
@@ -481,6 +506,9 @@ def _read_slicer(view, cache, linked):
         "show_caption": _bool(view.get("showCaption"), True),
         "locked_position": _bool(view.get("lockedPosition")), "anchor": anchor,
     }
+    if pivot.get("external"):
+        slicer["engine"] = "excel"  # Excel runs the pivot and its slicers on the office server
+    return slicer
 
 
 def _sheet_slicers(archive, spec, context):
@@ -492,9 +520,15 @@ def _sheet_slicers(archive, spec, context):
         if cache_name not in caches or name not in anchors:
             raise DashboardMetadataError("slicer view linkage is incomplete")
         cache = caches[cache_name]
-        output.append(_read_slicer(view, cache, (
-            _matching_pivot(cache, pivots), anchors[name], default_style,
-        )))
+        pivot = _matching_pivot(cache, pivots)
+        linked = (pivot, anchors[name], default_style)
+        if not pivot.get("external"):
+            output.append(_read_slicer(view, cache, linked))
+            continue
+        try:  # an Excel-only slicer that cannot be read is left out; the import still succeeds
+            output.append(_read_slicer(view, cache, linked))
+        except DashboardMetadataError as exc:
+            LOGGER.warning("Excel slicer %s left out: %s", name, exc)
     return output
 
 
@@ -514,13 +548,19 @@ def read_dashboard_metadata(archive: zipfile.ZipFile, sheet_specs: list[dict]) -
     sheet_names = {spec["name"] for spec in sheet_specs}
     formats = _number_formats(archive)
     default_style = _default_slicer_style(archive)
-    result = {spec["index"]: {"pivots": [], "slicers": []} for spec in sheet_specs}
+    result = {spec["index"]: {"pivots": [], "slicers": [], "excel_pivots": []} for spec in sheet_specs}
+    excel_pivots = []
     for spec in sheet_specs:
         parts = _related_parts(archive, spec["part"], PIVOT_REL)
-        result[spec["index"]]["pivots"] = [
-            _read_pivot(archive, part, (sheet_names, formats)) for part in parts
+        read = [_read_pivot(archive, part, (sheet_names, formats)) for part in parts]
+        result[spec["index"]]["pivots"] = [pivot for pivot in read if not pivot.get("external")]
+        external = [pivot for pivot in read if pivot.get("external")]
+        excel_pivots.extend(external)
+        result[spec["index"]]["excel_pivots"] = [
+            {"name": pivot["name"], "location": pivot["location"], "page_count": pivot["page_count"]}
+            for pivot in external if pivot["location"] is not None
         ]
-    pivots = [pivot for metadata in result.values() for pivot in metadata["pivots"]]
+    pivots = [pivot for metadata in result.values() for pivot in metadata["pivots"]] + excel_pivots
     cache_parts = _related_parts(archive, "xl/workbook.xml", SLICER_CACHE_REL)
     parsed_caches = [_slicer_cache(archive, part) for part in cache_parts]
     caches = {cache["name"]: cache for cache in parsed_caches}

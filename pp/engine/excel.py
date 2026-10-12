@@ -88,6 +88,9 @@ class ExcelHost:
     def used_range(self, sheet: int) -> tuple[int, int, int, int] | None: ...
     def run_macro(self, name: str, timeout: float) -> list[str]: ...
     def refresh_all(self, timeout: float) -> list[str]: ...
+    def pivot_ranges(self) -> list[tuple[int, int, int, int, int]]: ...
+    def refresh_pivots(self, timeout: float) -> list[str]: ...
+    def set_slicer(self, cache: str, selected: list[str]) -> None: ...
     def memory_bytes(self) -> int: ...
     def close(self) -> None: ...
 
@@ -183,6 +186,50 @@ class ComExcelHost(ExcelHost):
             self.app.CalculateUntilAsyncQueriesDone()
 
         return self._watched(refresh, timeout)
+
+    def pivot_ranges(self):
+        """Every pivot table's output area on every sheet (TableRange2), as (sheet, top, left, bottom, right)."""
+        ranges = []
+        for index, worksheet in enumerate(self.sheets):
+            tables = worksheet.PivotTables()
+            for position in range(1, tables.Count + 1):
+                area = tables.Item(position).TableRange2
+                top, left = area.Row - 1, area.Column - 1
+                ranges.append((index, top, left, top + area.Rows.Count - 1, left + area.Columns.Count - 1))
+        return ranges
+
+    def refresh_pivots(self, timeout):
+        """Refresh every pivot table of this copy, then wait for the background queries they read."""
+        def refresh():
+            for worksheet in self.sheets:
+                tables = worksheet.PivotTables()
+                for position in range(1, tables.Count + 1):
+                    tables.Item(position).RefreshTable()
+            self.app.CalculateUntilAsyncQueriesDone()
+
+        return self._watched(refresh, timeout)
+
+    def set_slicer(self, cache, selected):
+        """Select exactly the named items of one slicer, with the cache's pivots held until all are set."""
+        wanted = set(selected)
+        slicer = self.book.SlicerCaches(cache)
+        tables = slicer.PivotTables
+        pivots = [tables.Item(position) for position in range(1, tables.Count + 1)]
+        for pivot in pivots:
+            pivot.ManualUpdate = True
+        try:
+            items = slicer.SlicerItems
+            found = set()
+            for position in range(1, items.Count + 1):
+                item = items.Item(position)
+                item.Selected = item.Name in wanted
+                if item.Name in wanted:
+                    found.add(item.Name)
+            if found != wanted:
+                raise EngineError("slicer item is missing in Excel")
+        finally:
+            for pivot in pivots:
+                pivot.ManualUpdate = False
 
     def _watched(self, action, timeout):
         """Run an Excel action; a watcher thread presses OK on its dialogs and kills Excel past the limit."""
@@ -303,6 +350,9 @@ class FormualizerHost(ExcelHost):
         self.formulas = {}  # (sheet, row, col) -> "=..."
         self.extent = {}  # sheet -> (rows, cols) that hold anything
         self.macros = {}  # name -> callable(host) returning the dialog texts
+        self.pivots = []  # (sheet, top, left, bottom, right) output areas tests declare
+        self.refresh_hook = None  # callable(host) that rewrites the pivot cells, for tests
+        self.slicer_hook = None  # callable(host, cache, selected) that rewrites the pivot cells, for tests
         opened = load_workbook(workbook, read_only=True)
         try:
             for index, name in enumerate(sheet_names):
@@ -361,6 +411,17 @@ class FormualizerHost(ExcelHost):
     def refresh_all(self, timeout):
         return self.macros[REFRESH_ALL](self)
 
+    def pivot_ranges(self):
+        return list(self.pivots)
+
+    def refresh_pivots(self, timeout):
+        return self.refresh_hook(self) if self.refresh_hook else []
+
+    def set_slicer(self, cache, selected):
+        if self.slicer_hook is None:
+            raise EngineError("slicers need Excel")
+        self.slicer_hook(self, cache, list(selected))
+
     def memory_bytes(self):
         return 0
 
@@ -414,6 +475,7 @@ class ExcelEngine:
     formula_overrides: dict = field(default_factory=dict)  # (sheet, row, col) -> "=..." set by macros or edits
     override_baseline: set = field(default_factory=set)  # override cells whose baseline we created
     override_index: DependencyIndex | None = None
+    pivot_cells: frozenset = frozenset()  # pivot output cells: Excel's, published, never overrides (P6.4 decision 1)
     handles_clears = True
 
     @classmethod
@@ -425,12 +487,15 @@ class ExcelEngine:
             cells, formulas, names, cached = _cached_formula_map(prepared)[:4]
             index = _cached_index(prepared, formulas, names)
             host = (host_factory or default_host())(path, names)
+            pivot_cells, pivot_values = _pivot_outputs(host)
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("Excel calculation engine failed to load") from exc
         baseline = {key: from_com(cached.get(key)) for key in cells}
-        return cls(host, index, frozenset(cells), baseline, prepared=prepared, names=names)
+        baseline.update(pivot_values)
+        return cls(host, index, frozenset(cells) | pivot_cells, baseline, prepared=prepared, names=names,
+                   pivot_cells=frozenset(pivot_cells))
 
     @property
     def formula_cells(self):
@@ -438,6 +503,8 @@ class ExcelEngine:
 
     def apply(self, changes: list[tuple[int, int, int, object]]) -> list[tuple[int, int, int, object]]:
         self.overlay_upserts, self.overlay_removals = {}, set()
+        # Excel refuses writes inside a pivot table; its output comes from the pivot, never from a stored value.
+        changes = [change for change in changes if change[:3] not in self.pivot_cells]
         if not changes:
             return []
         try:
@@ -462,6 +529,20 @@ class ExcelEngine:
         """Excel's RefreshAll on this copy, recorded like a macro (see P6.5 refresh decision)."""
         return self._record(lambda: self.host.refresh_all(timeout))
 
+    def set_slicer(self, cache: str, selected: list[str]) -> dict:
+        """Select the named items of an Excel slicer and record what its pivots output (P6.4 decision 4)."""
+        return self._record(lambda: self.host.set_slicer(cache, list(selected)))
+
+    def restore_pivots(self, state: dict, timeout: float = 600) -> dict:
+        """Re-apply stored pivot state to a freshly loaded copy: refresh, then slicer selections (decision 2)."""
+        def replay():
+            dialogs = self.host.refresh_pivots(timeout) if state.get("refreshed") else []
+            for cache, selected in sorted(state.get("slicers", {}).items()):
+                self.host.set_slicer(cache, list(selected))
+            return dialogs
+
+        return self._record(replay)
+
     def _record(self, action) -> dict:
         """Run an Excel action and record what it wrote, as a macro's delta.
 
@@ -470,7 +551,7 @@ class ExcelEngine:
         """
         try:
             before = self._read_values()
-            messages = action()
+            messages = action() or []
             self.host.calculate()
             now = set()
             areas = [(sheet, rect) for sheet in range(len(self.names))
@@ -478,7 +559,7 @@ class ExcelEngine:
             for sheet, (top, left, bottom, right) in areas:
                 now.update((sheet, row, col) for row in range(top, bottom + 1) for col in range(left, right + 1))
             new = now - self.formula_anchors
-            detached = self.formula_anchors - now
+            detached = self.formula_anchors - now - self.pivot_cells
             texts = {}
             for sheet, top, left, bottom, right, members in _blocks(new):
                 grid = self.host.read_formulas(sheet, top, left, bottom, right)
@@ -488,13 +569,14 @@ class ExcelEngine:
                         raise EngineError("macro formula could not be read")
                     texts[(sheet, row, col)] = text
             after = self._read_values()
-            moved = {key for key in set(before) | set(after) if key not in now
+            moved = {key for key in set(before) | set(after) if key not in now and key not in self.pivot_cells
                      and not exactly_equal(before.get(key), after.get(key))}
             contents = [(*key, {"formula": texts[key]}) for key in new]
             contents += [(*key, after.get(key)) for key in moved | detached]
             contents.sort(key=lambda item: item[:3])
             self._track(contents, {key: before.get(key) for key in new})
-            changes = self._publish(self._affected([item[:3] for item in contents]))
+            # pivot outputs changed by the action are published, and so is whatever reads them
+            changes = self._publish(self._affected([item[:3] for item in contents] + sorted(self.pivot_cells)))
             return {"messages": messages, "changes": changes, "contents": contents,
                     "before": {item[:3]: before.get(item[:3]) for item in contents}}
         except EngineError:
@@ -619,6 +701,20 @@ class ExcelEngine:
 
     def close(self) -> None:
         self.host.close()
+
+
+def _pivot_outputs(host) -> tuple[set, dict]:
+    """Every pivot output cell and its value as Excel saved it (the baseline for publishing changes)."""
+    cells, values = set(), {}
+    for sheet, top, left, bottom, right in host.pivot_ranges():
+        for start in range(top, bottom + 1, BLOCK_ROWS):
+            stop = min(start + BLOCK_ROWS - 1, bottom)
+            for offset, row in enumerate(host.read(sheet, start, left, stop, right)):
+                for position, raw in enumerate(row):
+                    key = (sheet, start + offset, left + position)
+                    cells.add(key)
+                    values[key] = from_com(raw)
+    return cells, values
 
 
 def _blocks(affected):

@@ -13,6 +13,10 @@ applies only the recorded contents reads identical values everywhere. Prints cou
 
 --refresh runs Excel's RefreshAll on a fresh engine, then replays the recorded contents on a second
 fresh engine and compares every value. Needs a template with data connections. Counts only.
+
+--slicers selects one item (with data) of each Excel slicer and restores all items, on a fresh engine;
+then a second fresh engine applies the final stored state and must read the same pivot cells.
+Prints counts, timings and slicer numbers only, never item texts or values.
 """
 
 import argparse
@@ -116,6 +120,62 @@ def check_refresh(snapshot, open_engine, report=print):
     return failures
 
 
+def _pivot_values(engine):
+    return {cell: engine.get(*cell) for cell in engine.pivot_cells}
+
+
+def check_slicers(snapshot, open_engine, report=print):
+    """Select then restore each Excel slicer on a fresh engine; a fresh replay of the final state must match."""
+    slicers = [item for sheet in snapshot.sheets for item in sheet.get("slicers", [])
+               if item.get("engine") == "excel"]
+    if not slicers:
+        report("This template has no Excel slicers.")
+        return 1
+    failures = 0
+    for number, slicer in enumerate(slicers, start=1):
+        captions = [item["caption"] for item in slicer["items"]]
+        pick = next((item["caption"] for item in slicer["items"] if not item["no_data"]), None)
+        if pick is None:
+            report(f"slicer {number}: no item with data")
+            failures += 1
+            continue
+        engine = open_engine(snapshot.source_path)
+        try:
+            start = time.time()
+            selected = engine.set_slicer(slicer["cache"], [pick])
+            select_seconds = time.time() - start
+            start = time.time()
+            restored = engine.set_slicer(slicer["cache"], captions)
+            restore_seconds = time.time() - start
+            expected = _pivot_values(engine)
+        except EngineError as exc:
+            report(f"slicer {number}: did not finish ({type(exc).__name__})")
+            failures += 1
+            continue
+        finally:
+            engine.close()
+        report(f"slicer {number}: select {select_seconds:.1f} s, published {len(selected['changes'])}; "
+               f"restore {restore_seconds:.1f} s, published {len(restored['changes'])}")
+        replay = open_engine(snapshot.source_path)
+        try:
+            start = time.time()
+            replay.restore_pivots({"slicers": {slicer["cache"]: captions}, "refreshed": False})
+            actual = _pivot_values(replay)
+            seconds = time.time() - start
+        except EngineError as exc:
+            report(f"  replay did not finish ({type(exc).__name__})")
+            failures += 1
+            continue
+        finally:
+            replay.close()
+        mismatched = sum(1 for cell in expected.keys() | actual.keys()
+                         if not exactly_equal(expected.get(cell), actual.get(cell)))
+        report(f"  replay: {seconds:.1f} s, pivot cells {len(expected)}, mismatched pivot cells {mismatched}")
+        failures += bool(mismatched)
+    report("PASS" if not failures else f"FAIL ({failures})")
+    return failures
+
+
 def _run_on_fresh(snapshot, open_engine, button):
     start = time.time()
     engine = open_engine(snapshot.source_path)
@@ -139,6 +199,7 @@ def main():
     parser.add_argument("--edits", type=int, default=3)
     parser.add_argument("--macros", action="store_true", help="run the template buttons instead of edits")
     parser.add_argument("--refresh", action="store_true", help="refresh the data connections instead of edits")
+    parser.add_argument("--slicers", action="store_true", help="select and restore each Excel slicer")
     args = parser.parse_args()
     config = load_config(Path(args.root))
     snapshot = TemplateSnapshot(import_template(config.template_path, config.data_dir, "saved"))
@@ -147,6 +208,8 @@ def main():
     print(f"caches ready in {time.time() - start:.1f} s", flush=True)
     if args.macros:
         return 1 if check_macros(snapshot, ExcelEngine.load) else 0
+    if args.slicers:
+        return 1 if check_slicers(snapshot, ExcelEngine.load) else 0
     if args.refresh:
         if not snapshot.refreshable:
             print("This template has no data connections to refresh.")

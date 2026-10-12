@@ -118,6 +118,10 @@ CREATE TABLE IF NOT EXISTS pp_category_dashboard_views (
     view_json TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY(category_id, user_id, sheet, pivot_name)
 );
+CREATE TABLE IF NOT EXISTS pp_pivot_state (
+    copy_id TEXT PRIMARY KEY REFERENCES pp_copies(id) ON DELETE CASCADE,
+    state_json TEXT NOT NULL, revision INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS pp_legacy_events (
     event_id TEXT PRIMARY KEY
 );
