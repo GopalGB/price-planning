@@ -15,7 +15,7 @@ values-only mode show the saved pivot and slicers read-only.
 
 The earlier dashboard track (merged, ed352f2) already rebuilds pivots from workbook cells in Python:
 in-grid slicers, report filters, personal views, category totals and the team overview. It cannot
-rebuild the real template's pivot, whose cache source is the external Power Query connection, so
+rebuild the real template's pivot, whose cache source is a sheet of another workbook (external link), so
 that pivot now imports as Excel's saved values (fff35f6) instead of failing the import. The decisions
 below apply to such Excel-only pivots; the D2 UI reuses the merged slicer frames instead of new ones.
 
