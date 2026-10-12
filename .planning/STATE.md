@@ -1,5 +1,16 @@
 # STATE
 
+## 2026-10-12 13:45 IST (Claude)
+
+feat/v2-integration at 595808a, pushed (Sir's y; gate clean; no office files on the remote).
+- Dashboard track merged (ed352f2): cell-based pivot service, in-grid slicers, report filters,
+  personal views, category totals, team overview (copies page "Live now / team"). 699 Python,
+  152 web OK.
+- Real template: its pivot reads the external Power Query connection, which that service cannot
+  rebuild; the import failed and took 8765 down. fff35f6 degrades unsupported pivots to Excel's
+  saved values (security/malformed parts still fail). 8765 back up, Coupon opens.
+- Running: Excel-only pivot + slicers (PLAN-P6.4 revision) on feat/v2-dash-engine.
+
 ## 2026-10-12 12:20 IST (Claude, P6.5 refresh data)
 
 Merged into feat/v2-integration at 7930bbe (648 Python OK, 121 web OK, guard 0). "Refresh data" runs Excel's own
