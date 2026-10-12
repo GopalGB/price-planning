@@ -33,6 +33,9 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
             "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
         }, {"x-csrf-token": csrf})
         self.assertEqual(meta["calculation"], "cached")
+        rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=5").json()
+        self.assertEqual((meta["calculated_revision"], rows["calculated_revision"]),
+                         (meta["input_revision"], rows["input_revision"]))
         self.assertEqual((response.status_code, response.json()["error"]),
                          (409, "calculation_paused"))
 

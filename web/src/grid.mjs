@@ -447,6 +447,20 @@ export class PlanningGrid {
           this.switchSheet(Number(event.target.dataset.sheet)),
         );
     };
+    const shown = this.meta.sheets.filter((s) => !s.hidden || this.showHidden),
+      at = shown.findIndex((s) => s.index === this.sheet),
+      go = (i) => {
+        const target = shown[Math.max(0, Math.min(shown.length - 1, i))];
+        if (target && target.index !== this.sheet)
+          this.attempt(() => this.switchSheet(target.index));
+      };
+    $("tabs-first").onclick = () => go(0);
+    $("tabs-prev").onclick = () => go(at - 1);
+    $("tabs-next").onclick = () => go(at + 1);
+    $("tabs-last").onclick = () => go(shown.length - 1);
+    $("sheet-tabs")
+      .querySelector?.('[aria-selected="true"]')
+      ?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   toggleHidden() {
     this.showHidden = !this.showHidden;

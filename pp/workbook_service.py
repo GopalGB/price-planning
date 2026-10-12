@@ -79,6 +79,11 @@ class TemplateSnapshot:
         return None
 
 
+def _calculated_revision(snapshot, copy):
+    # Saved Excel results are current for every revision of a values-only template.
+    return copy["input_revision"] if snapshot.results == "cached" else copy["calculated_revision"]
+
+
 def _read_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -157,7 +162,7 @@ class WorkbookService:
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                    "merges": item["merges"]} for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
-                "input_revision": copy["input_revision"], "calculated_revision": copy["calculated_revision"],
+                "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles}
 
     def rows(self, query: RowQuery) -> dict:
@@ -169,7 +174,7 @@ class WorkbookService:
                 raise AppError(422, "invalid", "Sheet row range is invalid")
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
             rows = self._row_data(connection, render)
-        return {"calculated_revision": copy["calculated_revision"], "input_revision": copy["input_revision"],
+        return {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
                 "start": query.start, "rows": rows}
 
     def _row_data(self, connection, render):
