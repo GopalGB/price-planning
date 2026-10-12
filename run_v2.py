@@ -10,7 +10,8 @@ import socket
 
 import uvicorn
 
-from pp.config import _detected_ipv4, http_origin, load_config
+from pp.auto_backup import KEEP, AutoBackup
+from pp.config import _detected_ipv4, http_origin, load_config, resolve_database_path
 from pp.runtime import create_runtime
 from pp.template.importer import import_template
 
@@ -109,6 +110,16 @@ def _move_off_busy_port() -> bool:
     return True
 
 
+def _start_auto_backup(config) -> AutoBackup | None:
+    """Back up the live database on a timer while the server serves; settings.json can turn it off."""
+    if not config.auto_backup:
+        return None
+    dest = ROOT / "backups"
+    auto_backup = AutoBackup(resolve_database_path(ROOT), dest).start()
+    print(f"Automatic backup: daily into {dest}, keeping the newest {KEEP}.", flush=True)
+    return auto_backup
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Price Planning v2 backend")
     parser.add_argument("--import-template", action="store_true",
@@ -128,6 +139,7 @@ def main(argv=None) -> int:
               f"Change \"port\" in {ROOT / 'settings.json'} (for example to 8765) and start again.", flush=True)
         return 1
     runtime = create_runtime(ROOT)
+    auto_backup = _start_auto_backup(runtime.config)
     try:
         if _port_in_use(runtime.config.port):
             print(f"Port {runtime.config.port} is already in use by another program. "
@@ -143,6 +155,8 @@ def main(argv=None) -> int:
                     loop="asyncio", ws="websockets", workers=1)
         return 0
     finally:
+        if auto_backup is not None:
+            auto_backup.stop()
         runtime.close()
 
 

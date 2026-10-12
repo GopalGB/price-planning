@@ -38,6 +38,7 @@ class RunnerContractTests(unittest.TestCase):
             config=SimpleNamespace(
                 bind="0.0.0.0",
                 port=8000,
+                auto_backup=False,
                 allowed_origins=(
                     "http://localhost:8000",
                     "http://127.0.0.1:8000",
