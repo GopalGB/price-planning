@@ -1,5 +1,25 @@
 # STATE
 
+## 2026-10-12 14:35 IST (Claude, P6.2 look: colors, pictures, shapes)
+
+feat/v2-integration at 6dd69b4 (5 commits after 78bbe4c). IMPORT_VERSION 15 (8765 reimported).
+- Colors (0270882): every template color reached Univer as ARGB or theme:N, which Univer reads as
+  transparent. Now resolved at import to #RRGGBB (theme + tint, indexed, ARGB; Excel's tint grid
+  differs by at most 2/255 per channel). Borders carry line style and color.
+- Pictures and shapes (fe496e8, 7e534b9): 3 pictures, 5 linked rounded buttons (links go to cells on
+  their sheet), 1 arrow; hidden shapes, slicer fallbacks, empty text boxes left out, as in Excel.
+  Macro buttons drawn as filled shapes keep their look. Placed with the slicers' worksheet geometry
+  (headers, frozen panes, zoom). No charts in the template.
+- Grid fixes (6dd69b4): overlay layer was under the canvas (z-index), zoom dropdown never zoomed
+  (operation without the command), and a drawing on the first visible sheet aborted grid.start()
+  (scroll state throws on first paint): no live socket, unbound toolbar. Bisected and fixed.
+- Live (5282cfb): a socket counts as occupant before calc_state reaches its client (flaky test).
+- Verified in Ego Lite on 8765 (geometry/counts only): open + live socket, toolbar bound, picture
+  loads, shapes clickable, link lands on its cell, 150% zoom scales overlays 1.5x.
+- Tests: 743 Python OK, 161 web OK, ruff clean, guard 0.
+- Known: zoom resets to 100% on sheet switch while the dropdown keeps its value (pre-existing).
+  Hatch pattern fills and group shapes are not drawn (none in this template).
+
 ## 2026-10-12 12:34 IST (Claude)
 
 Excel-only pivot and slicers merged (feat/v2-dash-engine) plus b9227f2: the real pivot's cache
