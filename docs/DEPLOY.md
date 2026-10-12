@@ -36,6 +36,9 @@ backup API (never a file copy of the live database). Database precedence is: `--
 `<repo>\data\planning.db`. Next to each `planning-<time>.db` it writes a `.json` record: time, source, schema
 version and SHA-256. Other folders: `run_v2.bat --backup --db <db> --dest <folder>`.
 Without the launcher: `.venv\Scripts\python -m pp.backup` (same options).
+While `run_v2.py` serves, the app also backs up on its own: once five minutes after start, then every
+24 hours, into the same `backups\` folder, keeping only the newest 7 sets. Set `"auto_backup": false` in
+`settings.json` to switch that off; `run_v2.bat --backup` still works by hand.
 
 ## Update
 1. `run_v2.bat --backup`

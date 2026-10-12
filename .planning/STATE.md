@@ -52,6 +52,24 @@ exiting 1 on 18 MEDIUM findings; it now exits 0.
   (feat/v2-dashboard). Nothing lost; stash preserved and verified. Baselines now use a
   scratch worktree.
 - Report: .planning/oc-report.md.
+## 2026-10-12 (OpenCode runner, feat/auto-backup)
+
+Daily automatic backup while `run_v2.py` serves. New `pp/auto_backup.py`: `prune(dest_dir, keep=7)`
+deletes all but the newest 7 whole backup sets (`planning-<time>.db` plus its `.json` and
+`.templates` siblings) and touches nothing else, never a `.partial`; `AutoBackup` runs one daemon
+thread (first backup after `first_delay` 300 s, then every `interval` 86400 s), each run is
+`backup()` then `prune()`, a failure is logged with `logging.exception` and the loop continues,
+`stop()` sets an Event and joins. `run_v2.py` starts it after the runtime exists (live database from
+`resolve_database_path`, folder `ROOT/backups`, same as `run_v2.bat --backup`) and stops it in the
+existing `finally`; settings `"auto_backup": false` (new validated `Config.auto_backup`, default
+true) switches it off. Docs: two sentences in the DEPLOY.md Backup section.
+Tests: new `tests/v2/test_auto_backup.py` (6: prune keeps newest 7 of 9 whole sets, `.partial` and
+an unrelated file untouched; first_delay=0/interval=0.2 against a real `pp.db` schema database makes
+2+ verified backups and `stop()` returns in under 2 s; a raising `backup` is logged and the next run
+still happens; the runner starts/stops it and honours `"auto_backup": false`). The shared fake runtime
+in `tests/v2/test_run_v2.py` sets `auto_backup=False` so URL tests stay thread-free.
+Next: office check is `run_v2.bat`, then confirm `backups\planning-<time>.db` appears about five
+minutes after start and that the oldest set disappears after the eighth day.
 
 ## 2026-10-12 14:35 IST (Claude, P6.2 look: colors, pictures, shapes)
 

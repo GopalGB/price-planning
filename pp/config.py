@@ -29,6 +29,7 @@ class Config:
     template_results: str = "engine"
     engine: str = "formualizer"
     upload_max_mb: int = 100
+    auto_backup: bool = True
 
 
 BRAND_ASSETS = ("logo", "favicon", "touch_icon")
@@ -292,6 +293,9 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         raise ValueError("cookie_secure must be boolean")
     if not demo_mode and not cookie_secure:
         raise ValueError("cookie_secure must be enabled outside demo mode")
+    auto_backup = settings.get("auto_backup", True)
+    if not isinstance(auto_backup, bool):
+        raise ValueError("auto_backup must be boolean")
     template_value = os.environ.get("PP_TEMPLATE_PATH", settings.get("template_path"))
     template_path = _path(root, template_value, "template_path") if template_value else None
     if template_path is None:
@@ -300,7 +304,7 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
                   origins, cookie_secure, replay_window, engine_memory,
                   _brand(root, settings.get("brand")), _template_results(settings), _engine(settings),
-                  upload_max)
+                  upload_max, auto_backup)
 
 
 def _engine(settings) -> str:
