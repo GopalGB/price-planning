@@ -12,6 +12,15 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
         self.fixture = APIFixture()
         self.addCleanup(self.fixture.close)
 
+    def test_environment_turns_values_only_on(self):
+        # office_run.bat sets it when the computer has no Excel, without rewriting settings.json
+        from pp.config import _template_results
+
+        with mock.patch.dict("os.environ", {"PP_TEMPLATE_RESULTS": "cached"}):
+            self.assertEqual(_template_results({"template_results": "engine"}), "cached")
+        with mock.patch.dict("os.environ", {"PP_TEMPLATE_RESULTS": "bogus"}), self.assertRaises(ValueError):
+            _template_results({})
+
     def test_import_skips_the_engine_and_is_cached_separately(self):
         from pp.template.importer import import_template
         data = self.fixture.root / "values-only"

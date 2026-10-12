@@ -41,6 +41,9 @@ for /f "delims=" %%P in ('call "%PYEXE%" ops\install_env.py') do set "VENV_PY=%%
 if not defined VENV_PY goto install_failed
 
 rem 5. The four Excel checks: first run only, or "office_run.bat check".
+rem Python's COM lookup reads this key; "Invalid class string" there means it is missing here
+reg query "HKCR\Excel.Application\CLSID" >nul 2>&1
+if errorlevel 1 goto no_excel
 if /i "%~1"=="check" goto checks
 if exist "%HOME_DIR%\checks-done.txt" goto start_app
 :checks
@@ -54,7 +57,15 @@ for %%A in ("" "--macros" "--refresh" "--slicers") do (
 )
 > "%HOME_DIR%\checks-done.txt" echo Excel checks run %DATE% %TIME%: %FAILED% of 4 did not pass
 if not "%FAILED%"=="0" echo %FAILED% of 4 checks did not PASS. Send the lines above to Claude. Starting the app anyway.
+goto start_app
 
+:no_excel
+echo.
+echo Microsoft Excel is not installed on this computer, so the app opens VIEW-ONLY:
+echo every tab with Excel's saved numbers, no editing, macros or refresh.
+echo For the full app, run this on a computer with desktop Excel, or install Excel here.
+echo.
+set "PP_TEMPLATE_RESULTS=cached"
 :start_app
 echo.
 echo Starting the app. Share the "Share with your team" link below. Ctrl+C stops it.

@@ -1,7 +1,6 @@
 """Spawn-safe calculation worker entry point."""
 
 import os
-import resource
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -186,6 +185,24 @@ def _engine_bytes():
     the engine is still holding the memory it reached at its high-water mark.
     """
     import sys
+
+    if os.name == "nt":  # no `resource` module on Windows
+        import ctypes
+        from ctypes import wintypes
+
+        class Counters(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+                (name, ctypes.c_size_t) for name in (
+                    "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage",
+                    "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+
+        counters = Counters(cb=ctypes.sizeof(Counters))
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+        ctypes.WinDLL("psapi").GetProcessMemoryInfo(
+            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        return int(counters.PeakWorkingSetSize)
+    import resource
 
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return int(peak if sys.platform == "darwin" else peak * 1024)
