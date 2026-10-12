@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from ops.fixtures import make_semantic
+from pp.engine.excel import REFRESH_ALL
 from pp.engine.formualizer import EngineError, MacroTimeout
 from tests.v2.api_support import APIFixture
 from tests.v2.support import TMP
@@ -107,7 +108,7 @@ class RefreshEngineTests(unittest.TestCase):
         return engine
 
     def test_refresh_records_what_excel_wrote_and_what_it_changed(self):
-        engine = self.load({"RefreshAll": refresh_table})
+        engine = self.load({REFRESH_ALL: refresh_table})
 
         result = engine.refresh_data()
 
@@ -118,7 +119,7 @@ class RefreshEngineTests(unittest.TestCase):
         self.assertEqual(engine.get(0, 0, 3), 70)
 
     def test_refresh_contents_replay_on_a_fresh_engine_to_the_same_values(self):
-        original = self.load({"RefreshAll": refresh_table})
+        original = self.load({REFRESH_ALL: refresh_table})
         replay = self.load({})
         result = original.refresh_data()
 
@@ -140,7 +141,7 @@ class RefreshWorkerTests(unittest.TestCase):
 
         def factory(path, names):
             host = FormualizerHost(path, names)
-            host.macros = {"RefreshAll": refresh_table}
+            host.macros = {REFRESH_ALL: refresh_table}
             return host
 
         copy = WarmCopy("copy-r", "excel")
@@ -148,7 +149,7 @@ class RefreshWorkerTests(unittest.TestCase):
         copy.engine = ExcelEngine.load(source, cache_dir=Path(directory.name) / "cache", host_factory=factory)
         self.addCleanup(copy.close)
 
-        result = copy.run_macro(1, str(source), [], None, "RefreshAll", 600)
+        result = copy.run_macro(1, str(source), [], None, REFRESH_ALL, 600)
 
         self.assertEqual(result["messages"], ["Query loaded"])
         self.assertEqual(result["contents"], [(0, 0, 3, {"formula": "=A3*10"}), (0, 2, 0, 7)])
@@ -186,7 +187,7 @@ class RefreshEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"messages": ["Query loaded"], "changed": 1, "input_revision": 1})
-        self.assertEqual(self.pool.requests[-1].macro, "RefreshAll")
+        self.assertEqual(self.pool.requests[-1].macro, REFRESH_ALL)
         self.assertEqual(self.history(), [(0, 9, 0, "refresh", 1)])
 
     def test_refreshed_cells_are_allowed_past_the_locked_cell_guard(self):
@@ -262,7 +263,7 @@ class RefreshSmokeTests(unittest.TestCase):
         TMP.mkdir(parents=True, exist_ok=True)
         directory = tempfile.TemporaryDirectory(dir=TMP)
         self.addCleanup(directory.cleanup)
-        source, open_engine = open_on_formualizer(directory.name, {"RefreshAll": refresh_table})
+        source, open_engine = open_on_formualizer(directory.name, {REFRESH_ALL: refresh_table})
         snapshot = SimpleNamespace(source_path=source, sheets=[{"rows": 3, "cols": 4}], refreshable=True)
 
         lines = []
@@ -287,7 +288,7 @@ class RefreshSmokeTests(unittest.TestCase):
         def broken(host):
             raise EngineError("refresh failed")
 
-        source, open_engine = open_on_formualizer(directory.name, {"RefreshAll": broken})
+        source, open_engine = open_on_formualizer(directory.name, {REFRESH_ALL: broken})
         snapshot = SimpleNamespace(source_path=source, sheets=[{"rows": 3, "cols": 4}], refreshable=True)
 
         lines = []

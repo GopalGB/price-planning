@@ -35,7 +35,7 @@ COM_ERROR_BASE = -2146828288
 XL_CELL_TYPE_FORMULAS = -4123
 NO_CELLS = -2146827284  # SpecialCells found no cells (0x800A03EC)
 DIALOG_CLASS = "#32770"
-REFRESH_ALL = "RefreshAll"  # the macro name the server sends to refresh data instead of running a button
+REFRESH_ALL = ":refresh"  # not a valid VBA name, so no template button can collide with it
 EXCEL_ERRORS = {2000: "#NULL!", 2007: "#DIV/0!", 2015: "#VALUE!", 2023: "#REF!", 2029: "#NAME?",
                 2036: "#NUM!", 2042: "#N/A", 2043: "#GETTING_DATA", 2045: "#SPILL!",
                 2047: "#BLOCKED!", 2048: "#UNKNOWN!", 2049: "#FIELD!", 2050: "#CALC!"}
