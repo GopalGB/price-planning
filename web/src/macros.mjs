@@ -76,6 +76,13 @@ export function runMacroButton(api, copyId, buttonId, newOp = newOpId) {
   });
 }
 
+export function runSlicer(api, copyId, cache, selected, newOp = newOpId) {
+  return api.request(`/copies/${copyId}/slicers`, {
+    method: "POST",
+    body: { cache, selected, op_id: newOp() },
+  });
+}
+
 export function runRefresh(api, copyId, newOp = newOpId) {
   return api.request(`/copies/${copyId}/refresh`, {
     method: "POST",

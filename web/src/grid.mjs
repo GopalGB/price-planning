@@ -112,6 +112,8 @@ export class PlanningGrid {
       fontFamily: (pivot) => this.dashboardFont(pivot),
       roleStyles: (pivot) => this.dashboardStyles(pivot),
       onScopeChange: (category) => this.dashboardScope(category),
+      canEdit: () => this.copy.my_role !== "viewer",
+      message: (title, text) => this.dialog(title, `<p>${e(text)}</p>`),
     });
   }
   async start() {

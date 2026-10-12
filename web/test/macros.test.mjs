@@ -7,6 +7,7 @@ import {
   refreshResultView,
   runMacroButton,
   runRefresh,
+  runSlicer,
 } from "../src/macros.mjs";
 
 const sheet = {
@@ -198,4 +199,25 @@ test("refreshResultView states the changed count and lists Excel's messages esca
   assert.match(html, /Data refreshed: 3 cells changed\./);
   assert.match(html, /<li>Query &lt;loaded&gt;<\/li>/);
   assert.doesNotMatch(refreshResultView({ messages: [], changed: 0 }), /<ul>/);
+});
+
+test("runSlicer posts the slicer cache, the selected item texts and a fresh op id", async () => {
+  const calls = [];
+  const api = {
+    request: async (path, options) => {
+      calls.push({ path, options });
+      return { selected: ["B"] };
+    },
+  };
+  const result = await runSlicer(api, "copy-1", "Slicer_A", ["B"], () => "op-9");
+  assert.deepEqual(result, { selected: ["B"] });
+  assert.deepEqual(calls, [
+    {
+      path: "/copies/copy-1/slicers",
+      options: {
+        method: "POST",
+        body: { cache: "Slicer_A", selected: ["B"], op_id: "op-9" },
+      },
+    },
+  ]);
 });
