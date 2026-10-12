@@ -33,7 +33,7 @@ jobs:
           python-version: '3.12'
       - run: python -m pip install semgrep bandit pip-audit
       - run: semgrep scan --error --config p/python --config p/javascript --config p/owasp-top-ten --config p/secrets
-      - run: bandit -r app ops -ll
+      - run: bandit -r app ops pp -ll
       - run: pip-audit --require-hashes -r requirements.lock
       - name: Gitleaks CLI (including Git history)
         shell: bash

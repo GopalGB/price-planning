@@ -14,6 +14,8 @@ from unittest import mock
 import zipfile
 import xml.etree.ElementTree as ET
 
+import defusedxml.ElementTree as SafeET
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.chart import BarChart, Reference
 from openpyxl.styles import Protection
@@ -587,14 +589,14 @@ class ObjectDependencyTests(unittest.TestCase):
         root.mkdir()
         source, output = root / "source.xlsx", root / "output.xlsx"
         _pivot_source_fixture(source)
-        original = ET.parse
+        original = SafeET.parse
 
         def reject_records(stream, *args, **kwargs):
             if getattr(stream, "name", "").endswith("pivotCacheRecords1.xml"):
                 raise AssertionError("pivot records reached the tree parser")
             return original(stream, *args, **kwargs)
 
-        with mock.patch("pp.export.transfer.ET.parse", side_effect=reject_records):
+        with mock.patch("pp.export.transfer.SafeET.parse", side_effect=reject_records):
             export_transfer(TransferRequest(
                 source, [], output, "hash", "copy", 0,
                 selected={"Keep"}, results={},

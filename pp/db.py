@@ -159,7 +159,7 @@ def _legacy_fingerprint(connection):
         ).fetchone()[0]
         _hash_fingerprint_part(digest, f"{table}\0{schema}")
         quoted = [f'"{name.replace(chr(34), chr(34) * 2)}"' for name in columns]
-        query = f'SELECT {",".join(quoted)} FROM "{table}" ORDER BY {",".join(quoted)}'
+        query = f'SELECT {",".join(quoted)} FROM "{table}" ORDER BY {",".join(quoted)}'  # nosec B608 # identifiers come from this database's own schema and are quoted
         for row in connection.execute(query):
             values = [_fingerprint_value(value) for value in row]
             _hash_fingerprint_part(digest, json.dumps(values, separators=(",", ":")))

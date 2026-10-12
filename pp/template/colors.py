@@ -5,8 +5,10 @@ from __future__ import annotations
 import colorsys
 import posixpath
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import zipfile
 
+from defusedxml.common import DefusedXmlException
 from openpyxl.styles.colors import COLOR_INDEX
 
 NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
@@ -50,12 +52,12 @@ def _scheme_color(node: ET.Element) -> str | None:
 def theme_colors(archive: zipfile.ZipFile) -> tuple[str, ...]:
     """The workbook theme's twelve colors in Excel's theme index order."""
     try:
-        rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+        rels = SafeET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
         target = next(item.get("Target", "") for item in rels.findall(f"{PACKAGE_RELS}Relationship")
                       if item.get("Type") == THEME_REL)
         part = target.lstrip("/") if target.startswith("/") else posixpath.normpath(posixpath.join("xl", target))
-        scheme = ET.fromstring(archive.read(part)).find(f"{A}themeElements/{A}clrScheme")
-    except (KeyError, StopIteration, ET.ParseError):
+        scheme = SafeET.fromstring(archive.read(part)).find(f"{A}themeElements/{A}clrScheme")
+    except (KeyError, StopIteration, ET.ParseError, DefusedXmlException):
         return DEFAULT_THEME
     if scheme is None:
         return DEFAULT_THEME

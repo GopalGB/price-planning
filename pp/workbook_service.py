@@ -484,7 +484,7 @@ def _local_history(connection, copy_id, query, cutoff):
             values.append(value)
     values.append(query.limit)
     rows = connection.execute(
-        "SELECT h.*,u.id AS user_id,u.name FROM pp_history h JOIN pp_users u ON u.id=h.actor_id WHERE "
+        "SELECT h.*,u.id AS user_id,u.name FROM pp_history h JOIN pp_users u ON u.id=h.actor_id WHERE "  # nosec B608 # clause names are fixed (sheet,row,col); values are bound
         + " AND ".join(clauses) + " ORDER BY h.id DESC LIMIT ?", values,
     ).fetchall()
     return [{**dict(item), "origin": None} for item in rows]

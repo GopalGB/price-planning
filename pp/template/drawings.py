@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import posixpath
 import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import zipfile
 
 from .colors import Palette
@@ -82,7 +83,7 @@ def related_parts(archive: zipfile.ZipFile, part: str) -> dict[str, tuple[str, s
     if rels_part not in archive.namelist():
         return {}
     found = {}
-    for item in ET.fromstring(archive.read(rels_part)).findall(f"{PACKAGE_RELS}Relationship"):
+    for item in SafeET.fromstring(archive.read(rels_part)).findall(f"{PACKAGE_RELS}Relationship"):
         target, mode = item.get("Target", ""), item.get("TargetMode", "Internal")
         if mode != "External" and not target.startswith("#"):
             target = target.lstrip("/") if target.startswith("/") else posixpath.normpath(

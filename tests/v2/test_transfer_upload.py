@@ -434,7 +434,7 @@ class UploadAPITests(unittest.TestCase):
         self.assertGreater(sum(sizes), max(sizes) + 1)
         for settings in cases:
             with self.subTest(settings=settings), mock.patch.multiple("pp.upload", **settings), \
-                    mock.patch("pp.upload.ET.parse", side_effect=AssertionError("tree parser reached")):
+                    mock.patch("pp.upload.SafeET.parse", side_effect=AssertionError("tree parser reached")):
                 with self.assertRaises(AppError) as raised:
                     _validate_archive(candidate)
                 self.assertEqual((raised.exception.status, raised.exception.code), (413, "archive_bomb"))
@@ -680,7 +680,7 @@ class UploadAPITests(unittest.TestCase):
         archive.namelist.return_value = ["xl/sharedStrings.xml"]
         archive.open.return_value = io.BytesIO()
         with mock.patch("pp.upload.MAX_SHARED_STRING_BYTES", 3), \
-                mock.patch("pp.upload.ET.iterparse", return_value=events()):
+                mock.patch("pp.upload.SafeET.iterparse", return_value=events()):
             with self.assertRaises(AppError) as raised:
                 list(_iter_shared_strings(archive, "xl/sharedStrings.xml"))
         self.assertEqual((raised.exception.status, raised.exception.code),

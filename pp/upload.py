@@ -667,7 +667,7 @@ def _unsafe_xml(*_args):
 
 
 def _validate_workbook_content_type(archive):
-    root = ET.fromstring(archive.read("[Content_Types].xml"))
+    root = SafeET.fromstring(archive.read("[Content_Types].xml"))
     content = next(
         (node.get("ContentType") for node in root if _local(node.tag) == "Override"
          and node.get("PartName", "").lstrip("/") == "xl/workbook.xml"),
@@ -763,7 +763,7 @@ def _bounded_structure(record, usage):
 def _sheet_structure(archive, part, hidden):
     merges, rows, columns, protection, stack, usage = [], [], [], None, [], [0, 0]
     with archive.open(part) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in SafeET.iterparse(stream, events=("start", "end")):
             if event == "start":
                 stack.append(element)
                 continue
@@ -788,7 +788,7 @@ def _iter_shared_strings(archive, part):
         return
     count, decoded, phonetic_depth, buffer, stack = 0, 0, 0, None, []
     with archive.open(part) as stream:
-        for event, element in ET.iterparse(stream, events=("start", "end")):
+        for event, element in SafeET.iterparse(stream, events=("start", "end")):
             local = _local(element.tag)
             if event == "start":
                 stack.append(element)
@@ -945,7 +945,7 @@ def _normalize_formula(formula):
 def _provenance(archive):
     if "docProps/custom.xml" not in archive.namelist():
         return None
-    root = ET.fromstring(archive.read("docProps/custom.xml"))
+    root = SafeET.fromstring(archive.read("docProps/custom.xml"))
     values = {}
     for node in root:
         if _local(node.tag) != "property":

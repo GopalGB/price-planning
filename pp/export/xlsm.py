@@ -11,7 +11,7 @@ import posixpath
 import re
 import shutil
 import tempfile
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as SafeET
 import zipfile
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -63,8 +63,8 @@ def _check(cell):
 
 def _sheet_parts(zin):
     """Worksheet part name per sheet, in workbook order."""
-    wb = ET.fromstring(zin.read('xl/workbook.xml'))
-    rels = ET.fromstring(zin.read('xl/_rels/workbook.xml.rels'))
+    wb = SafeET.fromstring(zin.read('xl/workbook.xml'))
+    rels = SafeET.fromstring(zin.read('xl/_rels/workbook.xml.rels'))
     targets = {r.get('Id'): r.get('Target') for r in rels.iter(f'{{{PKG_REL_NS}}}Relationship')}
     parts = []
     for sheet in wb.iter(f'{{{MAIN_NS}}}sheet'):

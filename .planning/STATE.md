@@ -1,5 +1,30 @@
 # STATE
 
+## 2026-10-12 (OpenCode runner, pp under bandit)
+
+fix/bandit-hardening at 9f330df. CI now scans the v2 server too: `bandit -r app ops pp -ll`, exit 0.
+- XML hardening (34 B314 in pp/): every workbook parse in pp/ now goes through defusedxml -
+  importer, upload, transfer, xlsm, dashboard, drawings, colors, native_load, formualizer.
+  No B314 nosec was needed: defusedxml covered all of them, including the custom-target parse
+  in dashboard.py (SafeET.parse with SafeET.XMLParser(forbid_dtd=True); its hand-rolled
+  _DashboardXML.doctype guard was dropped because DefusedXMLParser does not dispatch to
+  target.doctype, so the guard was silently dead once the parser was swapped).
+- Five reviewed false positives annotated, no logic touched: B104 pp/config.py, B608 pp/db.py
+  and pp/workbook_service.py, B301 in both engine caches.
+- Two tests patched onto pp.upload.SafeET / pp.export.transfer.SafeET. Both had been patching
+  ET.parse and ET.iterparse, names the modules no longer use, so the guard they assert was
+  already inert; they now guard the parser actually in the path.
+- Measured cost: defusedxml iterparse is ~1.6-2.9x slower than the stdlib parser on a 20 MB
+  synthetic sheet (min-of-4, A/B, same process). The export budget test
+  (test_55mb_xml_subset_path_stays_within_budget, 30 s) measured 21.9/23.1 s at HEAD and
+  22.1/28.1 s after, on a host running another suite. Headroom is now thin; watch it.
+- Tests: 132 template/upload/transfer OK, 104 upload/db/config/p0 OK, 57 export/db/api OK,
+  28 security/ops OK, 26 native, 68 engine, 17 workbook/ops/end-to-end. bandit 0, semgrep 0,
+  content guard 0, Ruff whole tree 698 now and 698 at baseline, 0 introduced.
+- Not run: the whole suite (another agent holds it), web suite, Office/Excel.
+  No external model review; the supervisor owns that.
+- Report: .planning/oc-report.md.
+
 ## 2026-10-12 (OpenCode runner, bandit hardening)
 
 fix/bandit-hardening at 8394df1 (3 commits after d2a45ca). CI's `bandit -r app ops -ll` was
