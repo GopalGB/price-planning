@@ -153,6 +153,7 @@ def _column_number(letters: str) -> int:
 
 def _formula_map(path: Path):
     cells, formulas, names, caches, dimensions = set(), {}, [], {}, []
+    settled = set()
     masters, followers = {}, []
     with zipfile.ZipFile(path) as archive:
         sheet_parts = _sheet_parts(archive)
@@ -176,6 +177,9 @@ def _formula_map(path: Path):
                             parsed = _cached_value(element)
                             if parsed is not None:
                                 caches[key] = parsed
+                                # Excel records a dynamic-array result that did not spill as an own-cell array.
+                                if formula.get("t") == "array":
+                                    settled.add(key)
                             if formula.text:
                                 text = "=" + formula.text.lstrip("=")
                                 formulas[key] = text
@@ -191,7 +195,7 @@ def _formula_map(path: Path):
     budget = _trace_budget(formulas, names, dimensions)
     return (frozenset(cells), formulas, names, caches,
             frozenset(key for key, _ in followers) | named_formulas,
-            opaque_formulas, budget)
+            opaque_formulas, budget, frozenset(settled))
 
 
 def _defined_name_ranges(archive, names):
@@ -537,7 +541,7 @@ class FormualizerEngine:
             prepared = prepared_template(path, cache_dir)
             mapped = _formula_map(prepared)
             (formula_cells, formulas, names, cached_values, native_formulas,
-             opaque_formulas, trace_budget) = mapped
+             opaque_formulas, trace_budget, settled) = mapped
             date1904 = _uses_1904_date_system(prepared)
             workbook = formualizer.load_workbook(str(prepared))
             if list(workbook.sheet_names) != names:
@@ -559,7 +563,9 @@ class FormualizerEngine:
                     key for key, formula in formulas.items() if DYNAMIC_ROOT.search(formula)
                 }
             )
-            spill_roots = frozenset(key for key, formula in formulas.items() if POTENTIAL_SPILL.search(formula))
+            # Roots Excel saved as non-spilling with a value need no bootstrap evaluation.
+            spill_roots = frozenset(key for key, formula in formulas.items()
+                                    if POTENTIAL_SPILL.search(formula) and key not in settled)
             initial = sorted((formula_cells - cached_values.keys()) | spill_roots)
             if initial:
                 workbook.evaluate_cells([(names[s], r + 1, c + 1) for s, r, c in initial])

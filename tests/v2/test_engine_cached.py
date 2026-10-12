@@ -539,6 +539,33 @@ class CachedStartupTests(unittest.TestCase):
             self.assertEqual(engine.get(0, 0, 2), 2)
             self.assertIn((0, 0, 2, 2), changes)
 
+    def test_excel_settled_array_formula_skips_bootstrap_and_still_grows(self):
+        """A large template must not evaluate every potential spill at load."""
+        from openpyxl.worksheet.formula import ArrayFormula
+
+        from pp.engine.formualizer import FormualizerAdapter, FormualizerEngine
+
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            source = Path(temp) / "settled-array.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet["A1"] = 1
+            sheet["B1"] = ArrayFormula("B1", "=SEQUENCE(A1)")
+            sheet["C1"] = "=B2"
+            workbook.save(source)
+            _replace_formula_values(source, {"xl/worksheets/sheet1.xml": {
+                "B1": ("1", None), "C1": ("0", None),
+            }})
+            with mock.patch.object(FormualizerEngine, "evaluate_dirty",
+                                   side_effect=AssertionError("bootstrap evaluated")):
+                engine = FormualizerAdapter.load(source)
+            self.assertEqual(engine.get(0, 0, 2), 0)
+
+            changes = engine.apply([(0, 0, 0, 2)])
+
+            self.assertEqual(engine.get(0, 1, 1), 2)
+            self.assertIn((0, 0, 2, 2), changes)
+
     def test_grown_spill_rechecks_same_batch_direct_dependent(self):
         from pp.engine.formualizer import FormualizerAdapter
 
