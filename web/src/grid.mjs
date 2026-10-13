@@ -1364,6 +1364,11 @@ export class PlanningGrid {
       this.toast("Press Ctrl+V in the grid to paste clipboard values");
     }
   }
+  focusGrid() {
+    document
+      .querySelector("#grid canvas[id^='univer-sheet-main-canvas']")
+      ?.focus();
+  }
   async goTo(ref) {
     const match = /^([A-Z]+)([1-9]\d*)$/i.exec(ref.trim());
     if (!match) throw new Error("Enter a cell address such as B2");

@@ -189,7 +189,13 @@ async function openCopy(copy) {
   $("refresh-button").onclick = () => safe(grid.refreshData());
   $("upload-button").onclick = () => uploadModal(activeCopy);
   $("name-box").onkeydown = (event) => {
-    if (event.key === "Enter") safe(grid.goTo(event.target.value));
+    // Excel moves focus to the grid after a Name Box jump, so typing edits the cell
+    if (event.key === "Enter")
+      safe(
+        grid
+          .goTo(event.target.value)
+          .then((moved) => moved && grid.focusGrid()),
+      );
   };
   $("formula-input").onfocus = () => grid.beginFormulaDraft();
   $("formula-input").onblur = () => {
