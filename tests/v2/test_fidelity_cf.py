@@ -285,6 +285,9 @@ class ConditionalFormattingRowsTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(load.call_count, 1)
 
+        # The evaluation budgets are process tuning, not copy state: a block already rendered for
+        # this copy is served from the row cache, so the cache is cleared to force the re-render.
+        self.fixture.app.state.services.workbooks.row_cache.clear()
         with patch("pp.fidelity.conditional_formatting.MAX_FORMULA_TARGETS", 1):
             limited = self.client.get(
                 f"/api/copies/{self.copy_id}/sheets/0/rows?start=1&count=2",

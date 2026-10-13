@@ -15,6 +15,7 @@ from .fidelity.conditional_formatting import (
 )
 from .fidelity.tables import merge_style_overrides, table_style_overrides
 from .pivot_state import read_state
+from .row_cache import RowBlockCache
 from .template.importer import IMPORT_VERSION
 
 SLICER_MESSAGE = "Slicers change on the office server, where the app uses Microsoft Excel."
@@ -242,9 +243,10 @@ class TemplateCatalog:
 
 
 class WorkbookService:
-    def __init__(self, database, snapshot):
+    def __init__(self, database, snapshot, row_cache=None):
         self.database = database
         self.templates = snapshot if isinstance(snapshot, TemplateCatalog) else TemplateCatalog(database, snapshot)
+        self.row_cache = row_cache if row_cache is not None else RowBlockCache()
 
     def workbook(self, copy_id: str, user_id: str) -> dict:
         with self.database.connect() as connection:
@@ -284,6 +286,11 @@ class WorkbookService:
             if (not 0 <= query.sheet < len(snapshot.sheets) or query.start < 0
                     or not 1 <= query.count <= 500):
                 raise AppError(422, "invalid", "Sheet row range is invalid")
+            # Access is settled first; only then may a body another reader rendered be reused.
+            key = _row_cache_key(connection, copy, query)
+            cached = self.row_cache.get(key)
+            if cached is not None:
+                return cached
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
             conditional = conditional_style_overrides(
                 snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
@@ -291,9 +298,11 @@ class WorkbookService:
             table_styles = table_style_overrides(snapshot.sheets[query.sheet], query)
             styles = merge_style_overrides(table_styles, conditional.styles)
             rows = self._row_data(connection, render, styles)
-        return {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
+        body = {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
                 "start": query.start, "rows": rows,
                 "conditional_format_warnings": conditional.warnings}
+        self.row_cache.put(key, body)
+        return body
 
     def _row_data(self, connection, render, style_overrides=None):
         output = {}
@@ -485,6 +494,21 @@ def _overrides(connection, query):
         (query.copy_id, query.sheet, query.start, query.start + query.count),
     ).fetchall()
     return {(item["row"], item["col"]): item for item in rows}
+
+
+def _row_cache_key(connection, copy, query):
+    """Every input the rendered body depends on, so one key change means one re-render.
+
+    The template snapshot behind ``template_id`` is immutable while the process holds it, and
+    conditional formatting reads current values from the whole copy, so an edit anywhere (which
+    moves ``input_revision``) and a published calculation (which moves ``calculated_revision``)
+    both invalidate every sheet. The copy's stored slicer selection is an input in its own right:
+    Excel pivot output reaches the grid through published results, but the selection decides those
+    results, so it is keyed by content rather than by the revision written next to it.
+    """
+    return (query.copy_id, copy["template_id"], query.sheet, query.start, query.count,
+            copy["input_revision"], copy["calculated_revision"],
+            json.dumps(read_state(connection, query.copy_id), sort_keys=True, separators=(",", ":")))
 
 
 def _group_rows(records):
