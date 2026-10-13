@@ -38,7 +38,8 @@ MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 XLSX_MAIN = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
 XLSM_MAIN = "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
 MAX_MEMBERS = 10_000
-MAX_UNCOMPRESSED = 500 * 1024 * 1024
+# The Spring 2027 template unpacks to ~650 MB (one sheet is 191 MB of XML); the ratio guard catches bombs.
+MAX_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
 MAX_RATIO = 200
 RATIO_MIN_BYTES = 1024 * 1024
 MAX_TREE_XML = 8 * 1024 * 1024
@@ -50,13 +51,13 @@ MAX_SHARED_STRINGS_XML = 64 * 1024 * 1024
 MAX_THEME_XML = 4 * 1024 * 1024
 MAX_SHARED_STRING_COUNT = 500_000
 MAX_SHARED_STRING_BYTES = 32 * 1024 * 1024
-MAX_STRUCTURE_RECORDS = 100_000
-MAX_STRUCTURE_BYTES = 16 * 1024 * 1024
+MAX_STRUCTURE_RECORDS = 1_000_000  # the real template has ~157k styled rows and columns
+MAX_STRUCTURE_BYTES = 64 * 1024 * 1024
 MAX_XML_DEPTH = 256
 MAX_XML_TOKEN_BYTES = 8 * 1024 * 1024
 PREVIEW_SECONDS = 15 * 60
 MAX_ACTIVE_PREVIEWS = 128
-MAX_PREVIEW_CACHE_BYTES = 2 * MAX_UNCOMPRESSED
+MAX_PREVIEW_CACHE_BYTES = 1024 * 1024 * 1024
 XML_RELATIONSHIP_ROLES = {
     "officeDocument", "worksheet", "styles", "sharedStrings", "theme", "custom-properties",
     "chart", "chartsheet", "chartSheet", "drawing",

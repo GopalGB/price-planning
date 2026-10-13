@@ -266,7 +266,8 @@ def _relationship_graph(archive):
             if _local(node.tag) != "Relationship":
                 continue
             target = None
-            if node.get("TargetMode") != "External":
+            # "#'Sheet'!A1" is a jump to a place inside this workbook, not a part of the package
+            if node.get("TargetMode") != "External" and not node.get("Target", "").startswith("#"):
                 target = _relationship_target(source, node.get("Target", ""))
             graph[source].append({
                 "id": node.get("Id"), "type": node.get("Type", ""), "target": target,

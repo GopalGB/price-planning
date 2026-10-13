@@ -1092,3 +1092,24 @@ class HardenedXmlParseTests(unittest.TestCase):
             archive.writestr("xl/_rels/workbook.xml.rels", bomb)
         with zipfile.ZipFile(buffer) as archive, self.assertRaises(EntitiesForbidden):
             _relationship_graph(archive)
+
+
+class InDocumentLinkTests(unittest.TestCase):
+    def test_link_to_a_cell_in_the_same_workbook_is_not_a_missing_part(self):
+        """Real templates link drawings to cells with Target="#'Sheet'!A1"; uploads failed on it."""
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            source, patched = Path(directory) / "in.xlsx", Path(directory) / "out.xlsx"
+            book = Workbook()
+            book.active["A1"] = 1
+            book.save(source)
+            with zipfile.ZipFile(source) as original, zipfile.ZipFile(patched, "w") as out:
+                for info in original.infolist():
+                    out.writestr(info, original.read(info))
+                out.writestr("xl/worksheets/_rels/sheet1.xml.rels", (
+                    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.'
+                    'openxmlformats.org/package/2006/relationships"><Relationship Id="rIdJump" '
+                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+                    'hyperlink" Target="#\'Sheet A\'!B2"/></Relationships>'))
+            validate_package(patched)
