@@ -2,20 +2,23 @@
 
 ## 2026-10-13 evening (Claude, upload and download speed)
 
-feat/v2-integration at 1ec2989 (after 4543416). Pushed; CI for 4543416 green, 1ec2989 running.
+feat/v2-integration at 2392afe. CI green through 8c8124a; later pushes not yet checked here.
 - Uploads and downloads run as background jobs (`?async=1`, `GET /api/jobs/{token}`, pp/jobs.py) with
-  a progress bar in the browser; the upload dialog pre-fills the copy name from the file name.
-- Upload preview on the real template (Mac, 8 GB): 350 s originally, 147 s after the first fixes,
-  39 s now (12 s archive safety checks, 26 s reading sheets). Big workbooks read one sheet per spawn
-  worker (MAX_SCAN_WORKERS 4, PARALLEL_MIN_BYTES 32 MB); each worker screens its sheet XML, checks its
-  relationship ids and reads cells plus structure in one parse. A dead worker falls back to an
-  in-process read. Template identity persists in `upload_identity.json` (version 2).
-- Tests: 819 Python OK, content guard 0, ruff F clean, bandit -ll exit 0.
-- Not done: calcChain.xml (58 MB) and pivotCacheRecords (25 MB) still validate in the main process
-  (most of the 12 s); download is ~26 s with a progress bar but no speedup; overlay findings 0 and 1
-  (markers offset when frozen or zoomed) still open; no browser recheck of 1ec2989 and no external review.
-- Next: Sir pulls 1ec2989 on the office server (port 8211) and retries upload; ask for the exact
-  error text if it still fails.
+  a progress bar; the upload dialog pre-fills the copy name from the file name.
+- Upload preview on the real template (Mac, 8 GB): 350 s originally, 147 s, 39 s (1ec2989), 31 s now
+  (2392afe: 4.4 s safety checks, 26 s reading sheets). Big workbooks read one sheet per spawn worker
+  (MAX_SCAN_WORKERS 4, PARALLEL_MIN_BYTES 32 MB), one parse per sheet; a dead worker falls back to an
+  in-process read. LinkScan skips the link parse for screened UTF-8 parts with no prefixed
+  id/embed/link attribute (calcChain, pivot cache records).
+- Download (export) on the real template: about 26 s to 12.6 s (b738e49): the final package check
+  skips parts copied byte for byte whose .rels were also copied.
+- Overlay fix (b58594c): note and filter markers use dashboard.mjs worksheet geometry and are placed
+  again after a zoom change. Checked in Ego Lite on the synthetic fixture at 75/100/125/150%; the
+  fixture is too small to scroll, so frozen plus scrolled placement is covered by unit tests only.
+- Tests: 822 Python OK, 198 web OK, content guard 0, ruff F clean, bandit -ll exit 0, prettier clean.
+- Open: an adversarial review of the upload safety changes was started (Sonnet); its result is not
+  recorded here yet. Sir pulls on the office server (port 8211) and retries upload.
+- 18:24: lan-real (8765) had stopped (graceful shutdown, cause unknown); restarted 19:12.
 
 ## 2026-10-13 (OpenCode runner, perf/tab-cache)
 
