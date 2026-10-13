@@ -33,6 +33,19 @@ test("renderCell merges a differential override including a number format and cl
   assert.equal(unchanged.s.bg.rgb, "#445566");
 });
 
+test("a rule format with no fill keeps the cell's own fill instead of painting it white", () => {
+  const cleared = renderCell(
+    {
+      v: { error: "#DIV/0!" },
+      k: "f",
+      style_override: { bold: false, fill: null },
+    },
+    { fill: "#4472C4", bold: true },
+  );
+  assert.equal(cleared.s.bg.rgb, "#4472C4");
+  assert.equal(cleared.s.bl, 0);
+});
+
 test("a calc event refetches only loaded row blocks through rows API", async () => {
   const paths = [];
   const toasts = [];

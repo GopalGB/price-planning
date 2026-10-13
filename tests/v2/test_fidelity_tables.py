@@ -116,3 +116,20 @@ class TableAPIContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TableStyleBudgetTests(unittest.TestCase):
+    def test_a_table_declared_out_to_the_last_column_is_bounded_per_request(self):
+        import time
+        from types import SimpleNamespace
+
+        from pp.fidelity.tables import MAX_TABLE_STYLE_CELLS, table_style_overrides
+        table = {"range": [0, 0, 399, 16_383], "header_row": True, "totals_row": False,
+                 "show_row_stripes": False, "show_column_stripes": False,
+                 "show_first_column": False, "show_last_column": False,
+                 "style": {"wholeTable": {"style": {"bold": True}}}}
+        started = time.monotonic()
+        styles = table_style_overrides({"tables": [table]}, SimpleNamespace(start=0, count=200))
+        self.assertLessEqual(len(styles), MAX_TABLE_STYLE_CELLS)
+        self.assertEqual(styles[(199, 0)], {"bold": True})
+        self.assertLess(time.monotonic() - started, 2)

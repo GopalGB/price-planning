@@ -524,3 +524,18 @@ class VolatileConditionalFormattingRowsTest(unittest.TestCase):
         self.assertEqual(len(engine.calls), 6)
         self.assertTrue(all(len(call) == 3 and all(isinstance(value, int) for value in call)
                             for call in engine.calls))
+
+
+class LiteralRuleBudgetTest(unittest.TestCase):
+    def test_wide_text_rules_stop_at_the_time_budget_with_one_warning(self):
+        from pp.fidelity.conditional_formatting import EvaluationState
+        rules = [{"type": kind, "text": "x", "priority": priority, "range": [0, 0, 399, 16_383],
+                  "dxf": {"bold": True}, "stop_if_true": False}
+                 for priority, kind in enumerate(("containsText", "beginsWith", "containsErrors"), 1)]
+        snapshot = SimpleNamespace(sheets=[{"conditional_formats": rules}])
+        values = SimpleNamespace(extent=lambda _sheet: (400, 16_384), get=lambda *_args: "x")
+        state = EvaluationState(snapshot, values, SimpleNamespace(sheet=0, start=0, count=200))
+        with patch("pp.fidelity.conditional_formatting.FORMULA_TIME_BUDGET_S", 0):
+            result = state.run()
+        self.assertEqual(result.styles, {})
+        self.assertEqual([item["code"] for item in result.warnings], ["formula_time_limit"])

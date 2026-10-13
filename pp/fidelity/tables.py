@@ -1,14 +1,26 @@
 """Bounded table-style projection for requested row blocks."""
 
 
+# 500 rows x 262 columns; the real template's widest table is 187 x 16. A table declared out to column XFD
+# would otherwise style 3.3M cells per request.
+MAX_TABLE_STYLE_CELLS = 131_072
+
+
 def table_style_overrides(sheet, query):
     output = {}
     request_end = query.start + query.count - 1
+    budget = MAX_TABLE_STYLE_CELLS
     for table in sheet.get("tables", []):
         row1, col1, row2, col2 = table["range"]
         start, end = max(row1, query.start), min(row2, request_end)
         if start > end or not table.get("style"):
             continue
+        # shortcut: columns past the per-request budget stay unstyled; upgrade to used-column clipping if a real
+        # template ever needs a wider styled table
+        col2 = min(col2, col1 + max(budget // (end - start + 1), 1) - 1)
+        budget -= (end - start + 1) * (col2 - col1 + 1)
+        if budget < 0:
+            break
         for row in range(start, end + 1):
             for col in range(col1, col2 + 1):
                 style = _table_cell_style(table, row, col)

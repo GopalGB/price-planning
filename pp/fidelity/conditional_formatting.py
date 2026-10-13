@@ -148,12 +148,16 @@ class EvaluationState:
     warnings: list[dict] = field(default_factory=list)
     rule_before: dict[tuple[int, int], object] = field(default_factory=dict)
     rule_stops: set[tuple[int, int]] = field(default_factory=set)
+    literal_deadline: float | None = None
+    literal_timed_out: bool = False
 
     def run(self) -> ConditionalFormatResult:
         rules = sorted(self.snapshot.sheets[self.query.sheet].get("conditional_formats", []),
                        key=lambda rule: rule["priority"])
         indexed = list(enumerate(rules))
         formulas = self._formula_evaluation(indexed)
+        # Text/error rules scan their whole range cell by cell, so they get the same budget as formula rules
+        self.literal_deadline = time.monotonic() + FORMULA_TIME_BUDGET_S
         for key, rule in indexed:
             if key not in formulas.failures:
                 self._apply_atomic(rule, formulas.results.get(key))
@@ -208,6 +212,13 @@ class EvaluationState:
         except ConditionalFormatError as exc:
             self._rollback()
             self._warn(rule, exc.code)
+        except _OutOfTime:
+            self._rollback()
+            if not self.literal_timed_out:
+                self.literal_timed_out = True
+                warning = {"code": "formula_time_limit", "message": WARNING_MESSAGE, "rule_id": "multiple"}
+                if warning not in self.warnings:
+                    self.warnings.append(warning)
 
     def apply_rule(self, rule, formula_results=None) -> None:
         kind = rule["type"]
@@ -221,8 +232,12 @@ class EvaluationState:
             for coordinate in matches:
                 self.apply_style(rule, coordinate)
             return
+        if self.literal_timed_out:
+            raise _OutOfTime
         extent = self.values.extent(self.query.sheet)
-        for coordinate in _targets(rule["range"], self.query, extent):
+        for index, coordinate in enumerate(_targets(rule["range"], self.query, extent)):
+            if index % 4096 == 0:
+                _check_deadline(self.literal_deadline)
             if _direct_match(rule, self.values.get(self.query.sheet, *coordinate)):
                 self.apply_style(rule, coordinate)
 

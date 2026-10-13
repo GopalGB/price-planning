@@ -87,6 +87,8 @@ export function renderCell(cell, style, options = {}) {
     ? {
         ...(style ?? {}),
         ...cell.style_override,
+        // A rule format with no fill leaves the cell's own fill showing, as in Excel
+        ...(cell.style_override.fill == null && { fill: style?.fill }),
         ...((style?.border || cell.style_override.border) && {
           border: {
             ...(style?.border ?? {}),
