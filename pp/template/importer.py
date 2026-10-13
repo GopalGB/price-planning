@@ -37,7 +37,7 @@ NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 RNS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 REL_NS = "{http://schemas.openxmlformats.org/package/2006/relationships}"
 CELL_REF = re.compile(r"([A-Z]+)([1-9][0-9]*)")
-IMPORT_VERSION = 16
+IMPORT_VERSION = 17
 NOTE_COUNT = 10_000
 NOTE_TEXT_BYTES = 64 * 1024
 TABLE_COUNT = 1_000
@@ -1036,6 +1036,17 @@ def _drawing_data(archive: zipfile.ZipFile, sheet_specs: list[dict]) -> list[dic
     return [{"id": f"d{number}", **item} for number, item in enumerate(found)]
 
 
+def _extend_for_objects(metadata: list[dict], objects: list[dict]) -> None:
+    """Grow each sheet's grid to reach its pictures and buttons, as Excel's endless grid does."""
+    sheets = {info["index"]: info for info in metadata}
+    for item in objects:
+        info = sheets.get(item.get("sheet"))
+        for corner in (item.get("from"), item.get("to")):
+            if info is not None and corner:
+                info["rows"] = max(info["rows"], corner["row"] + 1)
+                info["cols"] = max(info["cols"], corner["col"] + 1)
+
+
 def _has_data_connections(archive: zipfile.ZipFile) -> bool:
     """True when the workbook has at least one Power Query or other data connection Excel can refresh."""
     if "xl/connections.xml" not in archive.namelist():
@@ -1087,6 +1098,7 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
             database.commit()
             buttons = _button_data(archive, sheet_specs)
             drawings = _drawing_data(archive, sheet_specs)
+            _extend_for_objects(metadata, [*buttons, *drawings])
             refreshable = _has_data_connections(archive)
         for info in metadata:
             _expand_shared_formulas(staging, database, info["index"])

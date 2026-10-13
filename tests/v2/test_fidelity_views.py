@@ -30,6 +30,12 @@ class FidelityFixtureImportTests(unittest.TestCase):
              "beginsWith", "containsErrors"},
         )
         self.assertTrue(any(item["sheet"] == sheets["Drawings"]["index"] for item in drawings))
+        # the grid reaches every picture and button, as Excel's endless grid does
+        placed = [item for item in drawings if item["sheet"] == sheets["Drawings"]["index"]]
+        self.assertGreaterEqual(sheets["Drawings"]["rows"],
+                                max(item.get("to", item["from"])["row"] for item in placed) + 1)
+        self.assertGreaterEqual(sheets["Drawings"]["cols"],
+                                max(item.get("to", item["from"])["col"] for item in placed) + 1)
         self.assertTrue(sheets["Notes One"]["has_notes"])
         self.assertTrue(sheets["Notes Two"]["has_notes"])
         self.assertEqual(len(sheets["Tables"]["tables"]), 2)

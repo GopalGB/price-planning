@@ -602,7 +602,13 @@ export class PlanningGrid {
     this.paint();
     this.renderMacros();
     this.renderTableFilters();
-    context.worksheet.getRange(1, 1).activate();
+    const sheet = this.currentSheet();
+    context.worksheet
+      .getRange(
+        Math.min(1, Math.max(0, (sheet?.rows ?? 2) - 1)),
+        Math.min(1, Math.max(0, (sheet?.cols ?? 2) - 1)),
+      )
+      .activate();
     this.selectionInfo();
     await this.dashboard?.open(this.currentSheet());
     if (!this.viewMatches(context)) return false;
