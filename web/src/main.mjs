@@ -147,11 +147,6 @@ async function openCopy(copy) {
   const meta = await api.request(`/copies/${copy.id}/workbook`);
   if (visit !== navigation) return;
   $("refresh-button").hidden = !meta.refreshable;
-  if (meta.calculation === "cached") {
-    $("role-status").textContent =
-      "Read only · Excel's saved values, editing paused";
-    if ($("upload-button")) $("upload-button").hidden = true;
-  }
   const { PlanningGrid } = await import("./grid.mjs");
   if (visit !== navigation) return;
   grid = new PlanningGrid({
