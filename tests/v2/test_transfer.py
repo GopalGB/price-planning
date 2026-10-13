@@ -319,7 +319,7 @@ class PackageDownloadTests(unittest.TestCase):
     def test_writer_rechecks_links_in_every_part_it_rewrote(self):
         with mock.patch("pp.export.transfer.validate_package") as validate:
             self.download()
-        unchanged = validate.call_args.kwargs["unchanged"]
+        unchanged = validate.call_args.kwargs["no_links"]
         rewritten = {"xl/workbook.xml", "xl/_rels/workbook.xml.rels", "_rels/.rels",
                      "[Content_Types].xml", "docProps/custom.xml"}
         self.assertFalse(unchanged & rewritten)

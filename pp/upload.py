@@ -30,6 +30,7 @@ from .authorization import effective_role
 from .errors import AppError
 from .export.transfer import (
     REL_ATTRIBUTE_NAMESPACES,
+    LinkScan,
     _local,
     _relationship_graph,
     _relationship_references,
@@ -510,12 +511,12 @@ def _validate_archive(path, deferred=frozenset()):
                 _safe_member(info, stored[info.filename])
             if sum(item.file_size for item in infos) > MAX_UNCOMPRESSED:
                 raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
-            graph = _validate_xml_members(archive, stored, deferred)
+            graph, linkless = _validate_xml_members(archive, stored, deferred)
             _validate_workbook_content_type(archive)
             for _ in _iter_shared_strings(
                     archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")):
                 pass
-        validate_package(path, deferred=deferred)
+        validate_package(path, deferred=deferred, no_links=linkless)
     except AppError:
         raise
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
@@ -523,14 +524,15 @@ def _validate_archive(path, deferred=frozenset()):
 
 
 def _validate_xml_members(archive, stored, deferred=frozenset()):
+    """Returns the relationship graph and the screened parts with no relationship attribute."""
     xml_members = _xml_members(archive)
-    total, relationship_total = 0, 0
+    total, relationship_total, linkless = 0, 0, set()
     for info in archive.infolist():
         # A deferred part is still unpacked here for the size and ratio limits; only its parse moves
         parser = (_xml_parser() if info.filename in xml_members and info.filename not in deferred
                   else None)
         tree_limit = _tree_xml_limit(info.filename)
-        expanded = 0
+        expanded, links = 0, LinkScan()
         with archive.open(info) as stream:
             while chunk := stream.read(1 << 20):
                 expanded += len(chunk)
@@ -548,11 +550,14 @@ def _validate_xml_members(archive, stored, deferred=frozenset()):
                 if parser is not None:
                     parser.Parse(chunk, False)
                     _check_xml_token(parser, expanded)
+                    links.feed(chunk)
         if expanded > RATIO_MIN_BYTES and expanded / stored[info.filename] > MAX_RATIO:
             raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
         if parser is not None:
             parser.Parse(b"", True)
-    return _validate_xml_roles(archive, xml_members)
+            if not links.possible:
+                linkless.add(info.filename)
+    return _validate_xml_roles(archive, xml_members), frozenset(linkless)
 
 
 def _xml_members(archive):

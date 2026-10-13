@@ -928,9 +928,29 @@ class PackageValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "relationship reference"):
             validate_package(path)
         # A download skips the link re-read only for parts it copied as they were
-        validate_package(path, unchanged=frozenset({"customXml/item1.xml"}))
+        validate_package(path, no_links=frozenset({"customXml/item1.xml"}))
         with self.assertRaisesRegex(ValueError, "relationship reference"):
-            validate_package(path, unchanged=frozenset({"xl/workbook.xml"}))
+            validate_package(path, no_links=frozenset({"xl/workbook.xml"}))
+
+    def test_link_scan_only_clears_utf8_parts_with_no_link_attribute(self):
+        from pp.export.transfer import LinkScan
+
+        def possible(*chunks):
+            scan = LinkScan()
+            for chunk in chunks:
+                scan.feed(chunk)
+            return scan.possible
+
+        plain = b'<?xml version="1.0" encoding="UTF-8"?><calcChain><c r="A1" i="1"/></calcChain>'
+        self.assertFalse(possible(plain))
+        self.assertFalse(possible(b"\xef\xbb\xbf" + plain))
+        self.assertFalse(possible(b"<calcChain/>"))
+        self.assertTrue(possible(b'<item xmlns:q="x" q:id="rId9"/>'))
+        self.assertTrue(possible(b'<item xmlns:longprefix="x" longprefix:', b'embed="rId9"/>'))
+        self.assertTrue(possible(b'<item xmlns:q="x" q:i', b'd="rId9"/>'))
+        self.assertTrue(possible('<item xmlns:q="x" q:id="rId9"/>'.encode("utf-16")))
+        self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-7"?><item/>'))
+        self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-8"'))
 
     def test_vendor_relationship_namespace_is_not_an_ooxml_reference(self):
         path = self.package("vendor-namespace.xlsx")

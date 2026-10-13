@@ -1241,7 +1241,7 @@ def _transform_package(source, destination, request):
             name for name in state.parts - set(state.removed) - touched
             if _relationships_part(name) not in touched
         )
-    validate_package(destination, require_provenance=True, unchanged=unchanged)
+    validate_package(destination, require_provenance=True, no_links=unchanged)
     return [sheet["name"] for sheet in state.kept]
 
 
@@ -1376,19 +1376,55 @@ def _relationship_references(stream):
     return references
 
 
-def validate_package(path, require_provenance=False, deferred=frozenset(), unchanged=frozenset()):
+class LinkScan:
+    """Byte-level proof that an XML part holds no relationship attribute (r:id, r:embed, r:link).
+
+    Such an attribute always carries a namespace prefix, so in UTF-8 its name shows as ":id",
+    ":embed" or ":link". Any other encoding, or a declaration it cannot read, counts as a possible
+    link. Feed every chunk in order; it proves nothing about well-formedness.
+    """
+
+    NAMES = (b":id", b":embed", b":link")
+
+    def __init__(self):
+        self.possible, self.tail, self.started = False, b"", False
+
+    def feed(self, chunk):
+        if self.possible:
+            return
+        if not self.started:
+            self.started = True
+            self.possible = not _utf8_xml(chunk[:1024])
+        window = self.tail + chunk
+        self.possible = self.possible or any(name in window for name in self.NAMES)
+        self.tail = window[-(max(map(len, self.NAMES)) - 1):]
+
+
+def _utf8_xml(head):
+    head = head.removeprefix(b"\xef\xbb\xbf")
+    if not head.startswith(b"<?xml"):
+        return head.startswith(b"<")  # no declaration and no BOM means UTF-8
+    end = head.find(b"?>")
+    if end < 0:
+        return False
+    declared = re.search(rb"encoding\s*=\s*[\"']([^\"']*)", head[:end])
+    return declared is None or declared.group(1).lower() in {b"utf-8", b"utf8"}
+
+
+def validate_package(path, require_provenance=False, deferred=frozenset(), no_links=frozenset()):
     """Reject archives with dangling relationships, missing content types, or unreadable XML.
 
     deferred: parts whose relationship references the caller checks itself, on the worker that reads
     them. openpyxl reads worksheet XML, so with deferred parts the caller runs open_check() once the
-    workers have screened them. unchanged: parts copied as they were from a package the app trusts,
-    so their links are not re-read.
+    workers have screened them. no_links: parts the caller showed cannot hold a dangling link (copied
+    unchanged from a trusted package, or a LinkScan found no link attribute after an XML screen),
+    so they are not re-read.
     """
     with zipfile.ZipFile(path) as archive:
         state = _validation_state(archive)
         for info in archive.infolist():
             _validate_package_member(archive, info, state,
-                                     info.filename in deferred or info.filename in unchanged)
+                                     info.filename in deferred or info.filename in no_links)
         _validate_package_graph(state, require_provenance)
     if not deferred:
         open_check(path)

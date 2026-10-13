@@ -78,6 +78,12 @@ class ParallelUploadTests(unittest.TestCase):
         sequential, parallel = self.both(_rewrite_zip(self.changed, self.fixture.root, dangling))
         self.assertEqual((sequential.status_code, parallel.status_code), (422, 422), parallel.body)
 
+    def test_a_dangling_link_in_a_utf16_part_is_still_found(self):
+        part = '<item xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/relationships" q:id="rId9"/>'
+        added = (("customXml/item9.xml", part.encode("utf-16")),)
+        response = self.preview(_rewrite_zip(self.changed, self.fixture.root, additions=added))
+        self.assertEqual(response.status_code, 422, response.body)
+
     def test_a_dead_reader_process_falls_back_to_an_in_process_read(self):
         from concurrent.futures import Future
         from concurrent.futures.process import BrokenProcessPool
