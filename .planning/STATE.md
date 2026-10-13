@@ -1,5 +1,28 @@
 # STATE
 
+## 2026-10-13 night (Claude, E2E readiness, logo, 10-user load)
+
+feat/v2-integration at bdbd9c2. CI green through 8a4771e; bdbd9c2 was running at handoff.
+- E2E run on the real template (lan-check, port 8793) found and fixed two bugs (47932b8): the Upload
+  button was hidden in values mode, and 17 of 22 sheets counted as "moved" because the extent check
+  compared against the snapshot instead of the template's own extents (identity file version 3).
+- Logo (8a4771e): logo.png or logo.svg (max 5 MB) in the app folder or its parent shows top-left
+  with no brand config. Office: put it in `D:\Gopal\PP 2` or `D:\Gopal\PP 2\app`, restart.
+- Speed (bdbd9c2): unedited copies share row blocks per template; colour-rule formula prep is cached
+  per process; ROW/COLUMN and defined-name rewrites skip the token walk when absent. Differential on
+  the real template: 473,003 rewrites, 0 differences.
+- 10 users, 90 s, random sheet and block every 0.5 to 2 s, one upload plus one download mid-run (Mac
+  M2, 8 cores, 8 GB): sheet load p50 1.1 s (was 2.9 s), p95 9.0 s, max 21 s; edits p50 284 ms,
+  p95 1.8 s; 0 errors. Under that load: download 95 s, upload 105 s. Server CPU avg 2.2 cores, max
+  4.1; memory idle 284 MB, peak 4.5 GB (upload workers).
+- Known cost left: a fully cold colour-rule build of the largest sheet's first block is 34 s; the
+  1.5 s budget skips the rest and the cache fills over later renders. Warm renders still tokenize
+  each formula three times (CF ReferenceScan.collect, engine _expand_defined_names, _trace_budget),
+  about 0.6 of 1.8 s. Next speed step: memoize tokens per formula text, or pre-warm block 0 per
+  sheet at startup.
+- Tests: 831 Python OK, content guard 0, ruff no new findings.
+- Still waiting on IT: Excel Quick Repair, then `office_run.bat check` (P6.1, 6.3, 6.4, 6.5).
+
 ## 2026-10-13 evening (Claude, upload and download speed)
 
 feat/v2-integration at 2392afe. CI green through 8c8124a; later pushes not yet checked here.
