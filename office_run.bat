@@ -18,7 +18,7 @@ set "PP_ENGINE_CACHE_DIR=%HOME_DIR%\engine-cache"
 
 rem 2. Settings on first use: Excel engine, open to the office network.
 if exist settings.json goto have_settings
-> settings.json echo {"bind": "0.0.0.0", "port": 8000, "demo_mode": true, "engine": "excel"}
+> settings.json echo {"bind": "0.0.0.0", "port": 8211, "demo_mode": true, "engine": "excel"}
 :have_settings
 
 rem 3. Python 3.12, 3.11 or 3.10 (the bundled packages are built for these).
