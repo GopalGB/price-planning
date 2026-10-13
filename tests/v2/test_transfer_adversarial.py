@@ -1070,7 +1070,8 @@ class LargeXmlSubsetBenchmarkTests(unittest.TestCase):
         rss_mb = rss / (1024 * 1024) if os.uname().sysname == "Darwin" else rss / 1024
         print(f"TRANSFER_XML_BENCH input_mb={source.stat().st_size / 1024 / 1024:.2f} "
               f"elapsed_s={elapsed:.3f} rss_mb={rss_mb:.2f}")
-        self.assertLess(elapsed, 30)
+        # ~15 s on a dev Mac, 18 to 32 s on shared CI runners; a quadratic regression takes minutes
+        self.assertLess(elapsed, 60)
         self.assertLess(rss_mb, 500)
 
 
