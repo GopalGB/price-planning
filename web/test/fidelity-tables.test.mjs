@@ -92,6 +92,13 @@ function worksheetBoundary(commandTarget) {
     calls,
     hidden,
     getFreeze: () => ({ xSplit: 1, ySplit: 1 }),
+    getZoom: () => 1,
+    getRange: (row, col) => ({
+      getCellRect: () => {
+        const { startX, startY, endX, endY } = cell(row, col, true);
+        return { left: startX, top: startY, right: endX, bottom: endY };
+      },
+    }),
     getVisibleRange: () => ({
       startRow: 0,
       endRow: 8,
@@ -99,6 +106,10 @@ function worksheetBoundary(commandTarget) {
       endColumn: 2,
     }),
     getSkeleton: () => ({
+      rowHeaderWidthAndMarginLeft: 40,
+      columnHeaderHeightAndMarginTop: 22,
+      scrollX: 80,
+      scrollY: 24,
       getNoMergeCellWithCoordByIndex: (row, col, header = true) =>
         cell(row, col, header),
       getCellWithCoordByIndex: (row, col, header = true) =>

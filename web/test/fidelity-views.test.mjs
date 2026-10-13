@@ -203,3 +203,35 @@ test("late old-sheet view events cannot alter active overlay geometry", () => {
   assert.equal(grid.drawingZoom, 1.5);
   assert.equal(elements.get("zoom").value, "150%");
 });
+
+test("a zoom change places note and filter markers again after Univer lays out the sheet", () => {
+  const { document } = documentBoundary();
+  globalThis.document = document;
+  const events = {},
+    drawn = [],
+    frames = [],
+    grid = Object.create(PlanningGrid.prototype);
+  globalThis.requestAnimationFrame = (callback) => frames.push(callback);
+  Object.assign(grid, {
+    on: (name, handler) => (events[name] = handler),
+    u: { getFormula: () => ({ calculationStart: () => ({ dispose() {} }) }) },
+    disposables: [],
+    controller: {},
+    store: { get: () => ({}) },
+    scheduleVisible() {},
+    selectionInfo() {},
+    sendPresence() {},
+    renderMacros() {},
+    renderDrawings: () => drawn.push("drawings"),
+    worksheet: { getSkeleton: () => ({}) },
+    sheet: 1,
+    drawingScroll: { x: 0, y: 0 },
+    drawingZoom: 1,
+  });
+  grid.bindEvents();
+
+  events.CommandExecuted({ id: "sheet.operation.set-zoom-ratio", params: {} });
+  assert.deepEqual(drawn, [], "placed before the zoomed layout exists");
+  frames.forEach((frame) => frame());
+  assert.deepEqual(drawn, ["drawings"]);
+});

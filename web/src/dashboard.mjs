@@ -301,6 +301,22 @@ export function anchorViewportRect(anchor, geometry) {
   };
 }
 
+// The screen rect of one whole cell, a merged block included: its own cell rect,
+// taken through the same axes every other overlay anchor goes through.
+export function cellViewportRect(row, column, geometry) {
+  const rect = geometry.cellRect(row, column),
+    left = axisPosition(rect.left, column, AXIS_X, geometry),
+    top = axisPosition(rect.top, row, AXIS_Y, geometry),
+    right = axisPosition(rect.right, column, AXIS_X, geometry),
+    bottom = axisPosition(rect.bottom, row, AXIS_Y, geometry);
+  return {
+    left: Math.round(left),
+    top: Math.round(top),
+    width: Math.max(0, Math.round(right - left)),
+    height: Math.max(0, Math.round(bottom - top)),
+  };
+}
+
 export function slicerModels(rendered, imported) {
   const metadata = new Map(imported.map((item) => [item.name, item]));
   return rendered.flatMap((slicer) => {
@@ -1281,6 +1297,7 @@ function rangeAnchor(row, firstColumn, lastColumn) {
 export function worksheetGeometry(worksheet, sheet, scroll) {
   const skeleton = worksheet?.getSkeleton?.();
   if (!worksheet || !skeleton) return null;
+  const freeze = sheet?.freeze ?? worksheet.getFreeze?.() ?? {};
   return {
     cellRect: (row, column) => worksheet.getRange(row, column).getCellRect(),
     zoom: worksheet.getZoom(),
@@ -1289,8 +1306,8 @@ export function worksheetGeometry(worksheet, sheet, scroll) {
       top: skeleton.columnHeaderHeightAndMarginTop,
     },
     freeze: {
-      rows: sheet?.freeze?.rows ?? 0,
-      cols: sheet?.freeze?.cols ?? 0,
+      rows: freeze.rows ?? freeze.ySplit ?? 0,
+      cols: freeze.cols ?? freeze.xSplit ?? 0,
     },
     scroll: {
       ...scroll,

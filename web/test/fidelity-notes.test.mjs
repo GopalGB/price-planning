@@ -107,10 +107,22 @@ function worksheetBoundary() {
         endY: sum(heights, lastRow + 1) + headerY,
       };
     };
+  const cellRect = (row, col, header = true) => {
+    const { startX, startY, endX, endY } = cell(row, col, header, true);
+    return { left: startX, top: startY, right: endX, bottom: endY };
+  };
   return {
     getFreeze: () => ({ xSplit: 1, ySplit: 1 }),
-    getRange: () => ({ activate() {} }),
+    getZoom: () => 1.25,
+    getRange: (row, column) => ({
+      activate() {},
+      getCellRect: () => cellRect(row, column),
+    }),
     getSkeleton: () => ({
+      rowHeaderWidthAndMarginLeft: 40,
+      columnHeaderHeightAndMarginTop: 22,
+      scrollX: viewScroll.x,
+      scrollY: viewScroll.y,
       getNoMergeCellWithCoordByIndex: (row, col, header = true) =>
         cell(row, col, header, false),
       getCellWithCoordByIndex: (row, col, header = true) =>
@@ -119,10 +131,12 @@ function worksheetBoundary() {
   };
 }
 
+// The grid's own scroll, which the overlay follows.
+const viewScroll = { x: 100, y: 30 };
 const view = () => ({
   worksheet: worksheetBoundary(),
-  scrollX: 100,
-  scrollY: 30,
+  scrollX: viewScroll.x,
+  scrollY: viewScroll.y,
   zoom: 1.25,
 });
 
@@ -132,8 +146,8 @@ test("notes use merged live cell geometry and safe keyboard-accessible hover tex
     note = { sheet: 0, r: 1, c: 1, author: "A <Admin>", text: NOTE_TEXT };
 
   assert.deepEqual(noteBounds(note, view()), {
-    left: 115,
-    top: 44.5,
+    left: 125,
+    top: 50,
     width: 225,
     height: 85,
   });
@@ -143,8 +157,8 @@ test("notes use merged live cell geometry and safe keyboard-accessible hover tex
     [marker, popup] = anchor.children,
     [author, text] = popup.children;
   assert.equal(anchor.className, "note-anchor");
-  assert.equal(anchor.style.left, "330px");
-  assert.equal(anchor.style.top, "44.5px");
+  assert.equal(anchor.style.left, "340px");
+  assert.equal(anchor.style.top, "50px");
   assert.equal(marker.tagName, "BUTTON");
   assert.equal(marker.type, "button");
   assert.equal(marker.title, `A <Admin>: ${NOTE_TEXT}`);
@@ -154,15 +168,15 @@ test("notes use merged live cell geometry and safe keyboard-accessible hover tex
   );
   assert.equal(marker.attributes["aria-describedby"], "note-0-1-1");
   assert.equal(marker.textContent, "");
-  assert.equal(marker.style.clipPath, "inset(7.5px 0px 0px 0px)");
+  assert.equal(marker.style.clipPath, "inset(8px 0px 0px 0px)");
   assert.equal(popup.id, "note-0-1-1");
   assert.equal(popup.attributes.role, "tooltip");
   assert.equal(author.textContent, "A <Admin>");
   assert.equal(text.textContent, NOTE_TEXT);
-  assert.equal(popup.style.left, "-258px");
+  assert.equal(popup.style.left, "-268px");
   assert.equal(popup.style.top, "12px");
   assert.equal(popup.style.width, "280px");
-  assert.equal(popup.style.maxHeight, "115.5px");
+  assert.equal(popup.style.maxHeight, "110px");
 });
 
 function rowResponse(rows) {

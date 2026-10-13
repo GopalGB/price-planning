@@ -1,102 +1,30 @@
 // Screen position of a cell for overlays (notes, filter buttons), following scroll, zoom and frozen panes.
-function screenPoint(point, marker, geometry) {
-  const { view, headers, freeze, fixed } = geometry,
-    frozenX = marker.col < (freeze.xSplit ?? 0),
-    frozenY = marker.row < (freeze.ySplit ?? 0);
-  return {
-    x:
-      headers.x +
-      (frozenX ? point.x : fixed.x + point.x - view.scrollX) * view.zoom,
-    y:
-      headers.y +
-      (frozenY ? point.y : fixed.y + point.y - view.scrollY) * view.zoom,
-  };
-}
+// One geometry path: the same worksheet geometry dashboard.mjs places pictures, slicers and macro
+// buttons with, so the row and column headers stay inside the zoom factor like every other overlay.
+import { cellViewportRect, worksheetGeometry } from "./dashboard.mjs";
 
-function sheetGeometry(view) {
-  const skeleton = view.worksheet.getSkeleton(),
-    origin = skeleton.getNoMergeCellWithCoordByIndex(0, 0, false),
-    headed = skeleton.getNoMergeCellWithCoordByIndex(0, 0, true),
-    headers = {
-      x: headed.startX - origin.startX,
-      y: headed.startY - origin.startY,
-    },
-    freeze = view.worksheet.getFreeze(),
-    fixed = {
-      x: freeze.xSplit
-        ? skeleton.getNoMergeCellWithCoordByIndex(0, freeze.xSplit, false)
-            .startX
-        : 0,
-      y: freeze.ySplit
-        ? skeleton.getNoMergeCellWithCoordByIndex(freeze.ySplit, 0, false)
-            .startY
-        : 0,
-    };
-  return { view, skeleton, headers, freeze, fixed };
+function overlayGeometry(view) {
+  return worksheetGeometry(view?.worksheet, view?.sheet);
 }
 
 export function cellBounds(cell, view) {
-  const geometry = sheetGeometry(view),
-    coordinate = geometry.skeleton.getCellWithCoordByIndex(
-      cell.r,
-      cell.c,
-      false,
-    ),
-    marker = { row: cell.r, col: cell.c },
-    start = screenPoint(
-      { x: coordinate.startX, y: coordinate.startY },
-      marker,
-      geometry,
-    ),
-    end = screenPoint(
-      { x: coordinate.endX, y: coordinate.endY },
-      marker,
-      geometry,
-    );
-  return {
-    left: start.x,
-    top: start.y,
-    width: end.x - start.x,
-    height: end.y - start.y,
-  };
+  const geometry = overlayGeometry(view);
+  return geometry ? cellViewportRect(cell.r, cell.c, geometry) : null;
 }
 
-function clipFrozen(element, drawing, frame) {
-  const { view, bounds, geometry } = frame,
-    { skeleton, freeze } = geometry,
-    plain = skeleton.getNoMergeCellWithCoordByIndex(0, 0, false),
-    headed = skeleton.getNoMergeCellWithCoordByIndex(0, 0, true);
-  let left = 0,
-    top = 0;
-  if (freeze.xSplit && drawing.anchor.from.col >= freeze.xSplit) {
-    const cell = skeleton.getNoMergeCellWithCoordByIndex(
-      0,
-      freeze.xSplit,
-      false,
-    );
-    left = Math.max(
-      0,
-      headed.startX - plain.startX + cell.startX * view.zoom - bounds.left,
-    );
-  }
-  if (freeze.ySplit && drawing.anchor.from.row >= freeze.ySplit) {
-    const cell = skeleton.getNoMergeCellWithCoordByIndex(
-      freeze.ySplit,
-      0,
-      false,
-    );
-    top = Math.max(
-      0,
-      headed.startY - plain.startY + cell.startY * view.zoom - bounds.top,
-    );
-  }
-  element.style.clipPath = `inset(${top}px 0px 0px ${left}px)`;
+// Where the frozen pane ends, in screen pixels: the far edge of its last frozen
+// row or column, taken from the same geometry as the overlay it clips.
+function frozenEdge(geometry, row, column) {
+  const rect = cellViewportRect(row, column, geometry);
+  return { left: rect.left + rect.width, top: rect.top + rect.height };
 }
 
 export function clipCell(element, cell, bounds, view) {
-  clipFrozen(
-    element,
-    { anchor: { from: { row: cell.r, col: cell.c } } },
-    { view, bounds, geometry: sheetGeometry(view) },
-  );
+  const geometry = overlayGeometry(view);
+  if (!geometry) return;
+  const { rows, cols } = geometry.freeze,
+    edge = frozenEdge(geometry, Math.max(0, rows - 1), Math.max(0, cols - 1)),
+    left = cols && cell.c >= cols ? edge.left : 0,
+    top = rows && cell.r >= rows ? edge.top : 0;
+  element.style.clipPath = `inset(${Math.max(0, top - bounds.top)}px 0px 0px ${Math.max(0, left - bounds.left)}px)`;
 }

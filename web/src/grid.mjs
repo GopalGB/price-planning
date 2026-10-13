@@ -201,6 +201,7 @@ export class PlanningGrid {
           if (this.closed) return;
           this.renderMacros();
           this.dashboard?.position();
+          this.renderDrawings();
         });
       if (event.id === "sheet.operation.set-scroll") {
         this.scheduleVisible();
