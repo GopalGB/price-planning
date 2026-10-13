@@ -142,14 +142,13 @@ class WebSocketContractTests(unittest.TestCase):
         self.assert_closed(socket)
 
     def test_origin_and_session_are_required(self):
-        """A WebSocket without both trusted Origin and session must not be accepted."""
+        """A foreign Origin is refused at the handshake; a missing session is closed with 4403 and no data."""
         bad_origin = self.connect(self.member, "http://evil.test")
         self.assertFalse(bad_origin.accepted)
         self.assertEqual(bad_origin.close_code, 4403)
         anonymous = WebSocketClient(self.fixture.app, f"/api/copies/{self.copy['id']}/ws")
         self.sockets.append(anonymous)
-        self.assertFalse(anonymous.accepted)
-        self.assertEqual(anonymous.close_code, 4403)
+        self.assert_closed(anonymous)
 
     def test_malformed_messages_close_with_a_protocol_error(self):
         """Invalid JSON, non-objects, and invalid hello cursors must close explicitly."""
