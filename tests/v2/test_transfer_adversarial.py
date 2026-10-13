@@ -927,6 +927,10 @@ class PackageValidationTests(unittest.TestCase):
         _rewrite(path, {}, (("customXml/item1.xml", dangling),))
         with self.assertRaisesRegex(ValueError, "relationship reference"):
             validate_package(path)
+        # A download skips the link re-read only for parts it copied as they were
+        validate_package(path, unchanged=frozenset({"customXml/item1.xml"}))
+        with self.assertRaisesRegex(ValueError, "relationship reference"):
+            validate_package(path, unchanged=frozenset({"xl/workbook.xml"}))
 
     def test_vendor_relationship_namespace_is_not_an_ooxml_reference(self):
         path = self.package("vendor-namespace.xlsx")

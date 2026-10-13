@@ -236,6 +236,11 @@ def _relationship_source(name):
     return posixpath.join(match.group(1) or "", match.group(2))
 
 
+def _relationships_part(name):
+    directory, base = posixpath.split(name)
+    return posixpath.join(directory, "_rels", base + ".rels")
+
+
 def _relationship_target(source, target):
     if re.search(r"%(?![0-9A-Fa-f]{2})", target):
         raise ValueError(f"unsafe OOXML relationship target: {target}")
@@ -1229,7 +1234,14 @@ def _transform_package(source, destination, request):
         _write_transformed(WritePlan(
             archive, destination, state.removed, replacements, state.frozen, cleanups, custom,
         ))
-    validate_package(destination, require_provenance=True)
+        touched = set(replacements) | set(state.frozen) | set(cleanups) | {"docProps/custom.xml"}
+        # A part copied byte for byte with its relationships file also copied cannot gain a dangling
+        # link, and re-reading the big sheets for that was most of the download time
+        unchanged = frozenset(
+            name for name in state.parts - set(state.removed) - touched
+            if _relationships_part(name) not in touched
+        )
+    validate_package(destination, require_provenance=True, unchanged=unchanged)
     return [sheet["name"] for sheet in state.kept]
 
 
@@ -1364,17 +1376,19 @@ def _relationship_references(stream):
     return references
 
 
-def validate_package(path, require_provenance=False, deferred=frozenset()):
+def validate_package(path, require_provenance=False, deferred=frozenset(), unchanged=frozenset()):
     """Reject archives with dangling relationships, missing content types, or unreadable XML.
 
     deferred: parts whose relationship references the caller checks itself, on the worker that reads
     them. openpyxl reads worksheet XML, so with deferred parts the caller runs open_check() once the
-    workers have screened them.
+    workers have screened them. unchanged: parts copied as they were from a package the app trusts,
+    so their links are not re-read.
     """
     with zipfile.ZipFile(path) as archive:
         state = _validation_state(archive)
         for info in archive.infolist():
-            _validate_package_member(archive, info, state, info.filename in deferred)
+            _validate_package_member(archive, info, state,
+                                     info.filename in deferred or info.filename in unchanged)
         _validate_package_graph(state, require_provenance)
     if not deferred:
         open_check(path)
