@@ -185,6 +185,26 @@ class FakeApp:
 
 
 class ComHostTests(unittest.TestCase):
+    def test_unregistered_excel_name_falls_back_to_the_class_id(self):
+        from pp.engine.excel import CO_E_CLASSSTRING, EXCEL_CLSID, _new_excel
+
+        app, asked = object(), []
+
+        def dispatch(name):
+            asked.append(name)
+            if name == "Excel.Application":
+                raise RuntimeError(CO_E_CLASSSTRING, "Invalid class string", None, None)
+            return app
+
+        self.assertIs(_new_excel(types.SimpleNamespace(DispatchEx=dispatch)), app)
+        self.assertEqual(asked, ["Excel.Application", EXCEL_CLSID])
+
+        def other_failure(name):
+            raise RuntimeError(-2147024891, "Access is denied", None, None)
+
+        with self.assertRaises(RuntimeError):
+            _new_excel(types.SimpleNamespace(DispatchEx=other_failure))
+
     def test_hidden_macro_free_manual_excel_on_a_private_copy(self):
         app = FakeApp()
         killed = []

@@ -95,6 +95,20 @@ class ExcelHost:
     def close(self) -> None: ...
 
 
+EXCEL_CLSID = "{00024500-0000-0000-C000-000000000046}"
+CO_E_CLASSSTRING = -2147221005  # "Invalid class string": the Excel.Application name is not registered
+
+
+def _new_excel(client):
+    """By name first. A damaged Office install can lose the name but keep Excel's fixed class id."""
+    try:
+        return client.DispatchEx("Excel.Application")
+    except Exception as exc:  # pywintypes.com_error carries the HRESULT first
+        if not exc.args or exc.args[0] != CO_E_CLASSSTRING:
+            raise
+        return client.DispatchEx(EXCEL_CLSID)
+
+
 class ComExcelHost(ExcelHost):
     """A private hidden Excel with macros and events off, on its own file copy."""
 
@@ -107,7 +121,7 @@ class ComExcelHost(ExcelHost):
         self.directory = tempfile.mkdtemp(prefix="pp-excel-")
         self.path = Path(self.directory) / workbook.name
         shutil.copy2(workbook, self.path)
-        self.app = win32com.client.DispatchEx("Excel.Application")
+        self.app = _new_excel(win32com.client)
         self.pid = win32process.GetWindowThreadProcessId(self.app.Hwnd)[1]
         try:
             for name, value in (("Visible", False), ("DisplayAlerts", False), ("ScreenUpdating", False),

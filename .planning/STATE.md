@@ -22,6 +22,9 @@ feat/v2-integration at bdbd9c2. CI green through 8a4771e; bdbd9c2 was running at
   sheet at startup.
 - Tests: 831 Python OK, content guard 0, ruff no new findings.
 - Still waiting on IT: Excel Quick Repair, then `office_run.bat check` (P6.1, 6.3, 6.4, 6.5).
+- Excel without the repair: when `Excel.Application` is unregistered ("Invalid class string") the app
+  now starts Excel by its class id, and office_run.bat accepts either key; if neither exists it prints
+  the Click-to-Run platform and registration lines for Claude and stays in values mode.
 
 ## 2026-10-13 evening (Claude, upload and download speed)
 
