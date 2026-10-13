@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 import json
 import ipaddress
+import logging
 import os
 from pathlib import Path
 import re
@@ -35,8 +36,9 @@ class Config:
 BRAND_ASSETS = ("logo", "favicon", "touch_icon")
 BRAND_TYPES = {".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon"}
 BRAND_COLORS = ("primary", "accent", "highlight")
-BRAND_MAX_BYTES = 1_000_000
+BRAND_MAX_BYTES = 5_000_000
 HEX_COLOR = re.compile(r"#[0-9A-Fa-f]{6}")
+LOGGER = logging.getLogger(__name__)
 
 
 def _brand(root: Path, value: object) -> dict | None:
@@ -58,13 +60,36 @@ def _brand(root: Path, value: object) -> dict | None:
                  and Path(file).suffix.lower() in BRAND_TYPES)
         path = directory / file if valid else None
         if path is None or not path.is_file() or path.stat().st_size > BRAND_MAX_BYTES:
-            raise ValueError(f"brand.{key} must be a PNG, SVG or ICO under 1 MB in brand.dir")
+            raise ValueError(f"brand.{key} must be a PNG, SVG or ICO under 5 MB in brand.dir")
         assets[key] = path
     colors = value.get("colors", {})
     if (not isinstance(colors, dict) or set(colors) - set(BRAND_COLORS)
             or not all(isinstance(item, str) and HEX_COLOR.fullmatch(item) for item in colors.values())):
         raise ValueError("brand.colors takes primary, accent and highlight as #RRGGBB")
     return {"name": name.strip(), "assets": assets, "colors": dict(colors)}
+
+
+def _dropped_logo(root: Path) -> Path | None:
+    """A logo.png or logo.svg put in the app folder or the folder above it (next to the template)."""
+    for folder in (root, root.parent):
+        for name in ("logo.png", "logo.svg"):
+            path = folder / name
+            if path.is_file():
+                if path.stat().st_size <= BRAND_MAX_BYTES:
+                    return path
+                LOGGER.warning("%s is over 5 MB, so it is not shown", path)
+    return None
+
+
+def _brand_with_logo(root: Path, value: object) -> dict | None:
+    brand = _brand(root, value)
+    if brand is not None and "logo" in brand["assets"]:
+        return brand
+    logo = _dropped_logo(root)
+    if logo is None:
+        return brand
+    brand = brand or {"name": "", "assets": {}, "colors": {}}
+    return {**brand, "assets": {**brand["assets"], "logo": logo}}
 
 
 def _read_settings(root: Path, settings_path: str | Path | None = None) -> dict:
@@ -303,7 +328,8 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
         template_path = candidates[0] if candidates else None
     return Config(bind, port, data_dir, demo_mode, template_path, max_workers, database_path,
                   origins, cookie_secure, replay_window, engine_memory,
-                  _brand(root, settings.get("brand")), _template_results(settings), _engine(settings),
+                  _brand_with_logo(root, settings.get("brand")), _template_results(settings),
+                  _engine(settings),
                   upload_max, auto_backup)
 
 

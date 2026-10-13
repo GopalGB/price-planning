@@ -514,17 +514,17 @@ async function applyBrand() {
   } catch {
     return;
   }
-  if (!brand?.name) return;
-  document.title = `${brand.name} Price Planning`;
+  if (!brand?.assets) return;
+  if (brand.name) document.title = `${brand.name} Price Planning`;
   for (const [key, value] of Object.entries(brand.colors || {}))
     document.documentElement.style.setProperty(`--brand-${key}`, value);
-  // The bar turns brand-coloured only with a primary colour; a white logo needs it.
+  // The bar turns brand-coloured only with a primary colour; without one a logo sits on the light bar
   if (brand.colors?.primary) document.body.classList.add("branded");
-  if (brand.assets.includes("logo") && brand.colors?.primary) {
+  if (brand.assets.includes("logo")) {
     const logo = document.createElement("img");
     Object.assign(logo, {
       src: "/brand/logo",
-      alt: brand.name,
+      alt: brand.name || "Logo",
       className: "brand-logo",
     });
     document.querySelector("#home-button .mark").replaceWith(logo);
