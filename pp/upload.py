@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import hashlib
 from io import StringIO
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -86,6 +86,8 @@ class WorkbookModel:
     provenance: dict | None
     ignored: tuple[dict, ...]
     displaced: frozenset[str]
+    # Highest row and column holding a cell, per sheet, measured the same way for template and upload
+    extents: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,7 @@ class SheetData:
     formulas: dict
     ignored_count: int
     displaced: bool
+    extent: tuple[int, int] = (0, 0)
 
 
 @dataclass
@@ -205,11 +208,9 @@ class DisplacementDetector:
             self.locked_layout_changed = True
 
     def detected(self):
-        if self.snapshot is None or self.sheet is None:
-            return False
-        info = self.snapshot.sheets[self.sheet]
-        extent_changed = (self.rows, self.cols) != (info["rows"], info["cols"])
-        return extent_changed or self.locked_layout_changed
+        # The extent is compared with the template's own cell extent in _preview_details: the
+        # snapshot's sheet size also counts formatted empty columns, so it never matched a real file
+        return self.snapshot is not None and self.sheet is not None and self.locked_layout_changed
 
 
 class PreviewStore:
@@ -768,7 +769,8 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
         for name in names if results[name].data.ignored_count
     )
     displaced = frozenset(name for name in names if results[name].data.displaced)
-    return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced)
+    extents = {name: results[name].data.extent for name in names}
+    return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced, extents)
 
 
 @dataclass(frozen=True)
@@ -1086,7 +1088,7 @@ def _sheet_cells(request, stream_cells):
             ignored += 1
             if not editable:
                 detector.locked_value_changed(record, expected)
-    return SheetData(cells, formulas, ignored, detector.detected())
+    return SheetData(cells, formulas, ignored, detector.detected(), (detector.rows, detector.cols))
 
 
 def _locked_cell_changed(uploaded, expected):
@@ -1173,7 +1175,7 @@ def _normalize_formula(formula):
 
 
 # Bump when the fingerprint or structure records change shape, so a stale saved identity is rebuilt.
-TEMPLATE_IDENTITY_VERSION = 2
+TEMPLATE_IDENTITY_VERSION = 3
 TEMPLATE_IDENTITY_FILE = "upload_identity.json"
 
 
@@ -1186,13 +1188,15 @@ def _load_template_identity(snapshot):
     if not isinstance(saved, dict) or saved.get("version") != TEMPLATE_IDENTITY_VERSION:
         return None
     structures = {name: _tupled(value) for name, value in saved["structures"].items()}
-    return WorkbookModel(tuple(saved["sheets"]), {}, structures, saved["fingerprint"], None, (), frozenset())
+    extents = {name: tuple(value) for name, value in saved["extents"].items()}
+    return WorkbookModel(tuple(saved["sheets"]), {}, structures, saved["fingerprint"], None, (), frozenset(),
+                         extents)
 
 
 def _save_template_identity(snapshot, model):
     path = Path(snapshot.path) / TEMPLATE_IDENTITY_FILE
     body = {"version": TEMPLATE_IDENTITY_VERSION, "sheets": list(model.sheets),
-            "fingerprint": model.fingerprint, "structures": model.structures}
+            "fingerprint": model.fingerprint, "structures": model.structures, "extents": model.extents}
     temporary = path.with_suffix(".tmp")
     try:
         temporary.write_text(json.dumps(body), encoding="utf-8")
@@ -1265,7 +1269,8 @@ def _preview_details(context):
                 "sheet": sheet_name, "cell": None,
                 "reason": "row, column, merge, protection, or visibility changes are ignored",
             })
-        if sheet_name in model.displaced:
+        if (sheet_name in model.displaced
+                or model.extents.get(sheet_name) != context.template_model.extents.get(expected_name)):
             ignored.append({
                 "sheet": sheet_name, "cell": None,
                 "reason": "Input changes are ignored because rows, columns, or locked cells may have moved",
