@@ -1396,7 +1396,9 @@ class LinkScan:
             self.started = True
             self.possible = not _utf8_xml(chunk[:1024])
         window = self.tail + chunk
-        self.possible = self.possible or any(name in window for name in self.NAMES)
+        # A NUL never appears in UTF-8 XML; it means UTF-16 or UTF-32, even with no BOM
+        self.possible = (self.possible or b"\x00" in chunk
+                         or any(name in window for name in self.NAMES))
         self.tail = window[-(max(map(len, self.NAMES)) - 1):]
 
 

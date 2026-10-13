@@ -949,6 +949,8 @@ class PackageValidationTests(unittest.TestCase):
         self.assertTrue(possible(b'<item xmlns:longprefix="x" longprefix:', b'embed="rId9"/>'))
         self.assertTrue(possible(b'<item xmlns:q="x" q:i', b'd="rId9"/>'))
         self.assertTrue(possible('<item xmlns:q="x" q:id="rId9"/>'.encode("utf-16")))
+        self.assertTrue(possible('<item xmlns:q="x" q:id="rId9"/>'.encode("utf-16-le")))
+        self.assertTrue(possible('<?xml version="1.0"?><item q:id="rId9"/>'.encode("utf-16-le")))
         self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-7"?><item/>'))
         self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-8"'))
 

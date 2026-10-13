@@ -80,9 +80,10 @@ class ParallelUploadTests(unittest.TestCase):
 
     def test_a_dangling_link_in_a_utf16_part_is_still_found(self):
         part = '<item xmlns:q="http://schemas.openxmlformats.org/officeDocument/2006/relationships" q:id="rId9"/>'
-        added = (("customXml/item9.xml", part.encode("utf-16")),)
-        response = self.preview(_rewrite_zip(self.changed, self.fixture.root, additions=added))
-        self.assertEqual(response.status_code, 422, response.body)
+        for encoding in ("utf-16", "utf-16-le"):  # with and without a byte order mark
+            added = (("customXml/item9.xml", part.encode(encoding)),)
+            response = self.preview(_rewrite_zip(self.changed, self.fixture.root, additions=added))
+            self.assertEqual(response.status_code, 422, (encoding, response.body))
 
     def test_a_dead_reader_process_falls_back_to_an_in_process_read(self):
         from concurrent.futures import Future
