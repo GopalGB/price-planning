@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 from io import StringIO
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 import json
 import logging
+import multiprocessing
+import os
 from pathlib import Path, PurePosixPath
 import re
 import secrets
@@ -25,10 +29,12 @@ from openpyxl.utils.escape import unescape as unescape_ooxml
 from .authorization import effective_role
 from .errors import AppError
 from .export.transfer import (
-    _iter_cells,
+    REL_ATTRIBUTE_NAMESPACES,
     _local,
     _relationship_graph,
+    _relationship_references,
     _sheet_records,
+    open_check,
     validate_package,
 )
 from .ops import EDIT_ROLES, UploadOperationRequest
@@ -45,6 +51,9 @@ MAX_MEMBERS = 10_000
 MAX_UNCOMPRESSED = 2 * 1024 * 1024 * 1024
 MAX_RATIO = 200
 RATIO_MIN_BYTES = 1024 * 1024
+# Workbooks whose sheets unpack past this are read one sheet per worker process, all cores at once
+PARALLEL_MIN_BYTES = 32 * 1024 * 1024
+MAX_SCAN_WORKERS = 4
 MAX_TREE_XML = 8 * 1024 * 1024
 MAX_RELATIONSHIP_XML = 4 * 1024 * 1024
 MAX_RELATIONSHIP_XML_TOTAL = 16 * 1024 * 1024
@@ -166,6 +175,7 @@ class SheetScan:
     index: int | None
     name: str
     all_formulas: bool
+    keep: frozenset = frozenset()  # (row, col) of the copy's saved edits on this sheet
 
 
 @dataclass(frozen=True)
@@ -290,15 +300,17 @@ class UploadService:
         progress = request.progress or _no_progress
         filename = _filename(request.filename)
         progress("Checking the file is safe")
-        _validate_archive(request.path)
+        deferred = _deferred_parts(request.path)
+        _validate_archive(request.path, deferred)
         # Only the provenance tag picks the copy and template; the sheets are read once, below
         provenance = _read_provenance(request.path)
         with self.database.read_transaction() as connection:
             copy, role = self._target_copy(connection, provenance, request)
             snapshot = (self.templates.get(connection, copy["template_id"]) if copy is not None
                         else self._new_copy_snapshot(connection, provenance, request))
+            edited = frozenset(_overrides(connection, copy["id"])) if copy is not None else frozenset()
             model = _read_workbook(request.path, snapshot=snapshot, fingerprint=provenance is None,
-                                   progress=progress)
+                                   progress=progress, overrides=edited, deferred=deferred)
             progress("Comparing with the copy")
             identification, revision = self._identify(model, snapshot, copy)
             details = _preview_details(PreviewContext(
@@ -485,7 +497,8 @@ def _safe_member(info, stored=1):
         raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
 
 
-def _validate_archive(path):
+def _validate_archive(path, deferred=frozenset()):
+    """deferred: worksheet parts whose XML screening and link check run on the worker that reads them."""
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
@@ -497,23 +510,25 @@ def _validate_archive(path):
                 _safe_member(info, stored[info.filename])
             if sum(item.file_size for item in infos) > MAX_UNCOMPRESSED:
                 raise AppError(413, "archive_bomb", "Workbook expands beyond the safe limit")
-            graph = _validate_xml_members(archive, stored)
+            graph = _validate_xml_members(archive, stored, deferred)
             _validate_workbook_content_type(archive)
             for _ in _iter_shared_strings(
                     archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")):
                 pass
-        validate_package(path)
+        validate_package(path, deferred=deferred)
     except AppError:
         raise
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
         raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
 
 
-def _validate_xml_members(archive, stored):
+def _validate_xml_members(archive, stored, deferred=frozenset()):
     xml_members = _xml_members(archive)
     total, relationship_total = 0, 0
     for info in archive.infolist():
-        parser = _xml_parser() if info.filename in xml_members else None
+        # A deferred part is still unpacked here for the size and ratio limits; only its parse moves
+        parser = (_xml_parser() if info.filename in xml_members and info.filename not in deferred
+                  else None)
         tree_limit = _tree_xml_limit(info.filename)
         expanded = 0
         with archive.open(info) as stream:
@@ -698,49 +713,206 @@ def _no_progress(*_args):
     pass
 
 
-def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progress=_no_progress):
+def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progress=_no_progress,
+                   overrides=frozenset(), deferred=frozenset()):
+    """overrides: (sheet, row, col) of the copy's saved edits; deferred: parts _validate_archive left to us."""
     with zipfile.ZipFile(path) as archive:
         graph = _relationship_graph(archive)
         sheets = _sheet_records(archive.read("xl/workbook.xml"), graph)
         names = tuple(item["name"] for item in sheets)
         if len({name.casefold() for name in names}) != len(names):
             raise AppError(422, "invalid_workbook", "Workbook sheet names must be unique")
-        strings = _shared_strings(
-            archive, _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")
-        )
+        strings_part = _workbook_role_part(graph, "sharedStrings", "xl/sharedStrings.xml")
+        sizes = {info.filename: info.file_size for info in archive.infolist()}
+        props = _provenance(archive) if provenance else None
         indexes = ({item["name"].casefold(): item["index"] for item in snapshot.sheets}
                    if snapshot is not None else {})
-        all_formulas = snapshot is None and not provenance
-        scanned = {}
-        for number, item in enumerate(sheets):
-            progress("Reading sheets", number, len(sheets))
-            scanned[item["name"]] = _sheet_cells(SheetScan(
-                archive, item["part"], strings, snapshot,
-                indexes.get(item["name"].casefold()), item["name"], all_formulas,
+        jobs = []
+        for item in sheets:
+            index = indexes.get(item["name"].casefold())
+            jobs.append(PartJob(
+                str(path), item["part"], strings_part,
+                str(snapshot.path) if snapshot is not None else None,
+                index, item["name"], item["hidden"], snapshot is None and not provenance, fingerprint,
+                frozenset((row, col) for sheet, row, col in overrides if sheet == index),
+                item["part"] in deferred,
             ))
-        progress("Reading sheets", len(sheets), len(sheets))
-        cells = {name: data.cells for name, data in scanned.items()}
-        progress("Checking rows and columns")
-        structures = _workbook_structures(archive, sheets)
-        # A file the app wrote carries provenance, which identifies its template without the formula hash
-        fingerprint = _fingerprint(names, {
-            name: data.formulas for name, data in scanned.items()
-        }) if fingerprint else None
-        props = _provenance(archive) if provenance else None
-        ignored = tuple(
-            {"sheet": name, "cell": None, "count": data.ignored_count,
-             "reason": "formula or locked cells are ignored"}
-            for name, data in scanned.items() if data.ignored_count
-        )
-        displaced = frozenset(name for name, data in scanned.items() if data.displaced)
+        parallel = (_scan_workers(len(jobs)) > 1
+                    and sum(sizes.get(job.part, 0) for job in jobs) >= PARALLEL_MIN_BYTES)
+        strings = None if parallel else _shared_strings(archive, strings_part)
+    results = _scan_parts(jobs, progress, parallel, snapshot, strings, sizes)
+    failed = next((result for result in results.values() if result.error is not None), None)
+    if failed is not None:
+        raise AppError(*failed.error)
+    for job in jobs:
+        result = results[job.name]
+        if job.screen and result.references - {item["id"] for item in graph.get(job.part, [])}:
+            raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook")
+    _screen_unread(path, deferred - {job.part for job in jobs})
+    if deferred:
+        _deferred_open_check(path)
+    progress("Checking rows and columns")
+    structures = _bounded_structures({job.name: results[job.name].structure for job in jobs})
+    # A file the app wrote carries provenance, which identifies its template without the formula hash
+    fingerprint = (_fingerprint(names, {name: result.digest for name, result in results.items()})
+                   if fingerprint else None)
+    cells = {name: results[name].data.cells for name in names}
+    ignored = tuple(
+        {"sheet": name, "cell": None, "count": results[name].data.ignored_count,
+         "reason": "formula or locked cells are ignored"}
+        for name in names if results[name].data.ignored_count
+    )
+    displaced = frozenset(name for name in names if results[name].data.displaced)
     return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced)
 
 
-def _workbook_structures(archive, sheets):
-    structures, usage = {}, [0, 0]
-    for item in sheets:
-        structure = _sheet_structure(archive, item["part"], item["hidden"])
-        structures[item["name"]] = structure
+@dataclass(frozen=True)
+class PartJob:
+    """One worksheet part to read, in this process or on a worker; everything in it pickles."""
+    path: str
+    part: str
+    strings_part: str
+    snapshot_path: str | None
+    index: int | None
+    name: str
+    hidden: object
+    all_formulas: bool
+    fingerprint: bool
+    keep: frozenset
+    screen: bool  # the archive check deferred this part's XML screening and link check to here
+
+
+@dataclass(frozen=True)
+class PartResult:
+    name: str
+    data: SheetData | None
+    digest: bytes | None
+    structure: tuple | None
+    references: frozenset
+    error: tuple | None = None
+
+
+def _scan_workers(parts):
+    return min(MAX_SCAN_WORKERS, parts, max(1, (os.cpu_count() or 1) - 1))
+
+
+def _deferred_parts(path):
+    """Worksheet parts that move their XML checks onto the workers, when the workbook is big enough."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            parts = [info for info in archive.infolist()
+                     if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml")
+                     and "/" not in info.filename[len("xl/worksheets/"):]]
+    except (OSError, zipfile.BadZipFile):
+        return frozenset()  # _validate_archive reports the real problem
+    if _scan_workers(len(parts)) < 2 or sum(info.file_size for info in parts) < PARALLEL_MIN_BYTES:
+        return frozenset()
+    return frozenset(info.filename for info in parts)
+
+
+def _scan_parts(jobs, progress, parallel, snapshot, strings, sizes):
+    results, total = {}, len(jobs)
+    progress("Reading sheets", 0, total)
+    if not parallel:
+        for number, job in enumerate(jobs, 1):
+            results[job.name] = _scan_part(job, snapshot, strings)
+            progress("Reading sheets", number, total)
+        return results
+    # Biggest sheets first, so one large sheet does not start last and hold everyone up
+    ordered = sorted(jobs, key=lambda job: sizes.get(job.part, 0), reverse=True)
+    context = multiprocessing.get_context("spawn")  # never fork a server that runs threads
+    try:
+        with ProcessPoolExecutor(max_workers=_scan_workers(total), mp_context=context) as pool:
+            futures = [pool.submit(_scan_part, job) for job in ordered]
+            for future in as_completed(futures):
+                result = future.result()
+                results[result.name] = result
+                progress("Reading sheets", len(results), total)
+                if result.error is not None:
+                    for pending in futures:
+                        pending.cancel()
+                    return results
+    except BrokenProcessPool:
+        # A reader process died (most likely out of memory); finish the upload here, just slower
+        LOGGER.warning("A sheet reader process stopped; reading the remaining sheets in the server")
+        for job in ordered:
+            if job.name not in results:
+                results[job.name] = _scan_part(job, snapshot)
+                progress("Reading sheets", len(results), total)
+    return results
+
+
+def _scan_part(job, snapshot=None, strings=None):
+    try:
+        with zipfile.ZipFile(job.path) as archive:
+            if job.screen:
+                _screen_part(archive, job.part)
+            if strings is None:
+                strings = _shared_strings(archive, job.strings_part)
+            if snapshot is None and job.snapshot_path is not None:
+                from .workbook_service import TemplateSnapshot
+                snapshot = TemplateSnapshot(job.snapshot_path)
+            found, references = _empty_structure(), set() if job.screen else None
+            with archive.open(job.part) as stream:
+                data = _sheet_cells(SheetScan(archive, job.part, strings, snapshot, job.index, job.name,
+                                              job.all_formulas, job.keep),
+                                    _iter_sheet(stream, found, references))
+            structure = (job.hidden, tuple(sorted(found["merge"])), tuple(found["row"]),
+                         tuple(found["column"]), found["protection"])
+            references = frozenset(references or ())
+        digest = _sheet_digest(data.formulas) if job.fingerprint else None
+        # Formulas only feed the digest, and a template read keeps no cells, so neither crosses back
+        data = replace(data, formulas={}, cells={} if job.all_formulas else data.cells)
+        return PartResult(job.name, data, digest, structure, references)
+    except AppError as exc:
+        return PartResult(job.name, None, None, None, frozenset(), (exc.status, exc.code, exc.message))
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError):
+        return PartResult(job.name, None, None, None, frozenset(),
+                          (422, "invalid_workbook", "File is not a safe Excel workbook"))
+
+
+def _screen_part(archive, part):
+    """The archive check's XML screen for one part; its size and ratio limits were already enforced."""
+    parser = _xml_parser()
+    expanded = 0
+    with archive.open(part) as stream:
+        while chunk := stream.read(1 << 20):
+            expanded += len(chunk)
+            parser.Parse(chunk, False)
+            _check_xml_token(parser, expanded)
+    parser.Parse(b"", True)
+
+
+def _screen_unread(path, parts):
+    """Deferred parts no sheet points at still get the screen and link check before anything trusts the file."""
+    if not parts:
+        return
+    try:
+        with zipfile.ZipFile(path) as archive:
+            graph = _relationship_graph(archive)
+            for part in sorted(parts):
+                _screen_part(archive, part)
+                with archive.open(part) as stream:
+                    references = _relationship_references(stream)
+                if references - {item["id"] for item in graph.get(part, [])}:
+                    raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook")
+    except AppError:
+        raise
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
+        raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
+
+
+def _deferred_open_check(path):
+    """validate_package's openpyxl open, run only now that every worksheet part has been screened."""
+    try:
+        open_check(path)
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
+        raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
+
+
+def _bounded_structures(structures):
+    usage = [0, 0]
+    for structure in structures.values():
         _, merges, rows, columns, protection = structure
         for values in (merges, rows, columns):
             for value in values:
@@ -785,27 +957,42 @@ def _bounded_structure(record, usage):
     return record
 
 
-def _sheet_structure(archive, part, hidden):
-    merges, rows, columns, protection, stack, usage = [], [], [], None, [], [0, 0]
-    with archive.open(part) as stream:
-        for event, element in SafeET.iterparse(stream, events=("start", "end")):
-            if event == "start":
-                stack.append(element)
-                continue
+def _empty_structure():
+    return {"merge": [], "row": [], "column": [], "protection": None}
+
+
+def _iter_sheet(stream, found, references=None):
+    """One parse of a worksheet: yields each <c> with its children, fills found with the structure
+    records, and, given a set, collects the relationship ids the part points at."""
+    stack, usage, cell_depth = [], [0, 0], 0
+    for event, element in SafeET.iterparse(stream, events=("start", "end")):
+        if event == "start":
+            stack.append(element)
+            if not cell_depth and _local(element.tag) == "c":
+                cell_depth = len(stack)
+            continue
+        if references is not None:
+            for name, value in element.attrib.items():
+                if name.startswith("{"):
+                    namespace, local = name[1:].split("}", 1)
+                    if namespace in REL_ATTRIBUTE_NAMESPACES and local in {"id", "embed", "link"}:
+                        references.add(value)
+        depth = len(stack)
+        stack.pop()
+        if depth > cell_depth > 0:
+            continue  # a cell's children stay until the cell itself is handed out
+        if depth == cell_depth:
+            cell_depth = 0
+            yield element
+        else:
             kind, value = _bounded_structure(_structure_record(element), usage)
-            if kind == "merge":
-                merges.append(value)
-            elif kind == "row":
-                rows.append(value)
-            elif kind == "column":
-                columns.append(value)
-            elif kind == "protection":
-                protection = value
-            if len(stack) > 1:
-                stack[-2].remove(element)
-            element.clear()
-            stack.pop()
-    return hidden, tuple(sorted(merges)), tuple(rows), tuple(columns), protection
+            if kind == "protection":
+                found[kind] = value
+            elif kind is not None:
+                found[kind].append(value)
+        if stack:
+            stack[-1].remove(element)
+        element.clear()
 
 
 def _iter_shared_strings(archive, part):
@@ -850,52 +1037,58 @@ def _shared_strings(archive, part):
     return list(_iter_shared_strings(archive, part))
 
 
-def _sheet_cells(request):
+def _sheet_cells(request, stream_cells):
     cells, formulas, shared, ignored = {}, {}, {}, 0
     detector = DisplacementDetector(request.snapshot, request.index)
-    with request.archive.open(request.part) as stream:
-        for cell in _iter_cells(stream):
-            reference = (cell.get("r") or "").replace("$", "").upper()
-            row, col = _coordinate(reference)
-            if request.snapshot is None and not request.all_formulas:
-                continue
-            if request.snapshot is not None and request.index is None:
-                continue
-            formula = next((child for child in cell if _local(child.tag) == "f"), None)
-            coordinate = (None if request.snapshot is None
-                          else (request.index, row, col))
-            expected = None if coordinate is None else request.snapshot.cell(*coordinate)
-            expected_formula = expected is None or expected.get("formula") is not None
-            if (expected_formula and formula is not None
-                    and formula.get("t") == "shared" and formula.text):
-                shared[formula.get("si")] = (reference, formula.text)
-            formula_value = (_formula_value(formula, reference, shared)
-                             if expected_formula else "=" if formula is not None else None)
-            record = {
-                "row": row, "col": col, "value": _cell_value(cell, request.strings),
-                "formula": formula_value,
-            }
-            detector.observe(record)
-            if expected_formula and formula_value is not None:
-                formulas[reference] = record
-            if request.snapshot is None:
-                if formula_value is not None:
-                    cells[reference] = record
-                continue
-            # A formula typed into an open (unprotected, non-template-input) cell is dropped like a locked one
-            template_input, editable = request.snapshot.input_flags(*coordinate, expected)
-            if editable and (formula is None or template_input):
+    for cell in stream_cells:
+        reference = (cell.get("r") or "").replace("$", "").upper()
+        row, col = _coordinate(reference)
+        if request.snapshot is None and not request.all_formulas:
+            continue
+        if request.snapshot is not None and request.index is None:
+            continue
+        formula = next((child for child in cell if _local(child.tag) == "f"), None)
+        coordinate = (None if request.snapshot is None
+                      else (request.index, row, col))
+        expected = None if coordinate is None else request.snapshot.cell(*coordinate)
+        expected_formula = expected is None or expected.get("formula") is not None
+        if (expected_formula and formula is not None
+                and formula.get("t") == "shared" and formula.text):
+            # One translator per shared formula: building it tokenizes the master formula
+            shared[formula.get("si")] = Translator("=" + formula.text.lstrip("="), origin=reference)
+        formula_value = (_formula_value(formula, reference, shared)
+                         if expected_formula else "=" if formula is not None else None)
+        record = {
+            "row": row, "col": col, "value": _cell_value(cell, request.strings),
+            "formula": formula_value,
+        }
+        detector.observe(record)
+        if expected_formula and formula_value is not None:
+            formulas[reference] = record
+        if request.snapshot is None:
+            if formula_value is not None:
                 cells[reference] = record
-            elif _locked_cell_changed(record, expected):
-                ignored += 1
-                if not editable:
-                    detector.locked_value_changed(record, expected)
+            continue
+        # A formula typed into an open (unprotected, non-template-input) cell is dropped like a locked one
+        template_input, editable = request.snapshot.input_flags(*coordinate, expected)
+        if editable and (formula is None or template_input):
+            # An open cell that still holds the template value and was never edited cannot change
+            # anything, and unprotected sheets hold millions of them
+            if (template_input or formula is not None or (row, col) in request.keep
+                    or not exactly_equal(record["value"], expected["v"])):
+                cells[reference] = record
+        elif _locked_cell_changed(record, expected):
+            ignored += 1
+            if not editable:
+                detector.locked_value_changed(record, expected)
     return SheetData(cells, formulas, ignored, detector.detected())
 
 
 def _locked_cell_changed(uploaded, expected):
     uploaded_formula = uploaded["formula"]
     expected_formula = expected.get("formula")
+    if uploaded_formula == expected_formula is not None:
+        return False  # the common case: the formula came back as the template wrote it
     if uploaded_formula is not None or expected_formula is not None:
         return _normalize_formula(uploaded_formula or "") != _normalize_formula(expected_formula or "")
     return not exactly_equal(uploaded["value"], expected["v"])
@@ -944,17 +1137,23 @@ def _formula_value(node, reference, shared):
     master = shared.get(node.get("si"))
     if master is None:
         raise AppError(422, "invalid_workbook", "Shared formula master is missing")
-    return Translator("=" + master[1].lstrip("="), origin=master[0]).translate_formula(reference)
+    return master.translate_formula(reference)
 
 
-def _fingerprint(sheet_names, cells):
+def _sheet_digest(formulas):
+    digest = hashlib.sha256()
+    for reference, record in sorted(formulas.items()):
+        if record["formula"] is not None:
+            digest.update(b"F\0" + reference.encode() + b"\0")
+            digest.update(_normalize_formula(record["formula"]).encode("utf-8") + b"\0")
+    return digest.digest()
+
+
+def _fingerprint(sheet_names, digests):
+    """Each sheet is hashed where it is read, so only 32 bytes per sheet leave a worker."""
     digest = hashlib.sha256()
     for name in sheet_names:
-        digest.update(b"S\0" + name.casefold().encode("utf-8") + b"\0")
-        for reference, record in sorted(cells[name].items()):
-            if record["formula"] is not None:
-                digest.update(b"F\0" + reference.encode() + b"\0")
-                digest.update(_normalize_formula(record["formula"]).encode("utf-8") + b"\0")
+        digest.update(b"S\0" + name.casefold().encode("utf-8") + b"\0" + digests[name])
     return digest.hexdigest()
 
 
@@ -969,7 +1168,7 @@ def _normalize_formula(formula):
 
 
 # Bump when the fingerprint or structure records change shape, so a stale saved identity is rebuilt.
-TEMPLATE_IDENTITY_VERSION = 1
+TEMPLATE_IDENTITY_VERSION = 2
 TEMPLATE_IDENTITY_FILE = "upload_identity.json"
 
 

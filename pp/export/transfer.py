@@ -1364,13 +1364,23 @@ def _relationship_references(stream):
     return references
 
 
-def validate_package(path, require_provenance=False):
-    """Reject archives with dangling relationships, missing content types, or unreadable XML."""
+def validate_package(path, require_provenance=False, deferred=frozenset()):
+    """Reject archives with dangling relationships, missing content types, or unreadable XML.
+
+    deferred: parts whose relationship references the caller checks itself, on the worker that reads
+    them. openpyxl reads worksheet XML, so with deferred parts the caller runs open_check() once the
+    workers have screened them.
+    """
     with zipfile.ZipFile(path) as archive:
         state = _validation_state(archive)
         for info in archive.infolist():
-            _validate_package_member(archive, info, state)
+            _validate_package_member(archive, info, state, info.filename in deferred)
         _validate_package_graph(state, require_provenance)
+    if not deferred:
+        open_check(path)
+
+
+def open_check(path):
     workbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
     workbook.close()
 
@@ -1394,11 +1404,11 @@ def _validation_state(archive):
     return ValidationState(names, defaults, overrides, graph)
 
 
-def _validate_package_member(archive, info, state):
+def _validate_package_member(archive, info, state, deferred=False):
     if info.is_dir():
         return
     name, references = info.filename, set()
-    if name.endswith(".xml"):
+    if name.endswith(".xml") and not deferred:
         with archive.open(info) as stream:
             references = _relationship_references(stream)
     elif name.endswith(".rels"):

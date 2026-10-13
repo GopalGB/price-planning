@@ -701,7 +701,7 @@ class UploadAPITests(unittest.TestCase):
             self.assertEqual(_shared_strings(archive, "xl/sharedStrings.xml"), ["abcd"])
 
     def test_worksheet_structure_records_and_bytes_are_bounded(self):
-        from pp.upload import _sheet_structure
+        from pp.upload import _empty_structure, _iter_sheet
 
         xml = (
             b'<worksheet xmlns="http://schemas.openxmlformats.org/'
@@ -717,7 +717,8 @@ class UploadAPITests(unittest.TestCase):
                     zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive, \
                     mock.patch(f"pp.upload.{limit}", value, create=True):
                 with self.assertRaises(AppError) as raised:
-                    _sheet_structure(archive, "xl/worksheets/sheet1.xml", False)
+                    with archive.open("xl/worksheets/sheet1.xml") as part:
+                        list(_iter_sheet(part, _empty_structure()))
                 self.assertEqual((raised.exception.status, raised.exception.code),
                                  (413, "archive_bomb"))
 
