@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import unittest
 
 from tests.v2.api_support import APIFixture
@@ -25,9 +27,17 @@ class WorkbookAPIContractTests(unittest.TestCase):
         self.assertEqual([sheet["name"] for sheet in body["sheets"]], ["Inputs", "Lookup", "Calc"])
         self.assertEqual(set(body["sheets"][0]), {"index", "name", "hidden", "rows", "cols", "freeze",
                                                    "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges",
-                                                   "default_row_height", "pivots", "slicers"})
+                                                   "default_row_height", "pivots", "slicers",
+                                                   "has_conditional_formats", "show_gridlines", "zoom", "scroll",
+                                                   "active", "protected"})
         self.assertEqual(body["sheets"][0]["default_row_height"], 20)
         self.assertEqual((body["sheets"][0]["pivots"], body["sheets"][0]["slicers"]), ([], []))
+        self.assertFalse(body["sheets"][0]["has_conditional_formats"])
+        self.assertEqual(
+            (body["sheets"][0]["show_gridlines"], body["sheets"][0]["zoom"],
+             body["sheets"][0]["scroll"], body["sheets"][0]["active"]),
+            (True, 1.0, {"row": 0, "col": 0}, True),
+        )
 
         rows = self.client.get(f"/api/copies/{copy_id}/sheets/0/rows?start=1&count=2")
         self.assertEqual(rows.status_code, 200)
@@ -46,6 +56,46 @@ class WorkbookAPIContractTests(unittest.TestCase):
         outsider, _, _ = self.fixture.signup("outsider@example.test", "Outsider")
         response = outsider.get(f"/api/copies/{self.copy['id']}/workbook")
         self.assertEqual((response.status_code, response.json()["error"]), (404, "not_found"))
+
+    def test_rows_handler_keeps_event_loop_responsive(self):
+        services = self.fixture.app.state.services
+        original = services.workbooks.rows
+        entered = threading.Event()
+        heartbeat = threading.Event()
+        release = threading.Event()
+        order = []
+
+        def blocking_rows(_query):
+            entered.set()
+            self.assertTrue(release.wait(1))
+            order.append("rows")
+            return {"rows": {}, "input_revision": 0, "calculated_revision": 0}
+
+        def unblock():
+            entered.wait(1)
+            heartbeat.wait(0.2)
+            release.set()
+
+        async def request_with_heartbeat():
+            path = f"/api/copies/{self.copy['id']}/sheets/0/rows?start=0&count=1"
+            request = asyncio.create_task(self.client._request("GET", path, None, {}))
+            await asyncio.sleep(0)
+            order.append("heartbeat")
+            heartbeat.set()
+            return await request
+
+        services.workbooks.rows = blocking_rows
+        thread = threading.Thread(target=unblock)
+        thread.start()
+        try:
+            response = asyncio.run(request_with_heartbeat())
+        finally:
+            release.set()
+            thread.join()
+            services.workbooks.rows = original
+        self.assertTrue(entered.is_set())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(order, ["heartbeat", "rows"])
 
     def test_rows_use_one_snapshot_when_calculation_publishes_between_queries(self):
         """Reading results after newer metadata must not mislabel a mixed SQLite snapshot."""

@@ -185,8 +185,16 @@ class LiveHub:
 
 async def serve_live(websocket, services, hub):
     try:
+        services.auth_origin(websocket)
+    except AppError:
+        await _bounded_close(websocket, 4403)
+        return
+    try:
         token, user = _socket_user(websocket, services)
     except AppError:
+        # Same-origin page whose session or access is gone: accept so the browser sees 4403.
+        # A refused handshake reaches it as code 1006, which the grid retried every second forever.
+        await websocket.accept()
         await _bounded_close(websocket, 4403)
         return
     await websocket.accept()
@@ -210,7 +218,6 @@ async def serve_live(websocket, services, hub):
 
 
 def _socket_user(websocket, services):
-    services.auth_origin(websocket)
     token = websocket.cookies.get("pp_session")
     user, _ = services.auth.authenticate(token)
     with services.database.connect() as database:

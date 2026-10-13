@@ -126,6 +126,34 @@ export function workspaceView(copy, inputHighlight = true) {
   const viewer = copy.my_role === "viewer";
   return `<div class="toolbar" role="toolbar" aria-label="Workbook tools"><button id="undo-button" ${viewer ? "disabled" : ""}>↶ Undo</button><button id="redo-button" ${viewer ? "disabled" : ""}>↷ Redo</button><span class="divider"></span><button id="copy-button">Copy</button><button id="paste-button" ${viewer ? "disabled" : ""}>Paste</button><button id="fill-down" ${viewer ? "disabled" : ""}>Fill down</button><button id="fill-right" ${viewer ? "disabled" : ""}>Fill right</button><span class="divider"></span><button id="input-highlight" aria-pressed="${inputHighlight}">Highlight inputs</button><button id="history-button" aria-expanded="false">History</button><button id="hidden-button" ${copy.my_role === "owner" ? "" : "hidden"}>Show hidden sheets</button><button id="upload-button">Upload Excel</button><button id="download-button">Download</button><button id="refresh-button" hidden${viewer ? " disabled" : ""}>Refresh data</button><div class="find-wrap"><input id="find-input" aria-label="Find in workbook" placeholder="Find · Ctrl+F"><button id="find-button">Find</button></div><select id="zoom" aria-label="Zoom"><option>100%</option><option>125%</option><option>150%</option><option>75%</option></select></div><div class="formula-bar"><input id="name-box" aria-label="Go to cell" value="B2"><span class="fx">fx</span><input id="formula-input" aria-label="Cell value or formula"><span id="formula-note" class="muted"></span></div><div class="workbench"><div class="sheet-area"><div class="grid-frame"><div id="grid"></div><div id="macro-layer" class="macro-layer"></div></div><div class="tab-bar"><div class="tab-arrows"><button id="tabs-first" aria-label="First sheet" title="First sheet">⏮</button><button id="tabs-prev" aria-label="Previous sheet" title="Previous sheet">◀</button><button id="tabs-next" aria-label="Next sheet" title="Next sheet">▶</button><button id="tabs-last" aria-label="Last sheet" title="Last sheet">⏭</button></div><nav id="sheet-tabs" class="sheet-tabs" aria-label="Sheets"></nav></div></div><aside id="history-panel" hidden><div class="panel-title"><h2 id="history-title">Cell history</h2><button id="history-close" aria-label="Close history">×</button></div><p id="last-editor"></p><h3>Cell edits</h3><div id="cell-history"></div><h3>Copy activity</h3><div id="copy-activity"></div></aside></div><footer class="statusbar"><span id="edit-status">Ready</span><span id="role-status">${viewer ? "Viewer · Read only" : "Input cells are editable"}</span><span id="copy-status">${e(copy.visibility)}</span><span id="selection-stats"></span><a id="export-link" href="/api/copies/${e(copy.id)}/export.xlsm">Download .xlsm</a></footer>`;
 }
+// "Plan A.xlsm" -> "Plan A": the default name of a copy made from an upload
+export const fileTitle = (filename) =>
+  String(filename ?? "").replace(/\.[^.]+$/, "");
+export function progressView() {
+  return `<div class="transfer" hidden><div class="transfer-track" role="progressbar" aria-label="Transfer progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="transfer-bar"></div></div><p class="transfer-text" aria-live="polite"></p></div>`;
+}
+// Upload: sending the bytes is the first quarter, the server's reading is the rest
+export function uploadPercent(job) {
+  if (!job) return 0;
+  if (job.state === "done") return 100;
+  if (job.stage === "Reading sheets" && job.total)
+    return Math.round(35 + (50 * job.done) / job.total);
+  return (
+    {
+      Starting: 26,
+      "Checking the file is safe": 30,
+      "Checking rows and columns": 88,
+      "Comparing with the copy": 95,
+    }[job.stage] ?? 30
+  );
+}
+export function jobText(job, seconds) {
+  const step =
+    job.stage === "Reading sheets" && job.total
+      ? `Reading sheet ${Math.min(job.done + 1, job.total)} of ${job.total}`
+      : job.stage;
+  return `${step} · ${seconds} s`;
+}
 export function downloadView(sheets) {
   const choices = sheets
     .map(
@@ -143,7 +171,7 @@ const uploadValue = (value) =>
       : String(value ?? "(blank)"),
   );
 
-export function uploadPreviewView(preview, categories, categoryId) {
+export function uploadPreviewView(preview, categories, categoryId, name) {
   const conflicts = new Set(preview.conflicts.map((item) => item.key));
   const rows = preview.changes
     .map((item) => {
@@ -174,5 +202,5 @@ export function uploadPreviewView(preview, categories, categoryId) {
   const update = preview.can_update
     ? '<label><input type="radio" name="mode" value="update" checked>Update this copy</label>'
     : "";
-  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(preview.filename.replace(/\.[^.]+$/, ""))}"></label>`;
+  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
 }

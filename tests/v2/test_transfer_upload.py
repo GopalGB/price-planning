@@ -82,6 +82,14 @@ def _input_only_fixture(path):
     workbook.save(path)
 
 
+def _wide_layout_fixture(path):
+    # A widened column past the last cell: the template's sheet size counts it, its cells do not
+    _input_only_fixture(path)
+    workbook = load_workbook(path)
+    workbook["Inputs"].column_dimensions["H"].width = 30
+    workbook.save(path)
+
+
 def _formula_input_fixture(path):
     workbook = Workbook()
     sheet = workbook.active
@@ -701,7 +709,7 @@ class UploadAPITests(unittest.TestCase):
             self.assertEqual(_shared_strings(archive, "xl/sharedStrings.xml"), ["abcd"])
 
     def test_worksheet_structure_records_and_bytes_are_bounded(self):
-        from pp.upload import _sheet_structure
+        from pp.upload import _empty_structure, _iter_sheet
 
         xml = (
             b'<worksheet xmlns="http://schemas.openxmlformats.org/'
@@ -717,7 +725,8 @@ class UploadAPITests(unittest.TestCase):
                     zipfile.ZipFile(io.BytesIO(stream.getvalue())) as archive, \
                     mock.patch(f"pp.upload.{limit}", value, create=True):
                 with self.assertRaises(AppError) as raised:
-                    _sheet_structure(archive, "xl/worksheets/sheet1.xml", False)
+                    with archive.open("xl/worksheets/sheet1.xml") as part:
+                        list(_iter_sheet(part, _empty_structure()))
                 self.assertEqual((raised.exception.status, raised.exception.code),
                                  (413, "archive_bomb"))
 
@@ -948,6 +957,24 @@ class UploadAPITests(unittest.TestCase):
             item["sheet"] == "Inputs" and "may have moved"
             in item["reason"] for item in response.json()["ignored"]
         ))
+
+    def test_formatted_columns_past_the_last_cell_do_not_count_as_moved(self):
+        fixture = APIFixture(_wide_layout_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("wide@example.test", "Wide Layout")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        upload = _workbook_bytes(exported, fixture.root, (("Inputs", "B2", 77),))
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", upload,
+            {"x-csrf-token": csrf, "x-upload-filename": "wide.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertEqual([(item["cell"], item["new"]) for item in response.json()["changes"]], [("B2", 77)])
+        self.assertFalse(any("may have moved" in item["reason"] for item in response.json()["ignored"]))
 
     def test_changed_locked_layout_skips_sheet_safely(self):
         upload = _workbook_bytes(
@@ -1443,9 +1470,9 @@ class UploadAPITests(unittest.TestCase):
             response = self.preview(self.owner, self.owner_csrf, output.read_bytes())
 
         self.assertEqual(response.status_code, 200, response.body)
-        self.assertTrue(any("Bulk ignored" in item for item in retained))
+        # A file the app wrote is identified by provenance, so it may skip the formula fingerprint entirely
         self.assertTrue(all(item.get("Bulk ignored", 0) == 0 for item in retained))
-        self.assertLess(max(item.get("Calc", 0) for item in retained), 100)
+        self.assertLess(max((item.get("Calc", 0) for item in retained), default=0), 100)
         ignored = response.json()["ignored"]
         self.assertLess(len(ignored), 10)
         self.assertTrue(any(item["sheet"] == "Calc" and item.get("count") == 3_000

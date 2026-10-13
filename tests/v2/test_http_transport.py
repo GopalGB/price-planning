@@ -187,6 +187,13 @@ class HTTPTransportTests(unittest.TestCase):
             self.assertEqual(owner.send("POST", "/api/auth/logout")[0], 204)
             self.assert_socket_revoked(live)
 
+    def test_refused_socket_reaches_the_browser_as_4403_not_a_handshake_error(self):
+        # A handshake 403 shows up in browsers as code 1006, so the grid retried every second forever.
+        url = self.base.replace("http://", "ws://") + "/api/copies/missing/ws"
+        with connect(url, origin=ORIGIN) as live, self.assertRaises(ConnectionClosed) as closed:
+            live.recv(timeout=5)
+        self.assertEqual(closed.exception.rcvd.code, 4403)
+
     def test_http_conflicts_locked_cells_and_formula_text_are_rejected_atomically(self):
         owner = HTTPClient(self.base)
         owner.signup("transport-validation@example.test")

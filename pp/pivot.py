@@ -232,7 +232,7 @@ def _reserved_output(pivot):
 
 def _occupied(snapshot, sheet, row, col):
     cell = snapshot.cell(sheet, row, col)
-    return snapshot.is_input(sheet, row, col) or cell.get("v") is not None or cell.get("k") == "f"
+    return snapshot.template_input(sheet, row, col) or cell.get("v") is not None or cell.get("k") == "f"
 
 
 def _used_fields(pivot, slicers):

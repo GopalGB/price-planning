@@ -316,6 +316,16 @@ class PackageDownloadTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "broken package"):
                 self.download()
 
+    def test_writer_rechecks_links_in_every_part_it_rewrote(self):
+        with mock.patch("pp.export.transfer.validate_package") as validate:
+            self.download()
+        unchanged = validate.call_args.kwargs["no_links"]
+        rewritten = {"xl/workbook.xml", "xl/_rels/workbook.xml.rels", "_rels/.rels",
+                     "[Content_Types].xml", "docProps/custom.xml"}
+        self.assertFalse(unchanged & rewritten)
+        self.assertNotIn("xl/worksheets/sheet1.xml", unchanged)  # frozen: it pointed at the dropped sheet
+        self.assertIn("xl/styles.xml", unchanged)
+
 
 class DownloadRouteSelectionTests(unittest.TestCase):
     def setUp(self):

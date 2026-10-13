@@ -3,7 +3,11 @@ import { getPatternPreview } from "@univerjs/sheets-numfmt";
 export const BLOCK_ROWS = 256;
 export const MAX_OP_CELLS = 10000;
 export const keyOf = ({ sheet, r, c }) => `${sheet}:${r}:${c}`;
-export const editableInput = (cell) => cell?.k === "i" || cell?.input === true;
+export const editableInput = (cell) =>
+  cell?.k === "i" || cell?.input === true || cell?.open === true;
+// Highlight marks the template's own input cells, not every typed value on an unprotected sheet
+export const highlightedInput = (cell) =>
+  cell?.k === "i" || cell?.input === true;
 const blockStart = (row) => Math.floor(row / BLOCK_ROWS) * BLOCK_ROWS;
 const blockKey = (sheet, row) => `${sheet}:${blockStart(row)}`;
 export function cellName({ r, c }) {
@@ -51,7 +55,7 @@ function buildAuthorizedOp(store, changes, options = {}) {
   const cells = changes.map((change) => {
     const { sheet, r, c, v } = change,
       key = keyOf(change),
-      cell = store.get(sheet, r, c);
+      cell = store.editable?.(sheet, r, c) ?? store.get(sheet, r, c);
     if (seen.has(key)) throw new Error(`Duplicate cell ${cellName(change)}`);
     seen.add(key);
     if (!cell || (!editableInput(cell) && !authorizedInputs?.has(key)))
@@ -140,10 +144,20 @@ export class CellStore {
     this.calcBatches = new Map();
     this.inputRevision = 0;
     this.calculatedRevision = 0;
+    this.openSheets = new Set();
     this.merge(rows, sheet);
   }
   get(sheet, r, c) {
     return this.cells.get(keyOf({ sheet, r, c }));
+  }
+  // An empty cell on a sheet without protection takes typing, as in Excel
+  editable(sheet, r, c) {
+    return (
+      this.get(sheet, r, c) ??
+      (this.openSheets.has(sheet)
+        ? { v: null, k: "c", open: true, ver: 0 }
+        : undefined)
+    );
   }
   merge(
     rows,
@@ -276,6 +290,26 @@ export class CellStore {
     this.blockRevisions.set(`${sheet}:${start}`, revision);
     this.advanceBlocks();
   }
+  resetBlockStyles(sheet, start, data) {
+    const rows = data.rows ?? {};
+    for (const [key, current] of this.cells) {
+      const [cellSheet, row, col] = key.split(":").map(Number);
+      if (
+        cellSheet !== sheet ||
+        row < start ||
+        row >= start + BLOCK_ROWS ||
+        !current.style_override ||
+        Object.hasOwn(rows[row] ?? {}, col) ||
+        current.pending ||
+        data.calculated_revision < (current.calcRevision ?? -1) ||
+        data.input_revision < (this.cellInputRevisions.get(key) ?? -1)
+      )
+        continue;
+      const next = { ...current };
+      delete next.style_override;
+      this.cells.set(key, next);
+    }
+  }
   advanceBlocks() {
     for (const [key, revision] of this.blockRevisions) {
       let next = revision;
@@ -314,6 +348,18 @@ export class CellStore {
     }
     this.blockRevisions.delete(`${sheet}:${start}`);
   }
+  evictSheet(sheet) {
+    // A sheet leaving the tab cache, or one whose blocks are being reloaded, must not keep
+    // painting cells the store holds from an older revision.
+    for (const key of [...this.cells.keys()]) {
+      if (Number(key.split(":")[0]) === sheet) {
+        this.cells.delete(key);
+        this.cellInputRevisions.delete(key);
+      }
+    }
+    for (const key of [...this.blockRevisions.keys()])
+      if (Number(key.split(":")[0]) === sheet) this.blockRevisions.delete(key);
+  }
 }
 export class RowCache {
   constructor(max = 3) {
@@ -338,6 +384,59 @@ export class RowCache {
       const [s, r] = oldest.split(":").map(Number);
       this.lastEvicted.push({ sheet: s, start: r });
     }
+  }
+}
+export class SheetRowCache {
+  // One sheet's loaded blocks. They are reused only when every one of them was rendered at the
+  // revisions the client is on: an edit or a calculation moves those revisions and a block
+  // loaded before it no longer describes the copy.
+  constructor(sheet, maxBlocks = 3) {
+    this.sheet = sheet;
+    this.cache = new RowCache(maxBlocks);
+  }
+  get blocks() {
+    return this.cache.blocks;
+  }
+  reusable(inputRevision, calculatedRevision) {
+    return (
+      this.cache.blocks.size > 0 &&
+      [...this.cache.blocks.values()].every(
+        (data) =>
+          data.input_revision === inputRevision &&
+          data.calculated_revision === calculatedRevision,
+      )
+    );
+  }
+  reset() {
+    // A block from an older revision must not answer a scroll either: drop them all and let
+    // the sheet load again from the first window.
+    this.cache = new RowCache(3);
+  }
+}
+export class SheetCacheMap {
+  // Row blocks per sheet, kept across tab switches. Visit order is the Map order, so the least
+  // recently visited sheet is the first to go.
+  constructor(maxSheets = 6) {
+    this.maxSheets = maxSheets;
+    this.entries = new Map();
+  }
+  open(sheet) {
+    const entry = this.entries.get(sheet) ?? new SheetRowCache(sheet);
+    this.entries.delete(sheet);
+    this.entries.set(sheet, entry);
+    const dropped = [];
+    while (this.entries.size > this.maxSheets) {
+      const oldest = this.entries.keys().next().value;
+      this.entries.delete(oldest);
+      dropped.push(oldest);
+    }
+    return { entry, dropped };
+  }
+  drop(sheet) {
+    return this.entries.delete(sheet);
+  }
+  clear() {
+    this.entries.clear();
   }
 }
 export function selectionStats(values) {

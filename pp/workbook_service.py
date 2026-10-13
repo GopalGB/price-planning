@@ -10,7 +10,12 @@ from pathlib import Path
 
 from .authorization import effective_role
 from .errors import AppError
-from .pivot_state import read_state
+from .fidelity.conditional_formatting import (
+    CurrentCopyValues, conditional_style_overrides,
+)
+from .fidelity.tables import merge_style_overrides, table_style_overrides
+from .pivot_state import EMPTY_STATE as EMPTY_PIVOT_STATE, read_state
+from .row_cache import RowBlockCache
 from .template.importer import IMPORT_VERSION
 
 SLICER_MESSAGE = "Slicers change on the office server, where the app uses Microsoft Excel."
@@ -38,10 +43,16 @@ class TemplateSnapshot:
         self.name = self.meta["name"]
         self.sheets = self.meta["sheets"]
         self.source_path = self.path / "source.xlsm"
+        self._pivot_areas = {}
 
     @lru_cache(maxsize=64)
     def block(self, sheet: int, block: int) -> dict:
         path = self.path / "sheets" / str(sheet) / f"{block}.json"
+        return _read_json(path) if path.exists() else {}
+
+    @lru_cache(maxsize=64)
+    def note_block(self, sheet: int, block: int) -> dict:
+        path = self.path / "notes" / str(sheet) / f"{block}.json"
         return _read_json(path) if path.exists() else {}
 
     def cell(self, sheet: int, row: int, col: int) -> dict:
@@ -53,25 +64,52 @@ class TemplateSnapshot:
         return {"v": None, "s": style, "k": kind}
 
     def is_input(self, sheet: int, row: int, col: int) -> bool:
+        return self.template_input(sheet, row, col) or self.open_cell(sheet, row, col)
+
+    def input_flags(self, sheet: int, row: int, col: int, record: dict) -> tuple[bool, bool]:
+        """(template input, editable) for a cell whose template record the caller already holds."""
+        if self._pivot_output(sheet, row, col):
+            return False, False
+        template = f"{sheet}:{row}:{col}" in self.input_mask or record["k"] == "i"
+        editable = template or (0 <= row < 1_048_576 and 0 <= col < 16_384 and record["k"] != "f"
+                                and not self.sheets[sheet].get("protected", False))
+        return template, editable
+
+    def template_input(self, sheet: int, row: int, col: int) -> bool:
         if self._pivot_output(sheet, row, col):
             return False
         return f"{sheet}:{row}:{col}" in self.input_mask or self.cell(sheet, row, col)["k"] == "i"
 
+    def open_cell(self, sheet: int, row: int, col: int) -> bool:
+        """Excel lets anyone type into a sheet without protection; only formulas stay locked here."""
+        if not (0 <= sheet < len(self.sheets) and 0 <= row < 1_048_576 and 0 <= col < 16_384):
+            return False
+        return (not self.sheets[sheet].get("protected", False) and self.cell(sheet, row, col)["k"] != "f"
+                and not self._pivot_output(sheet, row, col))
+
     def _pivot_output(self, sheet: int, row: int, col: int) -> bool:
         if not 0 <= sheet < len(self.sheets):
             return False
-        outputs = [(pivot["location"], len(pivot.get("page_fields", [])))
-                   for pivot in self.sheets[sheet].get("pivots", [])]
-        outputs += [(pivot["location"], pivot["page_count"])  # Excel's own pivots (P6.4)
-                    for pivot in self.sheets[sheet].get("excel_pivots", [])]
-        for location, page_count in outputs:
-            first_row, first_col, last_row, last_col = location["bounds"]
-            if first_row <= row <= last_row and first_col <= col <= last_col:
-                return True
-            page_row = max(0, first_row - page_count - 1)
-            if page_row <= row < page_row + page_count and first_col <= col <= first_col + 1:
-                return True
-        return False
+        return any(first_row <= row <= last_row and first_col <= col <= last_col
+                   for first_row, first_col, last_row, last_col in self._pivot_rectangles(sheet))
+
+    def _pivot_rectangles(self, sheet: int) -> tuple:
+        """Pivot bodies and their page-field rows; built once per sheet because uploads ask per cell."""
+        areas = self._pivot_areas.get(sheet)
+        if areas is None:
+            outputs = [(pivot["location"], len(pivot.get("page_fields", [])))
+                       for pivot in self.sheets[sheet].get("pivots", [])]
+            outputs += [(pivot["location"], pivot["page_count"])  # Excel's own pivots (P6.4)
+                        for pivot in self.sheets[sheet].get("excel_pivots", [])]
+            areas = []
+            for location, page_count in outputs:
+                first_row, first_col, last_row, last_col = location["bounds"]
+                areas.append((first_row, first_col, last_row, last_col))
+                page_row = max(0, first_row - page_count - 1)
+                if page_count:
+                    areas.append((page_row, first_col, page_row + page_count - 1, first_col + 1))
+            areas = self._pivot_areas[sheet] = tuple(areas)
+        return areas
 
     def implicit_cells(self, sheet: int, row: int) -> dict:
         """Input cells of a row, including empty ones an unlocked row or column style makes editable."""
@@ -233,9 +271,10 @@ class TemplateCatalog:
 
 
 class WorkbookService:
-    def __init__(self, database, snapshot):
+    def __init__(self, database, snapshot, row_cache=None):
         self.database = database
         self.templates = snapshot if isinstance(snapshot, TemplateCatalog) else TemplateCatalog(database, snapshot)
+        self.row_cache = row_cache if row_cache is not None else RowBlockCache()
 
     def workbook(self, copy_id: str, user_id: str) -> dict:
         with self.database.connect() as connection:
@@ -244,6 +283,7 @@ class WorkbookService:
             extents = _result_extents(connection, copy_id)
             pivot_state = read_state(connection, copy_id)
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
+                   "protected": bool(item.get("protected", False)),
                    "rows": _visible_extent(item, extents, 0),
                    "cols": _visible_extent(item, extents, 1),
                    "freeze": item["freeze"],
@@ -252,7 +292,17 @@ class WorkbookService:
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                    "merges": item["merges"], "pivots": deepcopy(item.get("pivots", [])),
-                   "slicers": _slicers_with_state(item.get("slicers", []), pivot_state)} for item in snapshot.sheets]
+                   "slicers": _slicers_with_state(item.get("slicers", []), pivot_state),
+                   **({"tab_color": item["tab_color"]} if item.get("tab_color") else {}),
+                   "show_gridlines": item.get("show_gridlines", True),
+                   "zoom": item.get("zoom", 1.0),
+                   "scroll": item.get("scroll") or {"row": 0, "col": 0},
+                   "active": bool(item.get("active")),
+                   "has_conditional_formats": item.get("has_conditional_formats", False),
+                   **({"tables": _client_tables(item.get("tables", [])),
+                       "filters": item.get("filters", [])}
+                      if item.get("tables") or item.get("filters") else {})}
+                  for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
@@ -265,20 +315,44 @@ class WorkbookService:
             if (not 0 <= query.sheet < len(snapshot.sheets) or query.start < 0
                     or not 1 <= query.count <= 500):
                 raise AppError(422, "invalid", "Sheet row range is invalid")
+            # Access is settled first; only then may a body another reader rendered be reused.
+            key = _row_cache_key(connection, copy, query)
+            # A body shared by unedited copies carries the reading copy's own revisions
+            revisions = {"calculated_revision": _calculated_revision(snapshot, copy),
+                         "input_revision": copy["input_revision"]}
+            cached = self.row_cache.get(key)
+            if cached is not None:
+                return {**cached, **revisions}
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
-            rows = self._row_data(connection, render)
-        return {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
-                "start": query.start, "rows": rows}
+            conditional = conditional_style_overrides(
+                snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
+            )
+            table_styles = table_style_overrides(snapshot.sheets[query.sheet], query)
+            styles = merge_style_overrides(table_styles, conditional.styles)
+            rows = self._row_data(connection, render, styles)
+        body = {**revisions, "start": query.start, "rows": rows,
+                "conditional_format_warnings": conditional.warnings}
+        self.row_cache.put(key, body)
+        return body
 
-    def _row_data(self, connection, render):
+    def _row_data(self, connection, render, style_overrides=None):
         output = {}
+        style_overrides = style_overrides or {}
         query = render.query
+        override_rows = _group_rows(render.overrides)
+        result_rows = _group_rows(render.results)
+        style_rows = _group_rows(style_overrides)
+        note_rows = _requested_notes(render.snapshot, query)
+        open_sheet = not render.snapshot.sheets[query.sheet].get("protected", False)
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
             cells = {**implicit, **stored}
-            coordinates = (set(cells) | {str(col) for r, col in render.overrides if r == row}
-                           | {str(col) for r, col in render.results if r == row})
+            styles = style_rows.get(row, {})
+            notes = note_rows.get(row, {})
+            coordinates = (set(cells) | {str(col) for col in override_rows.get(row, {})}
+                           | {str(col) for col in result_rows.get(row, {})}
+                           | {str(col) for col in styles | notes})
             rendered = {}
             for col_text in sorted(coordinates, key=int):
                 col = int(col_text)
@@ -293,6 +367,12 @@ class WorkbookService:
                 record.update(_cell_fields(render.snapshot, coordinate, input_record, published))
                 if not override and not published and record["k"] == "i":
                     record["ver"] = 0
+                if record["k"] == "c" and open_sheet and not render.snapshot._pivot_output(*coordinate):
+                    record.update({"open": True, "ver": record.get("ver", 0)})
+                if col in styles:
+                    record["style_override"] = styles[col]
+                if col in notes:
+                    record["note"] = notes[col]
                 rendered[col_text] = record
             if rendered:
                 output[str(row)] = rendered
@@ -450,6 +530,56 @@ def _overrides(connection, query):
     return {(item["row"], item["col"]): item for item in rows}
 
 
+def _row_cache_key(connection, copy, query):
+    """Every input the rendered body depends on, so one key change means one re-render.
+
+    The template snapshot behind ``template_id`` is immutable while the process holds it, and
+    conditional formatting reads current values from the whole copy, so an edit anywhere (which
+    moves ``input_revision``) and a published calculation (which moves ``calculated_revision``)
+    both invalidate every sheet. The copy's stored slicer selection is an input in its own right:
+    Excel pivot output reaches the grid through published results, but the selection decides those
+    results, so it is keyed by content rather than by the revision written next to it.
+    """
+    state = read_state(connection, query.copy_id)
+    if state == EMPTY_PIVOT_STATE and not _copy_has_values(connection, query.copy_id):
+        # A copy with no edits, results or slicer choices renders exactly the template, so all
+        # such copies share one body: 50 fresh copies cost one render per block, not 50
+        return ("template", copy["template_id"], query.sheet, query.start, query.count)
+    return (query.copy_id, copy["template_id"], query.sheet, query.start, query.count,
+            copy["input_revision"], copy["calculated_revision"],
+            json.dumps(state, sort_keys=True, separators=(",", ":")))
+
+
+def _copy_has_values(connection, copy_id):
+    return connection.execute(
+        "SELECT EXISTS(SELECT 1 FROM pp_overrides WHERE copy_id=?) "
+        "OR EXISTS(SELECT 1 FROM pp_results WHERE copy_id=?)", (copy_id, copy_id),
+    ).fetchone()[0] == 1
+
+
+def _group_rows(records):
+    grouped = {}
+    for (row, col), value in records.items():
+        grouped.setdefault(row, {})[col] = value
+    return grouped
+
+
+def _client_tables(tables):
+    return [{key: value for key, value in table.items() if key != "style"}
+            for table in tables]
+
+
+def _requested_notes(snapshot, query):
+    grouped = {}
+    end = query.start + query.count
+    for block in range(query.start // 256, (end - 1) // 256 + 1):
+        for offset, columns in snapshot.note_block(query.sheet, block).items():
+            row = block * 256 + int(offset)
+            if query.start <= row < end:
+                grouped[row] = {int(col): note for col, note in columns.items()}
+    return grouped
+
+
 def _results(connection, query):
     rows = connection.execute(
         "SELECT row,col,value_json FROM pp_results WHERE copy_id=? AND sheet=? AND row>=? AND row<?",
@@ -551,7 +681,7 @@ def _cell_fields(snapshot, coordinate, input_record, published):
 
 
 def _spill_input_metadata(snapshot, coordinate, input_record):
-    if not snapshot.is_input(*coordinate):
+    if not snapshot.template_input(*coordinate):
         return {}
     value = input_record["v"] if input_record else snapshot.cell(*coordinate)["v"]
     formula = _formula(value)

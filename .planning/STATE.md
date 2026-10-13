@@ -1,5 +1,82 @@
 # STATE
 
+## 2026-10-13 night (Claude, E2E readiness, logo, 10-user load)
+
+feat/v2-integration at bdbd9c2. CI green through 8a4771e; bdbd9c2 was running at handoff.
+- E2E run on the real template (lan-check, port 8793) found and fixed two bugs (47932b8): the Upload
+  button was hidden in values mode, and 17 of 22 sheets counted as "moved" because the extent check
+  compared against the snapshot instead of the template's own extents (identity file version 3).
+- Logo (8a4771e): logo.png or logo.svg (max 5 MB) in the app folder or its parent shows top-left
+  with no brand config. Office: put it in `D:\Gopal\PP 2` or `D:\Gopal\PP 2\app`, restart.
+- Speed (bdbd9c2): unedited copies share row blocks per template; colour-rule formula prep is cached
+  per process; ROW/COLUMN and defined-name rewrites skip the token walk when absent. Differential on
+  the real template: 473,003 rewrites, 0 differences.
+- 10 users, 90 s, random sheet and block every 0.5 to 2 s, one upload plus one download mid-run (Mac
+  M2, 8 cores, 8 GB): sheet load p50 1.1 s (was 2.9 s), p95 9.0 s, max 21 s; edits p50 284 ms,
+  p95 1.8 s; 0 errors. Under that load: download 95 s, upload 105 s. Server CPU avg 2.2 cores, max
+  4.1; memory idle 284 MB, peak 4.5 GB (upload workers).
+- Known cost left: a fully cold colour-rule build of the largest sheet's first block is 34 s; the
+  1.5 s budget skips the rest and the cache fills over later renders. Warm renders still tokenize
+  each formula three times (CF ReferenceScan.collect, engine _expand_defined_names, _trace_budget),
+  about 0.6 of 1.8 s. Next speed step: memoize tokens per formula text, or pre-warm block 0 per
+  sheet at startup.
+- Tests: 831 Python OK, content guard 0, ruff no new findings.
+- Still waiting on IT: Excel Quick Repair, then `office_run.bat check` (P6.1, 6.3, 6.4, 6.5).
+- Excel without the repair: when `Excel.Application` is unregistered ("Invalid class string") the app
+  now starts Excel by its class id, and office_run.bat accepts either key; if neither exists it prints
+  the Click-to-Run platform and registration lines for Claude and stays in values mode.
+
+## 2026-10-13 evening (Claude, upload and download speed)
+
+feat/v2-integration at 2392afe. CI green through 8c8124a; later pushes not yet checked here.
+- Uploads and downloads run as background jobs (`?async=1`, `GET /api/jobs/{token}`, pp/jobs.py) with
+  a progress bar; the upload dialog pre-fills the copy name from the file name.
+- Upload preview on the real template (Mac, 8 GB): 350 s originally, 147 s, 39 s (1ec2989), 31 s now
+  (2392afe: 4.4 s safety checks, 26 s reading sheets). Big workbooks read one sheet per spawn worker
+  (MAX_SCAN_WORKERS 4, PARALLEL_MIN_BYTES 32 MB), one parse per sheet; a dead worker falls back to an
+  in-process read. LinkScan skips the link parse for screened UTF-8 parts with no prefixed
+  id/embed/link attribute (calcChain, pivot cache records).
+- Download (export) on the real template: about 26 s to 12.6 s (b738e49): the final package check
+  skips parts copied byte for byte whose .rels were also copied.
+- Overlay fix (b58594c): note and filter markers use dashboard.mjs worksheet geometry and are placed
+  again after a zoom change. Checked in Ego Lite on the synthetic fixture at 75/100/125/150%; the
+  fixture is too small to scroll, so frozen plus scrolled placement is covered by unit tests only.
+- Tests: 822 Python OK, 198 web OK, content guard 0, ruff F clean, bandit -ll exit 0, prettier clean.
+- Adversarial review (Sonnet) of the upload safety changes found one real hole: a UTF-16LE part with
+  no BOM passed LinkScan as UTF-8, so a dangling r:id was accepted on the in-process path (a
+  regression from 2392afe; 4543416 rejected it). Fixed: any NUL byte forces the full parse; tests
+  for both encodings, mutation-checked. Everything else it tried held (chunk boundaries, declared
+  encodings, duplicate entries, deferred-but-unread parts, fallback path, export skip).
+- Next: Sir pulls on the office server (port 8211) and retries upload.
+- 18:24: lan-real (8765) had stopped (graceful shutdown, cause unknown); restarted 19:12.
+
+## 2026-10-13 (OpenCode runner, perf/tab-cache)
+
+perf/tab-cache at 91b0367, four commits from 7b0104e. Opening a sheet tab no longer renders
+and downloads the same window twice.
+- pp/row_cache.py: byte and entry bounded LRU (256 MB, 512 entries) of rendered row bodies. The key
+  is copy id, template id, sheet, start, count, input_revision, calculated_revision and the copy's
+  stored slicer selection hashed by content. Access is checked before the cache is read, so a user
+  without a role still gets 404. A block is served again after any edit, calculation or stored
+  slicer change; see `_row_cache_key`.
+- pp/server.py: JsonGZipMiddleware compresses application/json over 1 KB (level 6). Workbook
+  downloads are already zip containers and are passed through untouched, as are the WebSocket and
+  streaming responses. One test cleared the row cache because the CF evaluation budgets are process
+  tuning, not copy state (test_fidelity_cf).
+- web: SheetRowCache/SheetCacheMap keep the last six visited sheets (least recently visited first
+  out) and CellStore gained evictSheet. A sheet's blocks are reusable only when every one was
+  rendered at the revisions the client is on, so a remote op or calc invalidates the other sheets,
+  and a stale window is asked for again rather than answered from the old cache. Per-sheet zoom
+  unchanged.
+- Bench (`ops/bench_rows.py`, synthetic only): 800 x 312 protected sheet with a per-row conditional
+  format rule, 256-row block = 4,435,955 JSON bytes (243,550 gzipped); first visit 0.331 s, second
+  visit 0.001 s. Default fixture 2 x 1200 x 24: 339,603 bytes (20,607 gzipped), 0.057 s then 0.001 s.
+- Tests: 804 Python OK (134.6 s), 186 web OK, prettier clean, build committed, content guard 0,
+  bandit `uvx bandit -r app ops pp -ll` exit 0, ruff clean on the touched Python.
+- Not run here: a real browser check, the office server, Excel, semgrep, pip-audit, gitleaks. No
+  external model review; the supervisor owns that.
+- Report: .planning/oc-report.md.
+
 ## 2026-10-13 (Claude, production readiness)
 
 feat/v2-integration. CI fully green for the first time (tests 3.10/3.12, security, windows-offline x3).
@@ -260,6 +337,7 @@ synthetic demo workbook with the private brand; real template not served yet.
 
 
 ## Current phase
+<<<<<<< HEAD
 
 Branch: feat/v2-integration. Native Formualizer load is implemented and measured.
 The startup blocker is closed: no formula is registered per cell at load, and
@@ -307,6 +385,56 @@ connection registry has not been wired. Defined-name expansion still registers
 formulas after load; the synthetic fixtures exercise none.
 
 ## Last handoff
+=======
+2026-10-11: fidelity track complete and locally accepted on `feat/v2-fidelity` at 301943d. All five presentation features ship: conditional formatting end to end, drawings with macro actions, notes, table styles with local filters, and sheet views. User GO-TOKEN approved all five and local acceptance. Synthetic fixtures only. Engine and calculation pipeline remained read-only throughout. Plan: `.planning/excel-grid/PLAN-fidelity.md`. Branch is NOT pushed or merged; it merges into feat/v2-integration after the other agent finishes the engine.
+
+## Last handoff
+2026-10-11 22:50 final acceptance. HIGH1 f958f06, HIGH2 f64e28d and HIGH3 425ca95 each closed with a regression test; sheet views a9a809c; two browser-found defects fixed in 301943d (overlay layers detached by Univer remount, template scroll cell leaking into the Univer freeze split) plus the rebuilt bundle 17ba91a. Acceptance evidence: Python 321/321 twice, web 124/124 twice, content guard 0, `ruff check pp run_v2.py tests/v2` clean, pinned Prettier clean, two identical production builds (bundle 3efadf59), real-server Ego check on port 8791 with the synthetic eight-sheet fixture, TaskSpace 42 finished with keep: []. Screenshots in results-private/fidelity/shots/, checks in results-private/fidelity/final-ego.json. Disk stayed above 13 GB free.
+
+2026-10-11 resume: the previous agent stopped on a resource guard, not a failure. No uncommitted production work existed. The three HIGH Opus findings were finished first (HIGH1 and HIGH2 already committed), then sheet views, then acceptance. No external model was invoked: this run is headless, so the pending exact Opus re-review is still outstanding and must run in the supervisor lane.
+
+HIGH1 fixed and committedf958f06: local filter apply/clear/eviction visibility mutations use PlanningGrid internal guard. Behavioral RED5 pass/2 fail; focused GREEN7/7; executor relevant grid37/37 and controller37/37. Content guard0, pinned Prettier/diff check green. HIGH2 resumed next in same Sol session. Latest disk10545 MB. Full acceptance remains pending.
+
+2026-10-11 21:04 user-approved resume: current resource rule is `df -m /` Available at least 2500 MB. Swap growth alone is not a stop reason; all older swap ceilings below are superseded. Controller initial disk5108 MB, branch feat/v2-fidelity HEAD4ca148b. Same Sol takeover session resumed for HIGH1, then HIGH2 and HIGH3, each test-first and separately committed, before sheet views and full acceptance. Existing unrun view tests and shared environment symlinks preserved. No push or merge authorized.
+
+2026-10-11 resume STOPPED by current user resource gate. Baseline swap5278.62 MB; ceiling6814.62 MB. Controller measured swap6882.50 MB (growth1603.88 MB), disk3436 MB, so execution stopped immediately. No server or browser check started in this resume, no owned executors remain. Tables/AutoFilter committed7b4ae03 after Python36/36, web31/31, content guard0, global Ruff, pinned Prettier and diff check green. Phase5 added only unrun tests/v2/test_fidelity_views.py and web/test/fidelity-views.test.mjs; production unchanged. Never stage .venv or web/node_modules.
+
+Pending exact Claude review now RAN successfully: response modelUsage contains only claude-opus-5-5, is_error false; verdict FIX-FIRST. Evidence results-private/fidelity/resume-opus-review.json and resume-opus-result.md. Three HIGH findings require regression tests and fixes: (1) local hide/show rows are cancelled by PlanningGrid.command because calls lack the internal mutation guard; (2) pp/server.py async rows handler blocks the event loop during synchronous CF work, use existing asyncio.to_thread pattern; (3) one formula-result error rolls back healthy CF targets, treat error result as false while retaining EngineError handling. MED findings to investigate in same pass: deterministic function batching/template-block reuse, explicit cell styling precedence over table styles, overlay scroll redraw/asset caching. Header clipping needs coverage; table-order memory claim is unverified and must not be accepted without source evidence. Full review is preserved verbatim. No shipping/acceptance claim.
+
+Security: branch gitleaks f74d131..7b4ae03 no leaks; pinned Python audit no known vulnerabilities; production web audit0. Semgrep p/python flagged only fixed committed table-catalog ET.parse sink; trusted-path triage in resume-security-triage.md. Final all-source scan/full web dependency audit, coverage, planner review, duplicate full suites/builds and browser remain pending.
+
+2026-10-11 resumed with current user limits: minimum 2500 MB free; swap baseline 5278.62 MB, stop above 6814.62 MB. Initial disk 6075 MB. Tables/AutoFilter controller checks pass: focused Python 36/36 and web 31/31, content guard 0, global Ruff, pinned Prettier and diff check green. Committing Phase 4 now. Exact Opus review and Phase 5 next. Historical resource limits below are superseded by this resume.
+
+2026-10-11 19:33 IST resume: STATUS BLOCKED by the user's 4 GB disk stop threshold. First checks confirmed branch feat/v2-fidelity and preserved uncommitted tables/AutoFilter work in ops/fixtures.py, pp/template/importer.py, pp/workbook_service.py, web/src/grid.mjs, web/src/main.mjs, plus new table-style source/licenses, pp/fidelity/tables.py, tests/v2/test_fidelity_tables.py, web/src/tables.{mjs,css} and web/test/fidelity-tables.test.mjs. Untracked .venv and web/node_modules are present; never stage these. df -g / reported 3 GB available; confirmation df -k / reported 3323888 KiB available. Swap baseline: used 9912.44 MB, total 11264 MB. No tests, source edits, commits, model invocation or browser acceptance ran in this resume. Only checkpoint documentation was updated. The historical Claude quota blocker has not been rechecked; pending exact claude-opus-5-5 review is deferred by the resource stop. No files were deleted and no private workbook was read. Resume only with at least 4 GB free and swap growth no more than 2 GB above this baseline; run focused tables tests first, fix if needed, commit the feature, then pending exact review and sheet views. Keep TaskSpace 42 retained.
+
+2026-10-11 wide CF correction checkpoint: 50x312 produces15600 literal overrides; 256x312 produces79872, with no warnings and one public engine load/request for TRUE(). Target bound now100000, aligned with override cap. Only proven-pure formulas alias; volatile calls, named references and unknown functions stay per-target, with scoped-name and rollback regressions green. Scoped Python30/30 and CF11/11 pass, webCF5/5 unchanged; Ruff/content guard/diff check green. Notes commit1ae50ee retained. Resume Phase4 from next-tables.md; no table source was changed before the interruption. Final Opus review remains quota-blocked.
+
+2026-10-11 controller scale probe: notes committed1ae50ee. A valid synthetic50x312 TRUE() CF range produces0 overrides instead of15600 because of formula_target_limit, while10x312 produces3120 correctly. Reproduction results-private/fidelity/probe-cf-broad.json and script. Phase4 was interrupted during preparation, no source changes yet; close this CF budget regression with tests before resuming table work. Original final Opus quota blocker remains.
+
+2026-10-11 Phase 3 implementation checkpoint: drawings committed 082fea3. Notes import two synthetic comment parts, stream with requested row blocks, and render red merged-cell-aware markers with safe DOM hover/focus popups. Eviction/sheet-switch cleanup and overlay shortcut guards are tested. Python 27/27 scoped tests passed; final JS-only popup correction passes 4/4 focused and 23/23 notes/drawings/grid regressions, with pinned Prettier, content guard and diff checks green. Final Opus quota blocker and whole-track acceptance gates remain pending. Next: tables/AutoFilter, then sheet views.
+
+2026-10-11 Phase 2 implementation checkpoint: CF committed f764aaa. Drawings/assets/actions implemented and locally tested: relevant Python 32/32, web 26/26; content guard 0, Ruff, pinned Prettier and diff check green. Synthetic fixtures only; no engine/calc pipeline changes. Drawing import streams and caps 500 anchors, 100 image references, 5 MiB per asset and 25 MiB total. Public Univer geometry drives DOM overlays because sheets-drawing is absent from the pinned preset. Macro actions require copy write access/CSRF and return 501. Final exact Opus review still quota-blocked; acceptance/build/browser gates pending. Next: notes, then tables/filters and sheet views.
+
+2026-10-11 CF implementation checkpoint: F1-F7 regression fixes pass full Python 302/302 and web 105/105. Ruff including the fixture module, pinned Prettier, content guard, staged secrets and scoped SAST are green. Mandatory fresh claude-opus-5-5 re-review is BLOCKED by provider HTTP 429 usage_limit_reached: weekly limit, reported reset 7:30pm (Asia/Calcutta). No substitute, credential changes or paid lane used. Code may be committed locally as unaccepted implementation; final acceptance remains blocked. CF helper now returns ConditionalFormatResult(styles,warnings); rows stay 200 with generic conditional_format_warnings, workbook sheet has_conditional_formats flags, bounded shared public-engine loads, and coalesced refresh only for CF sheets. Next implementation: drawings/actions. Final review/browser/suites-twice/builds still pending; TaskSpace 42 retained.
+
+Resume checkpoint, 2026-10-11: disk verified above 12 GiB; exact gpt-5.6-sol session 01a12961-bb90-71b3-af7a-07bc42b2cd29 resumed and exited cleanly. CF remaining regression fixes are present. Controller full Python 300/300 and web 103/103 passed; content guard exit 0, project Ruff (`pp run_v2.py tests/v2`) green, pinned Prettier green after formatting. Staged secret scan and scoped Python SAST passed. Fresh exact Opus 5.5 returned FIX-FIRST with verified canonical model identity. Its F1-F7 findings are being fixed in the same Sol session, evidence cf-review-round2-*. No feature commit yet. Evidence: results-private/fidelity/resume-cf-*. TaskSpace 42 verified available, retain it through final acceptance. Unused fixture compatibility shim removed; canonical builder is ops/fixtures.py. Engine/calc pipeline remain unchanged.
+
+Fidelity CF checkpoint, 2026-10-11: no feature commit yet; HEAD f74d131. Latest bounded regression checks: Python 22/22, web 23/23. Earlier controller full Python 296/296 passed; earlier full web 102/103 exposed a cache regression that is now fixed in focused tests. Full acceptance has not been rerun. Exact claude-opus-5-5 static review returned FIX-FIRST; remaining findings still need closure and re-review (multi-area formula origin, DXF background fallback, border enums, target-range clipping and escaped sheet names). CF evaluator currently rejects more than 10000 referenced cells per batch or 100000 overrides with an explicit service error; these limits need review against the large-sheet requirement. Drawings, notes, tables/filters and sheet views remain unimplemented. No private workbook or engine/pipeline mutation occurred.
+
+Execution stopped after the capacity guard measured 398950400 bytes free, followed by a controller reading of 180297728 bytes. The owned executor exited cleanly. No further test/build was launched after the guard. Recover capacity before resuming. Evidence: results-private/fidelity/sol-fixes-last.md, cf-fix-checkpoint-low-disk.md, cf-fix-green-python.log, cf-fix-web-relevant.log, opus-cf-review-2.json. Next routed prompt is results-private/fidelity/sol-next-review.md; resume session 01a12961-bb90-71b3-af7a-07bc42b2cd29 using exact gpt-5.6-sol xhigh. TaskSpace 42 remains open, unused for application acceptance; finish keep: [] only after final successful checks.
+
+Fidelity checkpoint: initial Luna tests rejected for insufficient real-boundary coverage and incompatible fake engine signature. Terra's test harness still had invalid snapshot paths, operation fields and a nonexistent grid class. After the two execution failures the exact `gpt-5.6-sol` xhigh lane took over, in session `01a12961-bb90-71b3-af7a-07bc42b2cd29`. Evidence: ignored `results-private/fidelity/`, current executor log `sol.jsonl`. Ego TaskSpace `42` is reserved until final acceptance; do not finish it early. Branch HEAD remains `f74d131`; tests have not yet established fidelity acceptance. Worker sandbox socket tests fail EPERM, so the controller owns full suite runs. Active Python/web lock audits report zero known vulnerabilities; Opus probe confirms canonical `claude-opus-5-5`.
+
+Resource incident: a hook could not write state when disk reached 190 MiB free. Only owned executors were interrupted; no other process or user file was removed. Disk then recovered above 4 GiB but continues fluctuating. Keep execution sequential and stop before heavyweight work if capacity falls below 1 GiB.
+
+## Next task
+Stop and record only if `df -m /` Available drops below 2500 MB. Still open, none blocking a merge: the MED review findings (deterministic function batching and template-block reuse, explicit cell styling precedence over table styles, overlay scroll redraw and asset caching), header-clipping coverage, the unverified table-order memory claim, the pending exact claude-opus-5-5 re-review, and a final all-source security scan plus web dependency audit on this branch. Do not push or merge without user approval.
+
+
+Historical integration handoff follows; its checks do not verify this fidelity work.
+
+2026-10-11 06:40 IST, controller (claude-opus-5-5). Commits after Round 5: `0079f66` refuse to start when another program holds the port (found live: a first start bound 0.0.0.0:8000 beside a loopback listener on 8000); `0ff02dd` literal dropdown members take the type Excel enters on pick, IMPORT_VERSION 6 (independent review finding N1).
+>>>>>>> feat/v2-fidelity
 
 2026-10-11 native Option A session. Uncommitted work from the interrupted run
 did not exist; the tree was clean at a25989c and nothing was inherited.
@@ -318,6 +446,7 @@ Shipped and committed, each item verified before commit:
   10db8af shared formulas split across a read boundary, plus scale measurements
   cf028e3 engine memory budget, idle LRU eviction and editor protection
 
+<<<<<<< HEAD
 Two real defects were found by testing rather than review. Cells straddling a
 read boundary were copied through unexamined, so their shared followers leaked
 into the prepared package and the 20% load failed closed; a test now forces the
@@ -380,3 +509,6 @@ Routing: prior Luna and Terra execution attempts both failed, documented in the 
 ## Next task
 
 Finish and commit Step 6 team overview. Read the pending Opus review, verify exact returned model identity, resolve concrete findings test-first and re-review critical/high repairs. Complete independent exact planner review, scoped security/dependency checks, 100k benchmark twice, full Python twice and web twice on final code, content guard 0, ruff, pinned Prettier and two identical builds. Then run a synthetic real server on a free port excluding 8000/8765/8766; capture pivot, page filters, slicer selection/multi-select/clear, category totals and team overview in existing TaskSpace 43; finish keep: [] and stop server immediately. Update this state and tracks/dashboard.md and commit handoff.
+=======
+Codex usage limit reached; Astra/Sol unavailable until 2026-10-14 09:03 IST.
+>>>>>>> feat/v2-fidelity

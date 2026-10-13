@@ -927,6 +927,32 @@ class PackageValidationTests(unittest.TestCase):
         _rewrite(path, {}, (("customXml/item1.xml", dangling),))
         with self.assertRaisesRegex(ValueError, "relationship reference"):
             validate_package(path)
+        # A download skips the link re-read only for parts it copied as they were
+        validate_package(path, no_links=frozenset({"customXml/item1.xml"}))
+        with self.assertRaisesRegex(ValueError, "relationship reference"):
+            validate_package(path, no_links=frozenset({"xl/workbook.xml"}))
+
+    def test_link_scan_only_clears_utf8_parts_with_no_link_attribute(self):
+        from pp.export.transfer import LinkScan
+
+        def possible(*chunks):
+            scan = LinkScan()
+            for chunk in chunks:
+                scan.feed(chunk)
+            return scan.possible
+
+        plain = b'<?xml version="1.0" encoding="UTF-8"?><calcChain><c r="A1" i="1"/></calcChain>'
+        self.assertFalse(possible(plain))
+        self.assertFalse(possible(b"\xef\xbb\xbf" + plain))
+        self.assertFalse(possible(b"<calcChain/>"))
+        self.assertTrue(possible(b'<item xmlns:q="x" q:id="rId9"/>'))
+        self.assertTrue(possible(b'<item xmlns:longprefix="x" longprefix:', b'embed="rId9"/>'))
+        self.assertTrue(possible(b'<item xmlns:q="x" q:i', b'd="rId9"/>'))
+        self.assertTrue(possible('<item xmlns:q="x" q:id="rId9"/>'.encode("utf-16")))
+        self.assertTrue(possible('<item xmlns:q="x" q:id="rId9"/>'.encode("utf-16-le")))
+        self.assertTrue(possible('<?xml version="1.0"?><item q:id="rId9"/>'.encode("utf-16-le")))
+        self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-7"?><item/>'))
+        self.assertTrue(possible(b'<?xml version="1.0" encoding="UTF-8"'))
 
     def test_vendor_relationship_namespace_is_not_an_ooxml_reference(self):
         path = self.package("vendor-namespace.xlsx")
@@ -1070,7 +1096,8 @@ class LargeXmlSubsetBenchmarkTests(unittest.TestCase):
         rss_mb = rss / (1024 * 1024) if os.uname().sysname == "Darwin" else rss / 1024
         print(f"TRANSFER_XML_BENCH input_mb={source.stat().st_size / 1024 / 1024:.2f} "
               f"elapsed_s={elapsed:.3f} rss_mb={rss_mb:.2f}")
-        self.assertLess(elapsed, 30)
+        # ~15 s on a dev Mac, 18 to 32 s on shared CI runners; a quadratic regression takes minutes
+        self.assertLess(elapsed, 60)
         self.assertLess(rss_mb, 500)
 
 
@@ -1092,3 +1119,24 @@ class HardenedXmlParseTests(unittest.TestCase):
             archive.writestr("xl/_rels/workbook.xml.rels", bomb)
         with zipfile.ZipFile(buffer) as archive, self.assertRaises(EntitiesForbidden):
             _relationship_graph(archive)
+
+
+class InDocumentLinkTests(unittest.TestCase):
+    def test_link_to_a_cell_in_the_same_workbook_is_not_a_missing_part(self):
+        """Real templates link drawings to cells with Target="#'Sheet'!A1"; uploads failed on it."""
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            source, patched = Path(directory) / "in.xlsx", Path(directory) / "out.xlsx"
+            book = Workbook()
+            book.active["A1"] = 1
+            book.save(source)
+            with zipfile.ZipFile(source) as original, zipfile.ZipFile(patched, "w") as out:
+                for info in original.infolist():
+                    out.writestr(info, original.read(info))
+                out.writestr("xl/worksheets/_rels/sheet1.xml.rels", (
+                    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.'
+                    'openxmlformats.org/package/2006/relationships"><Relationship Id="rIdJump" '
+                    'Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/'
+                    'hyperlink" Target="#\'Sheet A\'!B2"/></Relationships>'))
+            validate_package(patched)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 from .config import Config, load_config
 from .db import Database
@@ -61,6 +62,8 @@ def create_runtime(root: str | Path) -> Runtime:
         # A values-only template never calculates, so copies must not start engine workers.
         calculator = None if config.template_results == "cached" else pool
         app = create_app(ServiceContext(database, snapshot, config, calculator))
+        threading.Thread(target=app.state.services.uploads.warm, args=(snapshot,),
+                         name="upload-identity-warmup", daemon=True).start()
         return Runtime(config, database, snapshot, pool, app)
     except Exception:
         pool.close()

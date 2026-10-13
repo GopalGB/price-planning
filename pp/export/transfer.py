@@ -236,6 +236,11 @@ def _relationship_source(name):
     return posixpath.join(match.group(1) or "", match.group(2))
 
 
+def _relationships_part(name):
+    directory, base = posixpath.split(name)
+    return posixpath.join(directory, "_rels", base + ".rels")
+
+
 def _relationship_target(source, target):
     if re.search(r"%(?![0-9A-Fa-f]{2})", target):
         raise ValueError(f"unsafe OOXML relationship target: {target}")
@@ -266,7 +271,8 @@ def _relationship_graph(archive):
             if _local(node.tag) != "Relationship":
                 continue
             target = None
-            if node.get("TargetMode") != "External":
+            # "#'Sheet'!A1" is a jump to a place inside this workbook, not a part of the package
+            if node.get("TargetMode") != "External" and not node.get("Target", "").startswith("#"):
                 target = _relationship_target(source, node.get("Target", ""))
             graph[source].append({
                 "id": node.get("Id"), "type": node.get("Type", ""), "target": target,
@@ -1228,7 +1234,14 @@ def _transform_package(source, destination, request):
         _write_transformed(WritePlan(
             archive, destination, state.removed, replacements, state.frozen, cleanups, custom,
         ))
-    validate_package(destination, require_provenance=True)
+        touched = set(replacements) | set(state.frozen) | set(cleanups) | {"docProps/custom.xml"}
+        # A part copied byte for byte with its relationships file also copied cannot gain a dangling
+        # link, and re-reading the big sheets for that was most of the download time
+        unchanged = frozenset(
+            name for name in state.parts - set(state.removed) - touched
+            if _relationships_part(name) not in touched
+        )
+    validate_package(destination, require_provenance=True, no_links=unchanged)
     return [sheet["name"] for sheet in state.kept]
 
 
@@ -1363,13 +1376,63 @@ def _relationship_references(stream):
     return references
 
 
-def validate_package(path, require_provenance=False):
-    """Reject archives with dangling relationships, missing content types, or unreadable XML."""
+class LinkScan:
+    """Byte-level proof that an XML part holds no relationship attribute (r:id, r:embed, r:link).
+
+    Such an attribute always carries a namespace prefix, so in UTF-8 its name shows as ":id",
+    ":embed" or ":link". Any other encoding, or a declaration it cannot read, counts as a possible
+    link. Feed every chunk in order; it proves nothing about well-formedness.
+    """
+
+    NAMES = (b":id", b":embed", b":link")
+
+    def __init__(self):
+        self.possible, self.tail, self.started = False, b"", False
+
+    def feed(self, chunk):
+        if self.possible:
+            return
+        if not self.started:
+            self.started = True
+            self.possible = not _utf8_xml(chunk[:1024])
+        window = self.tail + chunk
+        # A NUL never appears in UTF-8 XML; it means UTF-16 or UTF-32, even with no BOM
+        self.possible = (self.possible or b"\x00" in chunk
+                         or any(name in window for name in self.NAMES))
+        self.tail = window[-(max(map(len, self.NAMES)) - 1):]
+
+
+def _utf8_xml(head):
+    head = head.removeprefix(b"\xef\xbb\xbf")
+    if not head.startswith(b"<?xml"):
+        return head.startswith(b"<")  # no declaration and no BOM means UTF-8
+    end = head.find(b"?>")
+    if end < 0:
+        return False
+    declared = re.search(rb"encoding\s*=\s*[\"']([^\"']*)", head[:end])
+    return declared is None or declared.group(1).lower() in {b"utf-8", b"utf8"}
+
+
+def validate_package(path, require_provenance=False, deferred=frozenset(), no_links=frozenset()):
+    """Reject archives with dangling relationships, missing content types, or unreadable XML.
+
+    deferred: parts whose relationship references the caller checks itself, on the worker that reads
+    them. openpyxl reads worksheet XML, so with deferred parts the caller runs open_check() once the
+    workers have screened them. no_links: parts the caller showed cannot hold a dangling link (copied
+    unchanged from a trusted package, or a LinkScan found no link attribute after an XML screen),
+    so they are not re-read.
+    """
     with zipfile.ZipFile(path) as archive:
         state = _validation_state(archive)
         for info in archive.infolist():
-            _validate_package_member(archive, info, state)
+            _validate_package_member(archive, info, state,
+                                     info.filename in deferred or info.filename in no_links)
         _validate_package_graph(state, require_provenance)
+    if not deferred:
+        open_check(path)
+
+
+def open_check(path):
     workbook = load_workbook(path, read_only=True, data_only=False, keep_links=False)
     workbook.close()
 
@@ -1393,11 +1456,11 @@ def _validation_state(archive):
     return ValidationState(names, defaults, overrides, graph)
 
 
-def _validate_package_member(archive, info, state):
+def _validate_package_member(archive, info, state, deferred=False):
     if info.is_dir():
         return
     name, references = info.filename, set()
-    if name.endswith(".xml"):
+    if name.endswith(".xml") and not deferred:
         with archive.open(info) as stream:
             references = _relationship_references(stream)
     elif name.endswith(".rels"):

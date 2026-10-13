@@ -18,7 +18,7 @@ set "PP_ENGINE_CACHE_DIR=%HOME_DIR%\engine-cache"
 
 rem 2. Settings on first use: Excel engine, open to the office network.
 if exist settings.json goto have_settings
-> settings.json echo {"bind": "0.0.0.0", "port": 8000, "demo_mode": true, "engine": "excel"}
+> settings.json echo {"bind": "0.0.0.0", "port": 8211, "demo_mode": true, "engine": "excel"}
 :have_settings
 
 rem 3. Python 3.12, 3.11 or 3.10 (the bundled packages are built for these).
@@ -41,8 +41,11 @@ for /f "delims=" %%P in ('call "%PYEXE%" ops\install_env.py') do set "VENV_PY=%%
 if not defined VENV_PY goto install_failed
 
 rem 5. The four Excel checks: first run only, or "office_run.bat check".
-rem Python's COM lookup reads this key; "Invalid class string" there means it is missing here
+rem Python's COM lookup reads the name key; without it the app falls back to Excel's class id
+set "EXCEL_CLSID={00024500-0000-0000-C000-000000000046}"
 reg query "HKCR\Excel.Application\CLSID" >nul 2>&1
+if errorlevel 1 reg query "HKCR\CLSID\%EXCEL_CLSID%\LocalServer32" >nul 2>&1
+if errorlevel 1 reg query "HKCR\CLSID\%EXCEL_CLSID%\LocalServer32" /reg:32 >nul 2>&1
 if errorlevel 1 goto no_excel
 if /i "%~1"=="check" goto checks
 if exist "%HOME_DIR%\checks-done.txt" goto start_app
@@ -67,6 +70,9 @@ echo recalculate when the copy is downloaded and opened in Excel. No macros or r
 for %%D in ("%ProgramFiles%\Microsoft Office" "%ProgramFiles(x86)%\Microsoft Office") do if exist "%%~D" (
   dir /s /b "%%~D\EXCEL.EXE" 2>nul | findstr /i "excel.exe" >nul && echo Excel is installed here but not registered for automation: ask IT to run an Office Quick Repair.
 )
+echo For Claude: Excel registration found below (empty means none).
+reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" /v Platform 2>nul | findstr /i "Platform"
+reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\REGISTRY\MACHINE\Software\Classes\Excel.Application\CLSID" 2>nul | findstr /i "REG_SZ"
 echo.
 set "PP_TEMPLATE_RESULTS=cached"
 :start_app

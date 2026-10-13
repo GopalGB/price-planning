@@ -71,7 +71,7 @@ test("download preparation must pass before the native file click", async () => 
     { copyId: "copy one", format: "xlsx", sheets: ["Inputs"] },
     documentRef,
   );
-  assert.match(events[0], /\/copies\/copy%20one\/downloads$/);
+  assert.match(events[0], /\/copies\/copy%20one\/downloads\?async=1$/);
   assert.deepEqual(events.slice(1), ["append", "click", "remove"]);
   assert.equal(link.href, "/api/downloads/one-use");
   assert.equal("download" in link, false);
@@ -709,4 +709,54 @@ test("accepted operation without live confirmation resets undo history after aut
   assert.equal(controller.undoStack.length, 0);
   assert.equal(controller.redoStack.length, 0);
   assert.match(toasts.at(-1), /history.*reset/i);
+});
+
+test("a download job is polled until its link is ready, with progress", async () => {
+  const seen = [],
+    polls = [
+      { state: "running", stage: "Preparing the workbook" },
+      { state: "done", result: { download_url: "/api/downloads/later" } },
+    ];
+  let link;
+  const api = new ApiClient(async (url) => {
+    seen.push(url);
+    const body = url.includes("/jobs/") ? polls.shift() : { job: "j 1" };
+    return { ok: true, status: 200, json: async () => body };
+  });
+  const original = api.waitJob.bind(api);
+  api.waitJob = (token, onProgress) =>
+    original(token, onProgress, { sleep: async () => {} });
+  await startDownload(
+    api,
+    { copyId: "c", format: "xlsx", sheets: ["Inputs"] },
+    {
+      body: { append() {} },
+      createElement: () => (link = { click() {}, remove() {} }),
+    },
+  );
+  assert.equal(link.href, "/api/downloads/later");
+  assert.deepEqual(seen, [
+    "/api/copies/c/downloads?async=1",
+    "/api/jobs/j%201",
+    "/api/jobs/j%201",
+  ]);
+});
+
+test("a failed job rejects with the server's message", async () => {
+  const api = new ApiClient(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      state: "failed",
+      error: {
+        status: 422,
+        code: "invalid_workbook",
+        message: "Not a workbook",
+      },
+    }),
+  }));
+  await assert.rejects(api.waitJob("t", null, { sleep: async () => {} }), {
+    message: "Not a workbook",
+    code: "invalid_workbook",
+  });
 });

@@ -45,9 +45,37 @@ class BrandConfigTests(unittest.TestCase):
 
     def test_oversized_asset_is_rejected(self):
         root = configured(BRAND)
-        (root / "brand" / "logo.png").write_bytes(PNG + b"\0" * 1_000_001)
+        (root / "brand" / "logo.png").write_bytes(PNG + b"\0" * 5_000_001)
         with self.assertRaises(ValueError):
             load_config(root)
+
+
+    def test_a_logo_dropped_in_the_app_folder_or_above_it_is_shown(self):
+        for where in ("app", "above"):
+            with self.subTest(where=where):
+                home = Path(tempfile.mkdtemp(dir=TMP))
+                root = home / "app"
+                root.mkdir()
+                (root / "settings.json").write_text(json.dumps({"demo_mode": True}))
+                logo = (root if where == "app" else home) / "logo.png"
+                logo.write_bytes(PNG)
+                brand = load_config(root).brand
+                self.assertEqual(brand["assets"], {"logo": logo})
+                self.assertEqual((brand["name"], brand["colors"]), ("", {}))
+
+    def test_a_configured_brand_without_a_logo_takes_the_dropped_one(self):
+        root = configured({key: value for key, value in BRAND.items() if key != "logo"})
+        (root / "logo.png").write_bytes(PNG)
+        brand = load_config(root).brand
+        self.assertEqual(brand["assets"]["logo"], root / "logo.png")
+        self.assertEqual(brand["name"], "Example Retail Co")
+
+    def test_an_oversized_dropped_logo_is_skipped_not_fatal(self):
+        home = Path(tempfile.mkdtemp(dir=TMP))
+        (home / "settings.json").write_text(json.dumps({"demo_mode": True}))
+        (home / "logo.png").write_bytes(PNG + b"\0" * 5_000_001)
+        with self.assertLogs("pp.config", "WARNING"):
+            self.assertIsNone(load_config(home).brand)
 
 
 class BrandApiTests(unittest.TestCase):
