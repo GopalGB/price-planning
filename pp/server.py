@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+import gzip
+import io
 import json
 import logging
 from pathlib import Path
@@ -15,6 +17,7 @@ import threading
 import time
 
 from starlette.applications import Starlette
+from starlette.datastructures import Headers, MutableHeaders
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import FileResponse, JSONResponse, Response
@@ -45,6 +48,9 @@ from .workbook_service import (CellQuery, HistoryQuery, RowQuery, TemplateCatalo
 
 LOGGER = logging.getLogger(__name__)
 BODY_LIMIT = 2 * 1024 * 1024
+GZIP_MINIMUM_BYTES = 1000
+GZIP_LEVEL = 6
+JSON_MEDIA_TYPE = "application/json"
 MAX_PREPARED_DOWNLOADS = 32
 MAX_PREPARED_DOWNLOAD_BYTES = 512 * 1024 * 1024
 MAX_ACTIVE_TRANSFERS = 2
@@ -162,6 +168,7 @@ def create_app(context: ServiceContext) -> Starlette:
     )
     app.state.services = services
     app.state.engine_pool = context.engine_pool
+    app.add_middleware(JsonGZipMiddleware)
     app.add_middleware(SecurityBoundaryMiddleware)
     return app
 
@@ -1061,6 +1068,64 @@ class DisposableFileResponse(FileResponse):
             await super().__call__(scope, receive, send)
         finally:
             self.cleanup_path.unlink(missing_ok=True)
+
+
+class JsonGZipMiddleware:
+    """Gzip application/json responses only.
+
+    Starlette's own middleware compresses anything large enough, which would gzip the .xlsm and
+    .xlsx downloads: they are already zip containers, so that costs time and CPU and saves
+    nothing. A response head is held back until its first body chunk, which is where the content
+    type is known, and streaming responses are passed through untouched.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or "gzip" not in Headers(scope=scope).get("accept-encoding", ""):
+            await self.app(scope, receive, send)
+            return
+        await _JsonGZipResponder(self.app)(scope, receive, send)
+
+
+class _JsonGZipResponder:
+    def __init__(self, app):
+        self.app = app
+        self.head = None
+        self.compress = False
+
+    async def __call__(self, scope, receive, send):
+        self.send = send
+        await self.app(scope, receive, self.relay)
+
+    async def relay(self, message):
+        if message["type"] == "http.response.start":
+            self.head = message
+            headers = Headers(raw=message["headers"])
+            self.compress = (headers.get("content-type", "").split(";")[0].strip() == JSON_MEDIA_TYPE
+                             and "content-encoding" not in headers)
+            return
+        head = self.head
+        if head is None or message["type"] != "http.response.body":
+            await self.send(message)
+            return
+        self.head = None
+        body = message.get("body", b"")
+        if not self.compress or message.get("more_body", False) or len(body) < GZIP_MINIMUM_BYTES:
+            await self.send(head)
+            await self.send(message)
+            return
+        buffer = io.BytesIO()
+        with gzip.GzipFile(mode="wb", fileobj=buffer, compresslevel=GZIP_LEVEL) as archive:
+            archive.write(body)
+        compressed = buffer.getvalue()
+        headers = MutableHeaders(raw=head["headers"])
+        headers.add_vary_header("Accept-Encoding")
+        headers["Content-Encoding"] = "gzip"
+        headers["Content-Length"] = str(len(compressed))
+        await self.send(head)
+        await self.send({**message, "body": compressed})
 
 
 class SecurityBoundaryMiddleware:

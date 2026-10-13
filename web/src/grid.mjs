@@ -7,6 +7,7 @@ import enUS from "@univerjs/preset-sheets-core/locales/en-US";
 import {
   CellStore,
   RowCache,
+  SheetCacheMap,
   BLOCK_ROWS,
   parseInput,
   cellName,
@@ -62,6 +63,7 @@ function initialSheet(meta) {
 }
 const DETAIL_REFRESH_LIMIT = 8;
 const COPY_SNAPSHOT_ATTEMPTS = 3;
+const SHEET_CACHE_SHEETS = 6;
 export class PlanningGrid {
   constructor({ api, copy, meta, user, toast, dialog, inputHighlight = true }) {
     Object.assign(this, {
@@ -89,6 +91,8 @@ export class PlanningGrid {
     this.store.openSheets = new Set(
       meta.sheets.filter((s) => !s.protected).map((s) => s.index),
     );
+    // Each sheet keeps its own loaded blocks, so coming back to a tab costs no rows request.
+    this.sheetCaches = new SheetCacheMap(SHEET_CACHE_SHEETS);
     this.cache = new RowCache(3);
     this.store.inputRevision = meta.input_revision;
     this.store.calculatedRevision = meta.calculated_revision;
@@ -571,10 +575,8 @@ export class PlanningGrid {
     this.sheet = index;
     this.noteLayer?.clear();
     this.detailKey = "";
-    this.cache = new RowCache(3);
+    const cached = this.openSheetCache(index);
     this.loadTokens = new Map();
-    this.store.cells.clear();
-    this.store.resetBlocks();
     this.rendered.clear();
     this.applySheetView(index);
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
@@ -600,7 +602,7 @@ export class PlanningGrid {
     this.syncZoomControl(this.drawingZoom);
     const context = { sheet: index, worksheet: this.worksheet, generation };
     this.tabs();
-    await this.loadBlock(0, true);
+    await this.loadBlock(0, !cached);
     if (!this.viewMatches(context)) return false;
     this.paint();
     this.renderMacros();
@@ -616,6 +618,24 @@ export class PlanningGrid {
     await this.dashboard?.open(this.currentSheet());
     if (!this.viewMatches(context)) return false;
     return true;
+  }
+  // Load a sheet's own blocks again unless every one of them was rendered at the revisions this
+  // client is on. A remote edit or calculation moves those revisions, so blocks of other sheets
+  // stop being reusable the moment one arrives and are dropped the next time they are opened.
+  openSheetCache(index) {
+    this.sheetCaches ??= new SheetCacheMap(SHEET_CACHE_SHEETS);
+    const { entry, dropped } = this.sheetCaches.open(index);
+    for (const sheet of dropped) this.store.evictSheet(sheet);
+    const reusable = entry.reusable(
+      this.store.inputRevision,
+      this.store.calculatedRevision,
+    );
+    if (!reusable) {
+      entry.reset();
+      this.store.evictSheet(index);
+    }
+    this.cache = entry.cache;
+    return reusable;
   }
   applySheetView(index) {
     const view = sheetViewState(

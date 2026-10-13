@@ -1,5 +1,32 @@
 # STATE
 
+## 2026-10-13 (OpenCode runner, perf/tab-cache)
+
+perf/tab-cache at 91b0367, four commits from 7b0104e. Opening a sheet tab no longer renders
+and downloads the same window twice.
+- pp/row_cache.py: byte and entry bounded LRU (256 MB, 512 entries) of rendered row bodies. The key
+  is copy id, template id, sheet, start, count, input_revision, calculated_revision and the copy's
+  stored slicer selection hashed by content. Access is checked before the cache is read, so a user
+  without a role still gets 404. A block is served again after any edit, calculation or stored
+  slicer change; see `_row_cache_key`.
+- pp/server.py: JsonGZipMiddleware compresses application/json over 1 KB (level 6). Workbook
+  downloads are already zip containers and are passed through untouched, as are the WebSocket and
+  streaming responses. One test cleared the row cache because the CF evaluation budgets are process
+  tuning, not copy state (test_fidelity_cf).
+- web: SheetRowCache/SheetCacheMap keep the last six visited sheets (least recently visited first
+  out) and CellStore gained evictSheet. A sheet's blocks are reusable only when every one was
+  rendered at the revisions the client is on, so a remote op or calc invalidates the other sheets,
+  and a stale window is asked for again rather than answered from the old cache. Per-sheet zoom
+  unchanged.
+- Bench (`ops/bench_rows.py`, synthetic only): 800 x 312 protected sheet with a per-row conditional
+  format rule, 256-row block = 4,435,955 JSON bytes (243,550 gzipped); first visit 0.331 s, second
+  visit 0.001 s. Default fixture 2 x 1200 x 24: 339,603 bytes (20,607 gzipped), 0.057 s then 0.001 s.
+- Tests: 804 Python OK (134.6 s), 186 web OK, prettier clean, build committed, content guard 0,
+  bandit `uvx bandit -r app ops pp -ll` exit 0, ruff clean on the touched Python.
+- Not run here: a real browser check, the office server, Excel, semgrep, pip-audit, gitleaks. No
+  external model review; the supervisor owns that.
+- Report: .planning/oc-report.md.
+
 ## 2026-10-13 (Claude, production readiness)
 
 feat/v2-integration. CI fully green for the first time (tests 3.10/3.12, security, windows-offline x3).

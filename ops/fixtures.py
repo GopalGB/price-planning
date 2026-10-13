@@ -195,6 +195,32 @@ def make_semantic(path):
     wb.save(path)
     return {'inputs': inputs, 'formulas': {f'Calc!{k}': v for k, v in formulas.items()}}
 
+def make_large_grid(path, rows=1200, cols=24, sheets=1):
+    """Protected sheets shaped like real plan tabs: one editable column, many value columns,
+    and a per-row conditional format rule over all of them (the slow render path)."""
+    book = Workbook()
+    book.remove(book.active)
+    last = get_column_letter(cols)
+    for index in range(sheets):
+        sheet = book.create_sheet(f'Grid {index + 1}')
+        sheet.protection.sheet = True
+        for row in range(1, rows + 1):
+            sheet.cell(row, 1, f'K{row}')
+            sheet.cell(row, 2, row % 50 + 1).protection = Protection(locked=False)
+            for column in range(3, cols + 1):
+                sheet.cell(row, column, round((row * 7 % 97) * 0.5, 2))
+            sheet.cell(row, 1).font = Font(bold=True)
+        sheet.conditional_formatting.add(
+            f'A1:{last}{rows}',
+            FormulaRule(
+                formula=[f'=$B1>25'],
+                fill=PatternFill(patternType='solid', fgColor='112233'),
+            ),
+        )
+        sheet.freeze_panes = 'C2'
+    book.save(path)
+
+
 def make_scale(path, rows=4088, cols=312, lookup_rows=100000):
     wb = Workbook(write_only=True)
     lk = wb.create_sheet('Lookup')

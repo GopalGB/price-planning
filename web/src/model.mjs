@@ -348,6 +348,18 @@ export class CellStore {
     }
     this.blockRevisions.delete(`${sheet}:${start}`);
   }
+  evictSheet(sheet) {
+    // A sheet leaving the tab cache, or one whose blocks are being reloaded, must not keep
+    // painting cells the store holds from an older revision.
+    for (const key of [...this.cells.keys()]) {
+      if (Number(key.split(":")[0]) === sheet) {
+        this.cells.delete(key);
+        this.cellInputRevisions.delete(key);
+      }
+    }
+    for (const key of [...this.blockRevisions.keys()])
+      if (Number(key.split(":")[0]) === sheet) this.blockRevisions.delete(key);
+  }
 }
 export class RowCache {
   constructor(max = 3) {
@@ -372,6 +384,59 @@ export class RowCache {
       const [s, r] = oldest.split(":").map(Number);
       this.lastEvicted.push({ sheet: s, start: r });
     }
+  }
+}
+export class SheetRowCache {
+  // One sheet's loaded blocks. They are reused only when every one of them was rendered at the
+  // revisions the client is on: an edit or a calculation moves those revisions and a block
+  // loaded before it no longer describes the copy.
+  constructor(sheet, maxBlocks = 3) {
+    this.sheet = sheet;
+    this.cache = new RowCache(maxBlocks);
+  }
+  get blocks() {
+    return this.cache.blocks;
+  }
+  reusable(inputRevision, calculatedRevision) {
+    return (
+      this.cache.blocks.size > 0 &&
+      [...this.cache.blocks.values()].every(
+        (data) =>
+          data.input_revision === inputRevision &&
+          data.calculated_revision === calculatedRevision,
+      )
+    );
+  }
+  reset() {
+    // A block from an older revision must not answer a scroll either: drop them all and let
+    // the sheet load again from the first window.
+    this.cache = new RowCache(3);
+  }
+}
+export class SheetCacheMap {
+  // Row blocks per sheet, kept across tab switches. Visit order is the Map order, so the least
+  // recently visited sheet is the first to go.
+  constructor(maxSheets = 6) {
+    this.maxSheets = maxSheets;
+    this.entries = new Map();
+  }
+  open(sheet) {
+    const entry = this.entries.get(sheet) ?? new SheetRowCache(sheet);
+    this.entries.delete(sheet);
+    this.entries.set(sheet, entry);
+    const dropped = [];
+    while (this.entries.size > this.maxSheets) {
+      const oldest = this.entries.keys().next().value;
+      this.entries.delete(oldest);
+      dropped.push(oldest);
+    }
+    return { entry, dropped };
+  }
+  drop(sheet) {
+    return this.entries.delete(sheet);
+  }
+  clear() {
+    this.entries.clear();
   }
 }
 export function selectionStats(values) {
