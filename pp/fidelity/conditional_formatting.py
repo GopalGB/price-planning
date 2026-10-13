@@ -6,7 +6,9 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
+import re
 import tempfile
+import threading
 import time
 
 from openpyxl import Workbook
@@ -190,8 +192,7 @@ class EvaluationState:
                 continue
             total += count
             try:
-                tasks.extend(_formula_tasks(key, rule, _coordinates(visible) if visible else (),
-                                            self.snapshot, self.query.sheet))
+                tasks.extend(_cached_formula_tasks(key, rule, visible, self.snapshot, self.query.sheet))
             except ConditionalFormatError as exc:
                 failures[key] = exc.code
                 self._warn(rule, exc.code)
@@ -484,6 +485,36 @@ def _value_key(value):
     return "value", json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
+TASK_CACHE_ENTRIES = 4096
+_task_cache: OrderedDict = OrderedDict()
+_task_cache_lock = threading.Lock()
+
+
+def _cached_formula_tasks(rule_key, rule, visible, snapshot, sheet):
+    """The formula text per target depends only on the template and the visible range, never on a
+    copy's values, so every copy and every edit reuses it instead of re-tokenizing each cell."""
+    template = getattr(snapshot, "hash", None)
+    if template is None:
+        return _formula_tasks(rule_key, rule, _coordinates(visible) if visible else (), snapshot, sheet)
+    key = (template, sheet, rule_key, visible)
+    with _task_cache_lock:
+        found = _task_cache.get(key)
+        if found is not None:
+            _task_cache.move_to_end(key)
+    if found is None:
+        try:
+            found = _formula_tasks(rule_key, rule, _coordinates(visible) if visible else (), snapshot, sheet)
+        except ConditionalFormatError as exc:
+            found = exc
+        with _task_cache_lock:
+            _task_cache[key] = found
+            while len(_task_cache) > TASK_CACHE_ENTRIES:
+                _task_cache.popitem(last=False)
+    if isinstance(found, ConditionalFormatError):
+        raise ConditionalFormatError(found.code, str(found))
+    return found
+
+
 def _formula_tasks(rule_key, rule, coordinates, snapshot, sheet):
     formulas = rule.get("formulas", [])
     origin = f"{get_column_letter(rule['top_left'][1] + 1)}{rule['top_left'][0] + 1}"
@@ -551,6 +582,10 @@ def _translated_formula(rule, translators, row, col):
 
 
 def _context_formula(formula: str, row: int, col: int) -> str:
+    upper = formula.upper()
+    if "ROW" not in upper and "COLUMN" not in upper:
+        # Nothing to substitute: the token walk below would rebuild the same text
+        return "=" + (formula[1:] if formula.startswith("=") else formula)
     tokens, output, index = Tokenizer(formula).items, ["="], 0
     while index < len(tokens):
         token = tokens[index]
@@ -653,8 +688,29 @@ def _matching_name(value, current_sheet, names):
     return matching[0] if matching else None
 
 
+_name_patterns: dict = {}
+
+
+def _name_pattern(names):
+    """One search for any defined name, cached per name list (the snapshot's list object)."""
+    found = _name_patterns.get(id(names))
+    if found is not None and found[0] is names:
+        return found[1]
+    key = [item["name"].casefold() for item in names]
+    # Matched against casefolded text, the same comparison _matching_name makes per token
+    pattern = re.compile("|".join(re.escape(name) for name in key)) if key else None
+    if len(_name_patterns) > 64:
+        _name_patterns.clear()
+    _name_patterns[id(names)] = names, pattern
+    return pattern
+
+
 def _expand_defined_names(formula, current_sheet, snapshot):
     names = snapshot.meta.get("defined_names", [])
+    pattern = _name_pattern(names)
+    if pattern is None or pattern.search(formula.casefold()) is None:
+        # A name can only match a token that spells it, so no name in the text means nothing to expand
+        return "=" + formula.lstrip("=")
 
     def expand(text, sheet, resolving):
         output = []

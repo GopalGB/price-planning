@@ -169,5 +169,41 @@ class RowBlockCacheContractTests(unittest.TestCase):
         self.assertEqual(len(self.renders), 1)
 
 
+    def second_copy(self):
+        _, other = self.fixture.make_copy(self.client, self.csrf, name="Second")
+        return other
+
+    def test_unedited_copies_of_one_template_share_a_rendered_block(self):
+        first = self.rows().json()
+        other = self.second_copy()
+        response = self.client.get(f"/api/copies/{other['id']}/sheets/0/rows?{self.BLOCK}")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(self.renders), 1)
+        self.assertEqual(response.json()["rows"], first["rows"])
+
+    def test_an_edited_copy_stops_sharing_and_others_keep_the_template_block(self):
+        self.rows()
+        other = self.second_copy()
+        self.services.operations.apply(self.copy["id"], self.user["id"], {
+            "op_id": "share-edit", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 4242, "expected_version": 0}],
+        })
+        edited = self.rows().json()
+        untouched = self.client.get(f"/api/copies/{other['id']}/sheets/0/rows?{self.BLOCK}").json()
+        self.assertEqual(len(self.renders), 2)
+        self.assertEqual(edited["rows"]["1"]["1"]["v"], 4242)
+        self.assertNotEqual(untouched["rows"]["1"]["1"].get("v"), 4242)
+        self.assertEqual((edited["input_revision"], untouched["input_revision"]), (1, 0))
+
+    def test_a_copy_with_a_slicer_selection_does_not_share(self):
+        self.rows()
+        other = self.second_copy()
+        with self.fixture.database.transaction() as connection:
+            write_state(connection, other["id"],
+                        {"slicers": {"Slicer_Region": ["North"]}, "refreshed": False}, 1)
+        self.client.get(f"/api/copies/{other['id']}/sheets/0/rows?{self.BLOCK}")
+        self.assertEqual(len(self.renders), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -539,3 +539,22 @@ class LiteralRuleBudgetTest(unittest.TestCase):
             result = state.run()
         self.assertEqual(result.styles, {})
         self.assertEqual([item["code"] for item in result.warnings], ["formula_time_limit"])
+
+
+class FormulaFastPathTests(unittest.TestCase):
+    def test_context_formula_skips_only_text_without_row_or_column(self) -> None:
+        from pp.fidelity.conditional_formatting import _context_formula
+        self.assertEqual(_context_formula("=A1>0", 4, 2), "=A1>0")
+        self.assertEqual(_context_formula("A1>0", 4, 2), "=A1>0")
+        self.assertEqual(_context_formula("=MOD(row(),2)=0", 4, 2), "=MOD(5,2)=0")
+        self.assertEqual(_context_formula("=COLUMN()>2", 4, 2), "=3>2")
+
+    def test_defined_names_expand_case_insensitively_and_skip_when_absent(self) -> None:
+        from pp.fidelity.conditional_formatting import _expand_defined_names
+        names = [{"name": "PlanInput", "formula": "'Visible'!$B$2", "local_sheet_id": None}]
+        snapshot = SimpleNamespace(sheets=[{"name": "Visible"}], meta={"defined_names": names})
+        self.assertEqual(_expand_defined_names("=A1>0", 0, snapshot), "=A1>0")
+        self.assertEqual(_expand_defined_names("=planinput>0", 0, snapshot), "=('Visible'!$B$2)>0")
+        names.append({"name": "Other", "formula": "$C$3", "local_sheet_id": None})
+        fresh = SimpleNamespace(sheets=snapshot.sheets, meta={"defined_names": list(names)})
+        self.assertEqual(_expand_defined_names("=OTHER", 0, fresh), "=($C$3)")

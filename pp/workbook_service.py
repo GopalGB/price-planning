@@ -14,7 +14,7 @@ from .fidelity.conditional_formatting import (
     CurrentCopyValues, conditional_style_overrides,
 )
 from .fidelity.tables import merge_style_overrides, table_style_overrides
-from .pivot_state import read_state
+from .pivot_state import EMPTY_STATE as EMPTY_PIVOT_STATE, read_state
 from .row_cache import RowBlockCache
 from .template.importer import IMPORT_VERSION
 
@@ -317,9 +317,12 @@ class WorkbookService:
                 raise AppError(422, "invalid", "Sheet row range is invalid")
             # Access is settled first; only then may a body another reader rendered be reused.
             key = _row_cache_key(connection, copy, query)
+            # A body shared by unedited copies carries the reading copy's own revisions
+            revisions = {"calculated_revision": _calculated_revision(snapshot, copy),
+                         "input_revision": copy["input_revision"]}
             cached = self.row_cache.get(key)
             if cached is not None:
-                return cached
+                return {**cached, **revisions}
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
             conditional = conditional_style_overrides(
                 snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
@@ -327,8 +330,7 @@ class WorkbookService:
             table_styles = table_style_overrides(snapshot.sheets[query.sheet], query)
             styles = merge_style_overrides(table_styles, conditional.styles)
             rows = self._row_data(connection, render, styles)
-        body = {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
-                "start": query.start, "rows": rows,
+        body = {**revisions, "start": query.start, "rows": rows,
                 "conditional_format_warnings": conditional.warnings}
         self.row_cache.put(key, body)
         return body
@@ -538,9 +540,21 @@ def _row_cache_key(connection, copy, query):
     Excel pivot output reaches the grid through published results, but the selection decides those
     results, so it is keyed by content rather than by the revision written next to it.
     """
+    state = read_state(connection, query.copy_id)
+    if state == EMPTY_PIVOT_STATE and not _copy_has_values(connection, query.copy_id):
+        # A copy with no edits, results or slicer choices renders exactly the template, so all
+        # such copies share one body: 50 fresh copies cost one render per block, not 50
+        return ("template", copy["template_id"], query.sheet, query.start, query.count)
     return (query.copy_id, copy["template_id"], query.sheet, query.start, query.count,
             copy["input_revision"], copy["calculated_revision"],
-            json.dumps(read_state(connection, query.copy_id), sort_keys=True, separators=(",", ":")))
+            json.dumps(state, sort_keys=True, separators=(",", ":")))
+
+
+def _copy_has_values(connection, copy_id):
+    return connection.execute(
+        "SELECT EXISTS(SELECT 1 FROM pp_overrides WHERE copy_id=?) "
+        "OR EXISTS(SELECT 1 FROM pp_results WHERE copy_id=?)", (copy_id, copy_id),
+    ).fetchone()[0] == 1
 
 
 def _group_rows(records):
