@@ -19,6 +19,8 @@ from ops.fixtures import (
 from pp.calc_service import CalculationPublication, CalculationService
 from pp.engine.formualizer import EngineError, FormualizerEngine
 from pp.fidelity.conditional_formatting import (
+    ConditionalFormatError,
+    _scratch_coordinates,
     MAX_FORMULA_TARGETS,
     MAX_OVERRIDE_RECORDS,
     CurrentCopyValues,
@@ -90,6 +92,21 @@ class ConditionalFormattingImportTest(unittest.TestCase):
         self.assertNotIn("border", _dxf_style(empty, Palette()))
 
 
+class ScratchPlacementTest(unittest.TestCase):
+    def test_sheet_formatted_to_the_last_column_still_has_scratch_rows(self):
+        """Templates often style whole rows out to XFD; rules must still evaluate below the data."""
+        class Extent:
+            def extent(self, sheet):
+                return 4355, 16_384
+
+        cells = _scratch_coordinates(Extent(), 0, [(0, 4307, 105)], 3)
+        self.assertEqual(len(set(cells)), 3)
+        self.assertTrue(all(row >= 4355 for _, row, _ in cells))
+        referenced_whole_column = [(0, 1_048_575, 3)]
+        with self.assertRaises(ConditionalFormatError):
+            _scratch_coordinates(Extent(), 0, referenced_whole_column, 3)
+
+
 class ConditionalFormattingRowsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = APIFixture(make_conditional_formatting)
@@ -100,6 +117,15 @@ class ConditionalFormattingRowsTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.fixture.close()
+
+    def test_slow_formula_rules_are_skipped_so_rows_still_load(self):
+        with patch("pp.fidelity.conditional_formatting.FORMULA_TIME_BUDGET_S", 0):
+            body = self.client.get(
+                f"/api/copies/{self.copy_id}/sheets/0/rows?start=1&count=2",
+            ).json()
+        self.assertIn("formula_time_limit",
+                      {item["code"] for item in body["conditional_format_warnings"]})
+        self.assertIn("1", body["rows"])
 
     def test_rows_use_current_copy_values_across_sheets_and_sparse_blocks(self) -> None:
         services = self.fixture.app.state.services

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 from pathlib import Path
 import tempfile
+import time
 
 from openpyxl import Workbook
 from openpyxl.formula import Tokenizer
@@ -26,10 +27,18 @@ MAX_DUPLICATE_SCAN_CELLS = 100_000
 MAX_OVERRIDE_RECORDS = 100_000
 MAX_FORMULA_TARGETS = MAX_OVERRIDE_RECORDS
 MAX_WARNINGS = 32
+# shortcut: formula rules get a fixed time per row request, then the block shows without their colours.
+# Big real sheets need ~60k cell-specific formulas per 200-row block; upgrade to viewport-only evaluation.
+FORMULA_TIME_BUDGET_S = 1.5
 MAX_EXCEL_ROWS = 1_048_576
 MAX_EXCEL_COLS = 16_384
 WARNING_MESSAGE = "Some conditional formatting could not be applied."
-ALIASABLE_FUNCTIONS = frozenset({"EXACT", "FALSE", "TRUE"})
+# Functions whose result can differ between two cells holding the same formula text: random values,
+# and functions that read the formula's own position. Everything else gives one answer per text.
+PER_CELL_FUNCTIONS = frozenset({
+    "RAND", "RANDBETWEEN", "RANDARRAY", "INDIRECT", "OFFSET", "CELL", "INFO", "FORMULATEXT",
+    "ISFORMULA", "SHEET", "SHEETS", "ROW", "COLUMN",
+})
 _MISSING = object()
 OPERATORS = {
     "equal": "=", "notEqual": "<>", "greaterThan": ">", "lessThan": "<",
@@ -151,9 +160,22 @@ class EvaluationState:
         return ConditionalFormatResult(self.output, self.warnings)
 
     def _formula_evaluation(self, indexed) -> FormulaEvaluation:
+        deadline = time.monotonic() + FORMULA_TIME_BUDGET_S
+        try:
+            return self._bounded_formula_evaluation(indexed, deadline)
+        except _OutOfTime:
+            evaluated = FormulaEvaluation()
+            evaluated.failures.update({key: "formula_time_limit" for key, rule in indexed
+                                       if rule["type"] in {"expression", "cellIs"}})
+            self.warnings.append({"code": "formula_time_limit", "message": WARNING_MESSAGE,
+                                  "rule_id": "multiple"})
+            return evaluated
+
+    def _bounded_formula_evaluation(self, indexed, deadline) -> FormulaEvaluation:
         tasks, failures, total = [], {}, 0
         extent = self.values.extent(self.query.sheet)
         for key, rule in indexed:
+            _check_deadline(deadline)
             if rule["type"] not in {"expression", "cellIs"}:
                 continue
             visible = _visible_bounds(rule["range"], self.query, extent)
@@ -164,12 +186,13 @@ class EvaluationState:
                 continue
             total += count
             try:
-                tasks.extend(_formula_tasks(key, rule, _coordinates(visible) if visible else ()))
+                tasks.extend(_formula_tasks(key, rule, _coordinates(visible) if visible else (),
+                                            self.snapshot, self.query.sheet))
             except ConditionalFormatError as exc:
                 failures[key] = exc.code
                 self._warn(rule, exc.code)
         evaluated = PublicFormulaEvaluator(
-            self.snapshot, self.values, self.query.sheet,
+            self.snapshot, self.values, self.query.sheet, deadline,
         ).evaluate(tasks)
         evaluated.failures.update(failures)
         for key, code in evaluated.failures.items():
@@ -235,13 +258,23 @@ class EvaluationState:
                                   "rule_id": "multiple"})
 
 
+class _OutOfTime(Exception):
+    pass
+
+
+def _check_deadline(deadline) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise _OutOfTime
+
+
 class PublicFormulaEvaluator:
-    def __init__(self, snapshot, values, sheet: int):
-        self.snapshot, self.values, self.sheet = snapshot, values, sheet
+    def __init__(self, snapshot, values, sheet: int, deadline: float | None = None):
+        self.snapshot, self.values, self.sheet, self.deadline = snapshot, values, sheet, deadline
 
     def evaluate(self, tasks: list[FormulaTask]) -> FormulaEvaluation:
         evaluated = FormulaEvaluation()
         for batch in _chunks(tasks, FORMULA_BATCH_SIZE):
+            _check_deadline(self.deadline)
             batch = [task for task in batch if task.rule_key not in evaluated.failures]
             if batch:
                 self._evaluate_group(batch, evaluated)
@@ -278,8 +311,7 @@ class PublicFormulaEvaluator:
         book = _helper_book(self.snapshot)
         scan = ReferenceScan(self.snapshot, self.values)
         try:
-            formulas = [_expand_defined_names(task.formula, self.sheet, self.snapshot)
-                        for task in tasks]
+            formulas = [task.formula for task in tasks]  # names were expanded when the tasks were built
             for formula in formulas:
                 scan.collect(formula, self.sheet)
         except TokenizerError as exc:
@@ -437,31 +469,48 @@ def _value_key(value):
     return "value", json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _formula_tasks(rule_key, rule, coordinates):
+def _formula_tasks(rule_key, rule, coordinates, snapshot, sheet):
     formulas = rule.get("formulas", [])
     origin = f"{get_column_letter(rule['top_left'][1] + 1)}{rule['top_left'][0] + 1}"
     try:
         translators = [Translator("=" + value.lstrip("="), origin=origin) for value in formulas]
         if not translators:
             raise ValueError("conditional rule is missing a formula")
-        grouped, aliasable = OrderedDict(), {}
-        for coordinate in coordinates:
-            formula = _translated_formula(rule, translators, *coordinate)
-            if formula not in aliasable:
-                aliasable[formula] = _formula_aliasable(formula)
-            key = formula, None if aliasable[formula] else coordinate
-            grouped.setdefault(key, []).append(coordinate)
+        moves = _relative_axes(rule, translators)
+        translated, expanded, shared, grouped = {}, {}, {}, OrderedDict()
+        for row, col in coordinates:
+            # one translation per distinct relative row/column: a rule anchored to a column reads the same
+            # formula all along a row, so ~100 cells share one text
+            where = (row if moves[0] else None, col if moves[1] else None)
+            if where not in translated:
+                translated[where] = _translated_formula(rule, translators, row, col)
+            text = translated[where]
+            if text not in expanded:
+                expanded[text] = _expand_defined_names(text, sheet, snapshot)
+                shared[text] = _formula_aliasable(expanded[text])
+            key = expanded[text], None if shared[text] else (row, col)
+            grouped.setdefault(key, []).append((row, col))
         return [FormulaTask(rule_key, targets[0], key[0], tuple(targets[1:]))
                 for key, targets in grouped.items()]
     except (TokenizerError, TranslatorError, ValueError, IndexError) as exc:
         raise ConditionalFormatError("formula_invalid", str(exc)) from exc
 
 
+def _relative_axes(rule, translators):
+    """Whether the translated formula changes with the target's row, and with its column."""
+    row, col = rule["top_left"]
+    here = _translated_formula(rule, translators, row, col)
+    step_row = -1 if row + 1 >= MAX_EXCEL_ROWS else 1  # probe inward from the sheet's last row/column
+    step_col = -1 if col + 1 >= MAX_EXCEL_COLS else 1
+    return (_translated_formula(rule, translators, row + step_row, col) != here,
+            _translated_formula(rule, translators, row, col + step_col) != here)
+
+
 def _formula_aliasable(formula):
+    """True when every cell holding this exact (name-expanded) text gets the same answer."""
     for token in Tokenizer(formula).items:
         if token.type == "FUNC" and token.subtype == "OPEN":
-            name = token.value[:-1].upper().rsplit(".", 1)[-1]
-            if name not in ALIASABLE_FUNCTIONS:
+            if token.value[:-1].upper().rsplit(".", 1)[-1] in PER_CELL_FUNCTIONS:
                 return False
         if token.type == "OPERAND" and token.subtype == "RANGE":
             try:
@@ -616,6 +665,10 @@ def _scratch_coordinates(values, sheet, references, count):
     base_row = max([rows, *(row + 1 for _, row, _ in references)])
     base_col = max([cols, *(col + 1 for _, _, col in references)])
     width = MAX_EXCEL_COLS - base_col
+    if width <= 0:
+        # Rows styled out to XFD leave no columns to the right. Rows below every value and every
+        # reference are just as unused, so any column there is safe.
+        base_col, width = 0, MAX_EXCEL_COLS
     needed_rows = (count + width - 1) // width if width > 0 else MAX_EXCEL_ROWS + 1
     if base_row + needed_rows > MAX_EXCEL_ROWS or width <= 0:
         raise ConditionalFormatError("formula_scratch_limit",
