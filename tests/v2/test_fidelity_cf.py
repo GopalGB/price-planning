@@ -371,6 +371,7 @@ class ConditionalFormattingRowsTest(unittest.TestCase):
                 return super().items()
 
         snapshot = SimpleNamespace(
+            sheets=[{"protected": True}],
             implicit_cells=lambda *_args: {},
             block=lambda *_args: {},
             note_block=lambda *_args: {},
@@ -441,7 +442,7 @@ class BroadConditionalFormattingRowsTest(unittest.TestCase):
         body = response.json()
         self.assertEqual(load.call_count, 1)
         self.assertEqual(body["rows"], {
-            "0": {"0": {"k": "c", "s": 0, "v": 1}},
+            "0": {"0": {"k": "c", "s": 0, "v": 1, "open": True, "ver": 0}},
         })
         self.assertEqual(
             [warning["code"] for warning in body["conditional_format_warnings"]],

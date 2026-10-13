@@ -858,7 +858,9 @@ def _sheet_cells(request):
                 if formula_value is not None:
                     cells[reference] = record
                 continue
-            if request.snapshot.is_input(*coordinate):
+            # A formula typed into an open (unprotected, non-template-input) cell is dropped like a locked one
+            if request.snapshot.is_input(*coordinate) and (
+                    formula is None or request.snapshot.template_input(*coordinate)):
                 cells[reference] = record
             elif _locked_cell_changed(record, expected):
                 ignored += 1

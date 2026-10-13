@@ -3,7 +3,11 @@ import { getPatternPreview } from "@univerjs/sheets-numfmt";
 export const BLOCK_ROWS = 256;
 export const MAX_OP_CELLS = 10000;
 export const keyOf = ({ sheet, r, c }) => `${sheet}:${r}:${c}`;
-export const editableInput = (cell) => cell?.k === "i" || cell?.input === true;
+export const editableInput = (cell) =>
+  cell?.k === "i" || cell?.input === true || cell?.open === true;
+// Highlight marks the template's own input cells, not every typed value on an unprotected sheet
+export const highlightedInput = (cell) =>
+  cell?.k === "i" || cell?.input === true;
 const blockStart = (row) => Math.floor(row / BLOCK_ROWS) * BLOCK_ROWS;
 const blockKey = (sheet, row) => `${sheet}:${blockStart(row)}`;
 export function cellName({ r, c }) {
@@ -51,7 +55,7 @@ function buildAuthorizedOp(store, changes, options = {}) {
   const cells = changes.map((change) => {
     const { sheet, r, c, v } = change,
       key = keyOf(change),
-      cell = store.get(sheet, r, c);
+      cell = store.editable?.(sheet, r, c) ?? store.get(sheet, r, c);
     if (seen.has(key)) throw new Error(`Duplicate cell ${cellName(change)}`);
     seen.add(key);
     if (!cell || (!editableInput(cell) && !authorizedInputs?.has(key)))
@@ -140,10 +144,20 @@ export class CellStore {
     this.calcBatches = new Map();
     this.inputRevision = 0;
     this.calculatedRevision = 0;
+    this.openSheets = new Set();
     this.merge(rows, sheet);
   }
   get(sheet, r, c) {
     return this.cells.get(keyOf({ sheet, r, c }));
+  }
+  // An empty cell on a sheet without protection takes typing, as in Excel
+  editable(sheet, r, c) {
+    return (
+      this.get(sheet, r, c) ??
+      (this.openSheets.has(sheet)
+        ? { v: null, k: "c", open: true, ver: 0 }
+        : undefined)
+    );
   }
   merge(
     rows,

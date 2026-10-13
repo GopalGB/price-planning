@@ -62,9 +62,19 @@ class TemplateSnapshot:
         return {"v": None, "s": style, "k": kind}
 
     def is_input(self, sheet: int, row: int, col: int) -> bool:
+        return self.template_input(sheet, row, col) or self.open_cell(sheet, row, col)
+
+    def template_input(self, sheet: int, row: int, col: int) -> bool:
         if self._pivot_output(sheet, row, col):
             return False
         return f"{sheet}:{row}:{col}" in self.input_mask or self.cell(sheet, row, col)["k"] == "i"
+
+    def open_cell(self, sheet: int, row: int, col: int) -> bool:
+        """Excel lets anyone type into a sheet without protection; only formulas stay locked here."""
+        if not (0 <= sheet < len(self.sheets) and 0 <= row < 1_048_576 and 0 <= col < 16_384):
+            return False
+        return (not self.sheets[sheet].get("protected", False) and self.cell(sheet, row, col)["k"] != "f"
+                and not self._pivot_output(sheet, row, col))
 
     def _pivot_output(self, sheet: int, row: int, col: int) -> bool:
         if not 0 <= sheet < len(self.sheets):
@@ -253,6 +263,7 @@ class WorkbookService:
             extents = _result_extents(connection, copy_id)
             pivot_state = read_state(connection, copy_id)
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
+                   "protected": bool(item.get("protected", False)),
                    "rows": _visible_extent(item, extents, 0),
                    "cols": _visible_extent(item, extents, 1),
                    "freeze": item["freeze"],
@@ -303,6 +314,7 @@ class WorkbookService:
         result_rows = _group_rows(render.results)
         style_rows = _group_rows(style_overrides)
         note_rows = _requested_notes(render.snapshot, query)
+        open_sheet = not render.snapshot.sheets[query.sheet].get("protected", False)
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
@@ -326,6 +338,8 @@ class WorkbookService:
                 record.update(_cell_fields(render.snapshot, coordinate, input_record, published))
                 if not override and not published and record["k"] == "i":
                     record["ver"] = 0
+                if record["k"] == "c" and open_sheet and not render.snapshot._pivot_output(*coordinate):
+                    record.update({"open": True, "ver": record.get("ver", 0)})
                 if col in styles:
                     record["style_override"] = styles[col]
                 if col in notes:
@@ -611,7 +625,7 @@ def _cell_fields(snapshot, coordinate, input_record, published):
 
 
 def _spill_input_metadata(snapshot, coordinate, input_record):
-    if not snapshot.is_input(*coordinate):
+    if not snapshot.template_input(*coordinate):
         return {}
     value = input_record["v"] if input_record else snapshot.cell(*coordinate)["v"]
     formula = _formula(value)

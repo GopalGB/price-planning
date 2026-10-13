@@ -4,7 +4,7 @@ import {
   generalPattern,
   gridFontFamily,
   GRID_NUMBER_HORIZONTAL_PADDING,
-  editableInput,
+  highlightedInput,
 } from "./model.mjs";
 export const GRID_DEFAULT_COLUMN_WIDTH = 64;
 export const GRID_DEFAULT_ROW_HEIGHT = 28;
@@ -37,7 +37,7 @@ export function sheetViewState(sheet) {
   };
 }
 export function inputFill(cell, style, enabled = true) {
-  return enabled && editableInput(cell) && !style?.fill
+  return enabled && highlightedInput(cell) && !style?.fill
     ? "#EAF2FB"
     : (style?.fill ?? undefined);
 }
@@ -121,7 +121,7 @@ export function renderCell(cell, style, options = {}) {
         }),
       },
     };
-  if (inputHighlight && editableInput(cell) && !effectiveStyle?.fill)
+  if (inputHighlight && highlightedInput(cell) && !effectiveStyle?.fill)
     rendered.s = {
       ...(typeof rendered.s === "object"
         ? rendered.s

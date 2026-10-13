@@ -86,6 +86,9 @@ export class PlanningGrid {
     );
     this.sheet = initialSheet(meta);
     this.store = new CellStore();
+    this.store.openSheets = new Set(
+      meta.sheets.filter((s) => !s.protected).map((s) => s.index),
+    );
     this.cache = new RowCache(3);
     this.store.inputRevision = meta.input_revision;
     this.store.calculatedRevision = meta.calculated_revision;
@@ -221,7 +224,7 @@ export class PlanningGrid {
       }
     };
     this.on("BeforeSheetEditStart", (event) => {
-      const cell = this.store.get(this.sheet, event.row, event.column);
+      const cell = this.store.editable(this.sheet, event.row, event.column);
       const dashboard = this.dashboard?.cell(
         this.sheet,
         event.row,
@@ -930,7 +933,8 @@ export class PlanningGrid {
     const selected = this.origin(),
       dashboard = this.dashboard?.cell(selected.sheet, selected.r, selected.c),
       cell =
-        dashboard ?? this.store.get(selected.sheet, selected.r, selected.c),
+        dashboard ??
+        this.store.editable(selected.sheet, selected.r, selected.c),
       key = `${this.sheet}:${selected.r}:${selected.c}`;
     if (advanceDetail(this, key, force)) $("validation-controls")?.remove();
     const display = formulaDisplay(cell, this.formulaText);
@@ -968,7 +972,11 @@ export class PlanningGrid {
       if (this.closed || token !== this.selectionToken) return;
       this.validation = detail.validation;
       this.formulaText = detail.formula;
-      const current = this.store.get(selected.sheet, selected.r, selected.c);
+      const current = this.store.editable(
+        selected.sheet,
+        selected.r,
+        selected.c,
+      );
       syncFormula(
         $("formula-input"),
         {

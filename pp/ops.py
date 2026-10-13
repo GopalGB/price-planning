@@ -201,7 +201,7 @@ class OperationService:
                 "SELECT 1 FROM pp_results WHERE copy_id=? AND sheet=? AND row=? AND col=?",
                 (copy["id"], sheet, row, col),
             ).fetchone()
-            if formula_result is not None and not snapshot.is_input(sheet, row, col):
+            if formula_result is not None and not snapshot.template_input(sheet, row, col):
                 raise AppError(422, "locked", ErrorPayload(
                     "This cell is locked", {"cells": [_public_cell(cell)]}
                 ))

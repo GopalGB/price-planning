@@ -29,7 +29,7 @@ class WorkbookAPIContractTests(unittest.TestCase):
                                                    "col_widths", "row_heights", "hidden_rows", "hidden_cols", "merges",
                                                    "default_row_height", "pivots", "slicers",
                                                    "has_conditional_formats", "show_gridlines", "zoom", "scroll",
-                                                   "active"})
+                                                   "active", "protected"})
         self.assertEqual(body["sheets"][0]["default_row_height"], 20)
         self.assertEqual((body["sheets"][0]["pivots"], body["sheets"][0]["slicers"]), ([], []))
         self.assertFalse(body["sheets"][0]["has_conditional_formats"])

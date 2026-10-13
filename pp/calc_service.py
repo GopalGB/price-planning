@@ -192,7 +192,7 @@ def _authoritative_changes(connection, snapshot, delta):
 
 
 def _spill_input_metadata(snapshot, coordinate, overrides):
-    if not snapshot.is_input(*coordinate):
+    if not snapshot.template_input(*coordinate):
         return {}
     override = overrides.get(coordinate)
     value = override["v"] if override else snapshot.cell(*coordinate)["v"]
