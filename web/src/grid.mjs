@@ -177,6 +177,7 @@ export class PlanningGrid {
     this.connect();
     this.keyHandler = (event) => this.keyDown(event);
     document.addEventListener("keydown", this.keyHandler, true);
+    this.prefetchSheets();
     if (import.meta.env.DEV) window.planning = this;
   }
   on(name, handler) {
@@ -618,6 +619,24 @@ export class PlanningGrid {
     await this.dashboard?.open(this.currentSheet());
     if (!this.viewMatches(context)) return false;
     return true;
+  }
+  // Ask the server to render the first block of every other tab, one at a time, while the user reads
+  // this one. The server keeps rendered blocks, so opening a tab later answers from its cache.
+  async prefetchSheets({ pause = 300 } = {}) {
+    const order = this.meta.sheets.filter(
+      (s) => !s.hidden && s.index !== this.sheet && s.rows > 0,
+    );
+    for (const sheet of order) {
+      if (this.closed) return;
+      await new Promise((resolve) => setTimeout(resolve, pause));
+      try {
+        await this.api.request(
+          `/copies/${this.copy.id}/sheets/${sheet.index}/rows?start=0&count=${Math.min(BLOCK_ROWS, sheet.rows)}`,
+        );
+      } catch {
+        // A warm-up miss only means that tab renders when it is opened
+      }
+    }
   }
   // Load a sheet's own blocks again unless every one of them was rendered at the revisions this
   // client is on. A remote edit or calculation moves those revisions, so blocks of other sheets

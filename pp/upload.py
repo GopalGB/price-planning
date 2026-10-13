@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import hashlib
 from io import StringIO
 import json
+import logging
 from pathlib import Path, PurePosixPath
 import re
 import secrets
@@ -32,6 +33,8 @@ from .export.transfer import (
 )
 from .ops import EDIT_ROLES, UploadOperationRequest
 from .values import exactly_equal, validate_value
+
+LOGGER = logging.getLogger(__name__)
 
 
 MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -92,6 +95,7 @@ class PreviewRequest:
     session_hash: str
     target_copy_id: str | None = None
     category_id: str | None = None
+    progress: object = None  # progress(stage, done, total), for a background upload job
 
 
 @dataclass(frozen=True)
@@ -183,14 +187,11 @@ class DisplacementDetector:
     def observe(self, record):
         self.rows = max(self.rows, record["row"] + 1)
         self.cols = max(self.cols, record["col"] + 1)
-        if self.snapshot is None or self.sheet is None:
-            return
-        coordinate = self.sheet, record["row"], record["col"]
-        expected = self.snapshot.cell(*coordinate)
-        if (record["formula"] is not None or expected.get("formula") is not None
-                or self.snapshot.is_input(*coordinate)):
-            return
-        self.locked_layout_changed |= _locked_cell_changed(record, expected)
+
+    def locked_value_changed(self, record, expected):
+        """A changed value in a locked, formula-free cell means rows or columns moved under it."""
+        if record["formula"] is None and expected.get("formula") is None:
+            self.locked_layout_changed = True
 
     def detected(self):
         if self.snapshot is None or self.sheet is None:
@@ -286,14 +287,19 @@ class UploadService:
         self._template_models = {}
 
     def preview(self, request):
+        progress = request.progress or _no_progress
         filename = _filename(request.filename)
+        progress("Checking the file is safe")
         _validate_archive(request.path)
-        identity = _read_workbook(request.path)
+        # Only the provenance tag picks the copy and template; the sheets are read once, below
+        provenance = _read_provenance(request.path)
         with self.database.read_transaction() as connection:
-            copy, role = self._target_copy(connection, identity, request)
+            copy, role = self._target_copy(connection, provenance, request)
             snapshot = (self.templates.get(connection, copy["template_id"]) if copy is not None
-                        else self._new_copy_snapshot(connection, identity, request))
-            model = _read_workbook(request.path, snapshot=snapshot)
+                        else self._new_copy_snapshot(connection, provenance, request))
+            model = _read_workbook(request.path, snapshot=snapshot, fingerprint=provenance is None,
+                                   progress=progress)
+            progress("Comparing with the copy")
             identification, revision = self._identify(model, snapshot, copy)
             details = _preview_details(PreviewContext(
                 connection, model, self._template_model(snapshot), snapshot,
@@ -332,8 +338,8 @@ class UploadService:
             return self._update(preview, request)
         return self._new_copy(preview, request)
 
-    def _target_copy(self, connection, model, request):
-        provenance_id = model.provenance["copy_id"] if model.provenance else None
+    def _target_copy(self, connection, provenance, request):
+        provenance_id = provenance["copy_id"] if provenance else None
         copy_id = request.target_copy_id or provenance_id
         if copy_id is None:
             return None, None
@@ -345,15 +351,15 @@ class UploadService:
             raise AppError(404, "not_found", "Choose a copy you can access")
         return copy, role
 
-    def _new_copy_snapshot(self, connection, model, request):
+    def _new_copy_snapshot(self, connection, provenance, request):
         member = connection.execute(
             "SELECT 1 FROM pp_category_members WHERE category_id=? AND user_id=?",
             (request.category_id, request.user_id),
         ).fetchone()
         if member is None:
             raise AppError(404, "not_found", "Choose a copy you can access")
-        if model.provenance is not None:
-            template_hash = model.provenance["template_hash"]
+        if provenance is not None:
+            template_hash = provenance["template_hash"]
             try:
                 return self.templates.get(connection, template_hash)
             except AppError as exc:
@@ -379,9 +385,19 @@ class UploadService:
     def _template_model(self, snapshot):
         model = self._template_models.get(snapshot.hash)
         if model is None:
-            model = _read_workbook(snapshot.source_path, provenance=False)
+            model = _load_template_identity(snapshot)
+            if model is None:
+                model = _read_workbook(snapshot.source_path, provenance=False)
+                _save_template_identity(snapshot, model)
             self._template_models[snapshot.hash] = model
         return model
+
+    def warm(self, snapshot):
+        """Build the template's upload identity off the request path; uploads then skip a full template read."""
+        try:
+            self._template_model(snapshot)
+        except Exception:
+            LOGGER.exception("Upload template identity warm-up failed")
 
     def _update(self, preview, request):
         if preview["copy_id"] is None:
@@ -678,7 +694,11 @@ def _validate_workbook_content_type(archive):
         raise AppError(422, "invalid_workbook", "Only .xlsx and .xlsm workbook content is supported")
 
 
-def _read_workbook(path, provenance=True, snapshot=None):
+def _no_progress(*_args):
+    pass
+
+
+def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progress=_no_progress):
     with zipfile.ZipFile(path) as archive:
         graph = _relationship_graph(archive)
         sheets = _sheet_records(archive.read("xl/workbook.xml"), graph)
@@ -691,17 +711,21 @@ def _read_workbook(path, provenance=True, snapshot=None):
         indexes = ({item["name"].casefold(): item["index"] for item in snapshot.sheets}
                    if snapshot is not None else {})
         all_formulas = snapshot is None and not provenance
-        scanned = {
-            item["name"]: _sheet_cells(SheetScan(
+        scanned = {}
+        for number, item in enumerate(sheets):
+            progress("Reading sheets", number, len(sheets))
+            scanned[item["name"]] = _sheet_cells(SheetScan(
                 archive, item["part"], strings, snapshot,
                 indexes.get(item["name"].casefold()), item["name"], all_formulas,
-            )) for item in sheets
-        }
+            ))
+        progress("Reading sheets", len(sheets), len(sheets))
         cells = {name: data.cells for name, data in scanned.items()}
+        progress("Checking rows and columns")
         structures = _workbook_structures(archive, sheets)
+        # A file the app wrote carries provenance, which identifies its template without the formula hash
         fingerprint = _fingerprint(names, {
             name: data.formulas for name, data in scanned.items()
-        })
+        }) if fingerprint else None
         props = _provenance(archive) if provenance else None
         ignored = tuple(
             {"sheet": name, "cell": None, "count": data.ignored_count,
@@ -859,11 +883,13 @@ def _sheet_cells(request):
                     cells[reference] = record
                 continue
             # A formula typed into an open (unprotected, non-template-input) cell is dropped like a locked one
-            if request.snapshot.is_input(*coordinate) and (
-                    formula is None or request.snapshot.template_input(*coordinate)):
+            template_input, editable = request.snapshot.input_flags(*coordinate, expected)
+            if editable and (formula is None or template_input):
                 cells[reference] = record
             elif _locked_cell_changed(record, expected):
                 ignored += 1
+                if not editable:
+                    detector.locked_value_changed(record, expected)
     return SheetData(cells, formulas, ignored, detector.detected())
 
 
@@ -932,17 +958,53 @@ def _fingerprint(sheet_names, cells):
     return digest.hexdigest()
 
 
+_FORMULA_SPACE = re.compile(r"\s+")
+
+
 def _normalize_formula(formula):
-    output, quoted = [], False
-    for char in formula:
-        if char == '"':
-            quoted = not quoted
-            output.append(char)
-        elif quoted:
-            output.append(char)
-        elif not char.isspace():
-            output.append(char.casefold())
-    return "".join(output)
+    """Drop whitespace and case outside string literals. Even split parts sit outside quotes."""
+    parts = formula.split('"')
+    parts[::2] = [_FORMULA_SPACE.sub("", part).casefold() for part in parts[::2]]
+    return '"'.join(parts)
+
+
+# Bump when the fingerprint or structure records change shape, so a stale saved identity is rebuilt.
+TEMPLATE_IDENTITY_VERSION = 1
+TEMPLATE_IDENTITY_FILE = "upload_identity.json"
+
+
+def _load_template_identity(snapshot):
+    path = Path(snapshot.path) / TEMPLATE_IDENTITY_FILE
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(saved, dict) or saved.get("version") != TEMPLATE_IDENTITY_VERSION:
+        return None
+    structures = {name: _tupled(value) for name, value in saved["structures"].items()}
+    return WorkbookModel(tuple(saved["sheets"]), {}, structures, saved["fingerprint"], None, (), frozenset())
+
+
+def _save_template_identity(snapshot, model):
+    path = Path(snapshot.path) / TEMPLATE_IDENTITY_FILE
+    body = {"version": TEMPLATE_IDENTITY_VERSION, "sheets": list(model.sheets),
+            "fingerprint": model.fingerprint, "structures": model.structures}
+    temporary = path.with_suffix(".tmp")
+    try:
+        temporary.write_text(json.dumps(body), encoding="utf-8")
+        temporary.replace(path)
+    except OSError:
+        LOGGER.warning("Could not save the upload template identity; it is rebuilt on next start")
+
+
+def _tupled(value):
+    """JSON turns the structure tuples into lists; equality with a freshly read upload needs tuples back."""
+    return tuple(_tupled(item) for item in value) if isinstance(value, list) else value
+
+
+def _read_provenance(path):
+    with zipfile.ZipFile(path) as archive:
+        return _provenance(archive)
 
 
 def _provenance(archive):

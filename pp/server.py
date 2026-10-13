@@ -38,6 +38,7 @@ from .pivot_state import with_refreshed, with_selection
 from .config import BRAND_TYPES
 from .errors import AppError
 from .export.transfer import TransferRequest, export_transfer
+from .jobs import JobStore
 from .live import LiveHub, serve_live
 from .ops import OperationService
 from .pivot import PivotQuery, PivotService
@@ -108,6 +109,7 @@ class Services:
         self.hub = LiveHub(context.database, context.config.replay_window)
         self.writes = WriteLimiter()
         self.downloads = PreparedDownloadStore()
+        self.jobs = JobStore()
         self.transfer_limiter = threading.BoundedSemaphore(MAX_ACTIVE_TRANSFERS)
         self.transfer_admission = threading.BoundedSemaphore(MAX_PENDING_TRANSFERS)
 
@@ -155,6 +157,7 @@ def create_app(context: ServiceContext) -> Starlette:
         Route("/api/uploads/preview", _upload_preview, methods=["POST"]),
         Route("/api/copies/{copy_id}/uploads/preview", _upload_preview, methods=["POST"]),
         Route("/api/uploads/{token}/confirm", _upload_confirm, methods=["POST"]),
+        Route("/api/jobs/{token}", _job_status, methods=["GET"]),
         WebSocketRoute("/api/copies/{copy_id}/ws", _websocket),
         Route("/api/brand", _brand, methods=["GET"]),
         Route("/api/{path:path}", _api_not_found),
@@ -583,6 +586,7 @@ async def _export(request: Request):
 async def _prepare_download(request: Request):
     services, user, _ = _write_auth(request)
     admission = _admit_transfer(services)
+    handed_off = False
     try:
         payload = await _body(request)
         fmt = _download_format(payload.get("format"))
@@ -591,17 +595,39 @@ async def _prepare_download(request: Request):
         selected = _selected_values(payload.get("sheets"), snapshot["sheets"])
         _require_export_ready(snapshot, selected)
         path = _export_path(services, fmt, True)
-        await _build_export(ExportJob(
-            snapshot, copy_id, fmt, selected, path,
-        ), services.transfer_limiter)
-        artifact = PreparedArtifact(
-            path, user["id"], token_hash(request.cookies.get("pp_session", "")),
-            copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
-        )
-        token = services.downloads.add(artifact)
-        return JSONResponse({"download_url": f"/api/downloads/{token}"}, status_code=201)
+        session = token_hash(request.cookies.get("pp_session", ""))
+        job = ExportJob(snapshot, copy_id, fmt, selected, path)
+
+        def publish():
+            artifact = PreparedArtifact(
+                path, user["id"], session,
+                copy_id, f"price-plan.{fmt}", time.monotonic() + PREPARED_DOWNLOAD_SECONDS,
+            )
+            return {"download_url": f"/api/downloads/{services.downloads.add(artifact)}"}
+
+        if request.query_params.get("async") == "1":
+            def work(progress):
+                progress.progress("Preparing the workbook")
+                try:
+                    _call_bounded(services.transfer_limiter, _write_export_job, (job, threading.Event()))
+                except ValueError as exc:
+                    raise _export_error(exc) from exc
+                except BaseException:
+                    path.unlink(missing_ok=True)
+                    raise
+                return publish()
+
+            def cleanup():
+                admission.release()
+
+            token = services.jobs.start(user["id"], session, work, cleanup)
+            handed_off = True
+            return JSONResponse({"job": token}, status_code=202)
+        await _build_export(job, services.transfer_limiter)
+        return JSONResponse(publish(), status_code=201)
     finally:
-        admission.release()
+        if not handed_off:
+            admission.release()
 
 
 async def _prepared_download(request: Request):
@@ -635,13 +661,17 @@ async def _build_export(job, limiter=None):
         )
     except ValueError as exc:
         job.path.unlink(missing_ok=True)
-        if str(exc).startswith("current calculation result"):
-            raise AppError(409, "calculation_required", str(exc)) from exc
-        raise
+        raise _export_error(exc) from exc
     except BaseException:
         cancelled.set()
         job.path.unlink(missing_ok=True)
         raise
+
+
+def _export_error(exc):
+    if str(exc).startswith("current calculation result"):
+        return AppError(409, "calculation_required", str(exc))
+    return exc
 
 
 def _write_export(job):
@@ -728,13 +758,23 @@ def _reject_head(request) -> None:
 async def _upload_preview(request: Request):
     services, user, _ = _write_auth(request)
     admission = _admit_transfer(services)
+    handoff = []
     try:
-        return await _admitted_upload_preview(request, services, user)
+        return await _admitted_upload_preview(request, services, user, handoff)
     finally:
-        admission.release()
+        if not handoff:
+            admission.release()
 
 
-async def _admitted_upload_preview(request, services, user):
+async def _job_status(request: Request):
+    services = _services(request)
+    user, _ = services.auth.authenticate(request.cookies.get("pp_session"))
+    return JSONResponse(services.jobs.get(
+        request.path_params["token"], user["id"], token_hash(request.cookies.get("pp_session", "")),
+    ))
+
+
+async def _admitted_upload_preview(request, services, user, handoff):
     limit = getattr(services.config, "upload_max_mb", 100) * 1024 * 1024
     length = _declared_length(request)
     if length > limit:
@@ -762,10 +802,23 @@ async def _admitted_upload_preview(request, services, user):
                             or request.query_params.get("copy_id")),
             category_id=request.query_params.get("category_id"),
         )
+        if request.query_params.get("async") == "1":
+            def work(job):
+                return _call_bounded(services.transfer_limiter, services.uploads.preview,
+                                     replace(preview, progress=job.progress))
+
+            def cleanup():
+                path.unlink(missing_ok=True)
+                services.transfer_admission.release()
+
+            token = services.jobs.start(user["id"], preview.session_hash, work, cleanup)
+            handoff.append(token)
+            return JSONResponse({"job": token}, status_code=202)
         body = await _run_bounded(services.transfer_limiter, services.uploads.preview, preview)
         return JSONResponse(body)
     finally:
-        path.unlink(missing_ok=True)
+        if not handoff:
+            path.unlink(missing_ok=True)
 
 
 def _admit_transfer(services):

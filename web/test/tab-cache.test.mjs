@@ -230,3 +230,33 @@ test("a window scrolled out before an edit is asked for again", async () => {
   );
   assert.equal(grid.store.get(0, 257, 1).v, 1);
 });
+
+test("after opening, the other visible tabs are warmed with the exact window a switch asks for", async () => {
+  const { PlanningGrid } = await import("../src/grid.mjs");
+  const paths = [];
+  const fake = {
+    closed: false,
+    sheet: 0,
+    copy: { id: "c1" },
+    meta: {
+      sheets: [
+        { index: 0, rows: 900 },
+        { index: 1, rows: 40 },
+        { index: 2, rows: 900, hidden: "hidden" },
+        { index: 3, rows: 5000 },
+      ],
+    },
+    api: {
+      request: async (path) => {
+        paths.push(path);
+        if (path.includes("/sheets/1/")) throw new Error("busy");
+        return {};
+      },
+    },
+  };
+  await PlanningGrid.prototype.prefetchSheets.call(fake, { pause: 0 });
+  assert.deepEqual(paths, [
+    "/copies/c1/sheets/1/rows?start=0&count=40",
+    "/copies/c1/sheets/3/rows?start=0&count=256",
+  ]);
+});

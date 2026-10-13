@@ -10,6 +10,10 @@ import {
   workspaceView,
   downloadView,
   uploadPreviewView,
+  progressView,
+  uploadPercent,
+  jobText,
+  fileTitle,
   escapeHTML as e,
   roleOptions,
   loadHome,
@@ -259,29 +263,74 @@ function uploadModal(copy = null) {
     : `<label>Existing copy (optional)<select name="copy_id"><option value="">Use workbook metadata</option>${copyOptions}</select></label>`;
   modal(
     "Upload Excel",
-    `${target}<label>Category<select name="category_id">${categoryOptions}</select></label><label>Workbook<input name="workbook" type="file" accept=".xlsx,.xlsm" required></label>`,
+    `${target}<label>Category<select name="category_id">${categoryOptions}</select></label><label>Workbook<input name="workbook" type="file" accept=".xlsx,.xlsm" required></label><label>Copy name (used if this becomes a new copy)<input name="copy_name" maxlength="100" placeholder="Name of the uploaded file"></label>${progressView()}`,
     async (body) => {
-      const query = new URLSearchParams({ category_id: body.category_id });
+      const query = new URLSearchParams({
+        category_id: body.category_id,
+        async: "1",
+      });
       if (body.copy_id) query.set("copy_id", body.copy_id);
       const path = copy
-        ? `/copies/${encodeURIComponent(copy.id)}/uploads/preview`
+        ? `/copies/${encodeURIComponent(copy.id)}/uploads/preview?async=1`
         : `/uploads/preview?${query}`;
-      const preview = await api.request(path, {
-        method: "POST",
-        body: body.workbook,
-        filename: body.workbook.name,
-      });
-      showUploadPreview(preview, body.category_id, copy);
+      const progress = transferProgress();
+      try {
+        const started = await api.upload(path, body.workbook, (sent, total) =>
+          progress.set(
+            Math.round((25 * sent) / total),
+            `Uploading ${Math.round((100 * sent) / total)}% · ${progress.seconds()} s`,
+          ),
+        );
+        const preview = started.job
+          ? await api.waitJob(started.job, (job) =>
+              progress.set(
+                uploadPercent(job),
+                jobText(job, progress.seconds()),
+              ),
+            )
+          : started;
+        showUploadPreview(preview, body.category_id, copy, body.copy_name);
+      } finally {
+        progress.stop();
+      }
       return false;
     },
     "Preview changes",
   );
+  const named = $("modal-body").querySelector('input[name="copy_name"]');
+  $("modal-body").querySelector('input[name="workbook"]').onchange = (
+    event,
+  ) => {
+    // The file's own name is the default, until the user types another
+    if (!named.dataset.edited)
+      named.value = fileTitle(event.target.files[0]?.name);
+  };
+  named.oninput = () => {
+    named.dataset.edited = named.value ? "1" : "";
+  };
 }
-function showUploadPreview(preview, currentCategory, copy) {
+// The progress bar in the open dialog: set(percent, text), seconds since start, stop()
+function transferProgress() {
+  const root = $("modal-body").querySelector(".transfer"),
+    started = Date.now();
+  root.hidden = false;
+  const set = (percent, text) => {
+    root.querySelector(".transfer-bar").style.width = `${percent}%`;
+    root
+      .querySelector(".transfer-track")
+      .setAttribute("aria-valuenow", String(percent));
+    root.querySelector(".transfer-text").textContent = text;
+  };
+  const seconds = () => Math.round((Date.now() - started) / 1000);
+  set(0, "Starting");
+  return { set, seconds, stop: () => {} };
+}
+function showUploadPreview(preview, currentCategory, copy, name) {
   $("modal-body").innerHTML = uploadPreviewView(
     preview,
     categories,
     currentCategory,
+    name,
   );
   $("modal-submit").textContent = "Apply upload";
   $("modal-form").onsubmit = async (event) => {
@@ -341,16 +390,30 @@ function createCopyModal() {
 function downloadModal(meta) {
   modal(
     "Download workbook",
-    downloadView(meta.sheets),
+    `${downloadView(meta.sheets)}${progressView()}`,
     async (body) => {
       const sheets = [
         ...document.querySelectorAll('input[name="sheets"]:checked'),
       ].map((input) => input.value);
-      await startDownload(api, {
-        copyId: activeCopy.id,
-        format: body.format,
-        sheets,
-      });
+      const progress = transferProgress();
+      // The server cannot measure an export, so the bar creeps toward 95% and jumps to full when ready
+      const tick = setInterval(() => {
+        const seconds = progress.seconds();
+        progress.set(
+          Math.round(95 * (1 - Math.exp(-seconds / 30))),
+          `Preparing the workbook · ${seconds} s`,
+        );
+      }, 500);
+      try {
+        await startDownload(api, {
+          copyId: activeCopy.id,
+          format: body.format,
+          sheets,
+        });
+        progress.set(100, "Ready. Your browser is saving the file.");
+      } finally {
+        clearInterval(tick);
+      }
     },
     "Download",
   );

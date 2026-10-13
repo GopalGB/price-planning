@@ -34,18 +34,94 @@ export class ApiClient {
     if (result.csrf) this.csrf = result.csrf;
     return result;
   }
+  // fetch cannot report upload progress; XMLHttpRequest can
+  upload(path, file, onProgress, Request = globalThis.XMLHttpRequest) {
+    return new Promise((resolve, reject) => {
+      const xhr = new Request();
+      xhr.open("POST", `/api${path}`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader(
+        "Content-Type",
+        file.type || "application/octet-stream",
+      );
+      xhr.setRequestHeader(
+        "X-Upload-Filename",
+        encodeURIComponent(file.name ?? "workbook.xlsx"),
+      );
+      xhr.setRequestHeader("X-CSRF-Token", this.csrf);
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) onProgress?.(event.loaded, event.total);
+      };
+      xhr.onload = () => {
+        let result = {};
+        try {
+          result = JSON.parse(xhr.responseText || "{}");
+        } catch {
+          result = {};
+        }
+        if (xhr.status >= 200 && xhr.status < 300) resolve(result);
+        else
+          reject(
+            Object.assign(
+              new Error(result.message ?? "Upload failed"),
+              result,
+              { status: xhr.status },
+            ),
+          );
+      };
+      xhr.onerror = () =>
+        reject(
+          new Error("Upload failed: the connection to the server dropped"),
+        );
+      xhr.send(file);
+    });
+  }
+  // A long transfer runs on the server as a job; poll it so no browser or proxy timeout can cut it off
+  async waitJob(
+    token,
+    onProgress,
+    {
+      interval = 1000,
+      sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    } = {},
+  ) {
+    let dropped = 0;
+    for (;;) {
+      let job;
+      try {
+        job = await this.request(`/jobs/${encodeURIComponent(token)}`);
+        dropped = 0;
+      } catch (error) {
+        // A dropped poll is retried; the job keeps running on the server
+        if (error.status !== undefined || ++dropped > 5) throw error;
+        await sleep(interval);
+        continue;
+      }
+      onProgress?.(job);
+      if (job.state === "done") return job.result;
+      if (job.state === "failed")
+        throw Object.assign(
+          new Error(job.error?.message ?? "The transfer failed"),
+          job.error ?? {},
+        );
+      await sleep(interval);
+    }
+  }
 }
 export async function startDownload(
   api,
-  { copyId, format, sheets },
+  { copyId, format, sheets, onProgress },
   documentRef = document,
 ) {
   if (!sheets.length) throw new Error("Select at least one sheet");
   const extension = format === "xlsm" ? "xlsm" : "xlsx";
-  const prepared = await api.request(
-    `/copies/${encodeURIComponent(copyId)}/downloads`,
+  const started = await api.request(
+    `/copies/${encodeURIComponent(copyId)}/downloads?async=1`,
     { method: "POST", body: { format: extension, sheets } },
   );
+  const prepared = started.job
+    ? await api.waitJob(started.job, onProgress)
+    : started;
   const link = documentRef.createElement("a");
   link.href = prepared.download_url;
   documentRef.body.append(link);

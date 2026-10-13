@@ -7,3 +7,8 @@
 .macro-button:disabled{opacity:1;color:#8a8a8a;background:#f4f4f4}
 .macro-button.macro-shape{display:flex;padding:0;white-space:normal;color:#000}.macro-button.macro-shape:hover{filter:brightness(1.06)}.macro-button.macro-shape:disabled{filter:grayscale(.4);opacity:.8}
 .sheet-tabs button.tab-color{border-bottom:3px solid var(--tab-color)}.sheet-tabs button.tab-color[aria-selected=true]{background:var(--tab-color);color:#fff}
+.transfer{margin-top:12px}
+.transfer-track{height:10px;border-radius:5px;background:#e5e7eb;overflow:hidden}
+.transfer-bar{height:100%;width:0;background:#217346;transition:width .3s ease}
+.transfer-text{margin:6px 0 0;font-size:13px;color:#374151}
+@media (prefers-reduced-motion:reduce){.transfer-bar{transition:none}}

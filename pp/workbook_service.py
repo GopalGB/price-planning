@@ -43,6 +43,7 @@ class TemplateSnapshot:
         self.name = self.meta["name"]
         self.sheets = self.meta["sheets"]
         self.source_path = self.path / "source.xlsm"
+        self._pivot_areas = {}
 
     @lru_cache(maxsize=64)
     def block(self, sheet: int, block: int) -> dict:
@@ -65,6 +66,15 @@ class TemplateSnapshot:
     def is_input(self, sheet: int, row: int, col: int) -> bool:
         return self.template_input(sheet, row, col) or self.open_cell(sheet, row, col)
 
+    def input_flags(self, sheet: int, row: int, col: int, record: dict) -> tuple[bool, bool]:
+        """(template input, editable) for a cell whose template record the caller already holds."""
+        if self._pivot_output(sheet, row, col):
+            return False, False
+        template = f"{sheet}:{row}:{col}" in self.input_mask or record["k"] == "i"
+        editable = template or (0 <= row < 1_048_576 and 0 <= col < 16_384 and record["k"] != "f"
+                                and not self.sheets[sheet].get("protected", False))
+        return template, editable
+
     def template_input(self, sheet: int, row: int, col: int) -> bool:
         if self._pivot_output(sheet, row, col):
             return False
@@ -80,18 +90,26 @@ class TemplateSnapshot:
     def _pivot_output(self, sheet: int, row: int, col: int) -> bool:
         if not 0 <= sheet < len(self.sheets):
             return False
-        outputs = [(pivot["location"], len(pivot.get("page_fields", [])))
-                   for pivot in self.sheets[sheet].get("pivots", [])]
-        outputs += [(pivot["location"], pivot["page_count"])  # Excel's own pivots (P6.4)
-                    for pivot in self.sheets[sheet].get("excel_pivots", [])]
-        for location, page_count in outputs:
-            first_row, first_col, last_row, last_col = location["bounds"]
-            if first_row <= row <= last_row and first_col <= col <= last_col:
-                return True
-            page_row = max(0, first_row - page_count - 1)
-            if page_row <= row < page_row + page_count and first_col <= col <= first_col + 1:
-                return True
-        return False
+        return any(first_row <= row <= last_row and first_col <= col <= last_col
+                   for first_row, first_col, last_row, last_col in self._pivot_rectangles(sheet))
+
+    def _pivot_rectangles(self, sheet: int) -> tuple:
+        """Pivot bodies and their page-field rows; built once per sheet because uploads ask per cell."""
+        areas = self._pivot_areas.get(sheet)
+        if areas is None:
+            outputs = [(pivot["location"], len(pivot.get("page_fields", [])))
+                       for pivot in self.sheets[sheet].get("pivots", [])]
+            outputs += [(pivot["location"], pivot["page_count"])  # Excel's own pivots (P6.4)
+                        for pivot in self.sheets[sheet].get("excel_pivots", [])]
+            areas = []
+            for location, page_count in outputs:
+                first_row, first_col, last_row, last_col = location["bounds"]
+                areas.append((first_row, first_col, last_row, last_col))
+                page_row = max(0, first_row - page_count - 1)
+                if page_count:
+                    areas.append((page_row, first_col, page_row + page_count - 1, first_col + 1))
+            areas = self._pivot_areas[sheet] = tuple(areas)
+        return areas
 
     def implicit_cells(self, sheet: int, row: int) -> dict:
         """Input cells of a row, including empty ones an unlocked row or column style makes editable."""
