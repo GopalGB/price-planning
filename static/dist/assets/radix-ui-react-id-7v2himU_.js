@@ -1,0 +1,1 @@
+import{r as o,R as u}from"./react-WtT1zNtY.js";import{u as s}from"./radix-ui-react-use-layout-effect-DKVukLYt.js";var f=Object.defineProperty,n=(r,e)=>f(r,"name",{value:e,configurable:!0}),c=u[" useId ".trim().toString()]||(()=>{}),d=0;function i(r){const[e,t]=o.useState(c());return s(()=>{r||t(a=>a??String(d++))},[r]),r||(e?`radix-${e}`:"")}n(i,"useId");export{i as u};

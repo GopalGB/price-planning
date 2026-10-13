@@ -1,0 +1,12 @@
+#!/bin/sh
+# Content guard always; Max HQ secret check when present on the development Mac.
+# First interpreter that really runs (the Windows Store "python3" stub exists but fails).
+PY=""
+for c in "python3" "python" "py -3"; do
+    if $c -c "import sys" >/dev/null 2>&1; then PY=$c; break; fi
+done
+[ -n "$PY" ] || { echo 'Content guard requires a working python3, python or py -3' >&2; exit 1; }
+$PY ops/content_guard.py --staged || exit 1
+MAXHQ_HOOK="$(git rev-parse --show-toplevel)/../security/tools/pre-commit-hook.sh"
+[ -f "$MAXHQ_HOOK" ] && exec bash "$MAXHQ_HOOK"
+exit 0

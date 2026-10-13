@@ -1,0 +1,49 @@
+{
+  "date": "2026-10-10",
+  "node_tests": {
+    "passed": 33,
+    "failed": 0,
+    "consecutive_greens": 2
+  },
+  "python_tests": {
+    "passed": 64,
+    "failed": 0,
+    "consecutive_greens": 2
+  },
+  "domain_line_coverage_percent": 97.12,
+  "npm_vulnerabilities": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "semgrep_findings": 0,
+  "semgrep_errors": 0,
+  "gitleaks_staged": "clean",
+  "identical_builds": 2,
+  "screenshots": {
+    "copies.png": {
+      "sha256": "9e1efb3cbbcd0556709e4198b585126470ed675a7c3cdc441ad0f06ca4626255",
+      "bytes": 75205
+    },
+    "tall-sheet.png": {
+      "sha256": "d812620df22f02cc159035f806c32d9ea4400efdd99f4318bb93e25d144fc849",
+      "bytes": 224090
+    },
+    "viewer.png": {
+      "sha256": "4f9a16406ee1e3c6d4e2f80f2fe755aa52e512672908e324b7e3a8c07bc37b75",
+      "bytes": 142365
+    },
+    "workspace-before.png": {
+      "sha256": "25a1d3aea8597d8b407e2ed133d9f2f17b4aa7faf88e75df9e480fb8404bb030",
+      "bytes": 135913
+    },
+    "workspace-history.png": {
+      "sha256": "a6d0f14b96836253c90bcd9a6cb85b23d0233e653dc951734867e526f69dc936",
+      "bytes": 178926
+    }
+  },
+  "screenshots_storage": "Local only: existing content guard refuses PNG binaries. Saved and visually inspected in this worktree, never bypassed the guard."
+}

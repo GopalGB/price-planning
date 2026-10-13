@@ -131,7 +131,12 @@ class Runtime(unittest.TestCase):
                     self.assertIn('HttpOnly', response.headers['Set-Cookie'])
             finally:
                 process.send_signal(signal.SIGINT)
-                output, errors = process.communicate(timeout=10)
+                try:
+                    output, errors = process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()  # a server that ignores Ctrl+C must not outlive the test
+                    process.communicate()
+                    raise
             self.assertEqual(process.returncode, 0, errors)
             self.assertIn('READY:', output)
             self.assertNotIn(password, output + errors)

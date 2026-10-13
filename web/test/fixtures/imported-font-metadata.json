@@ -1,0 +1,32 @@
+{
+  "styles": [
+    {
+      "font_name": "Arial",
+      "font_size": 14.0,
+      "bold": true,
+      "italic": true,
+      "nf": "General"
+    },
+    {
+      "font_name": "Aptos Display",
+      "font_size": 11.0,
+      "bold": false,
+      "italic": false,
+      "nf": "General"
+    },
+    {
+      "font_name": "Bad\", serif",
+      "font_size": 11.0,
+      "bold": false,
+      "italic": false,
+      "nf": "General"
+    },
+    {
+      "font_name": "Bad\nName",
+      "font_size": 11.0,
+      "bold": false,
+      "italic": false,
+      "nf": "General"
+    }
+  ]
+}
