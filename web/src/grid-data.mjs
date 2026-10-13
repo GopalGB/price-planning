@@ -7,6 +7,35 @@ import {
   editableInput,
 } from "./model.mjs";
 export const GRID_DEFAULT_COLUMN_WIDTH = 64;
+export const GRID_DEFAULT_ROW_HEIGHT = 28;
+function viewOffset(sheet, key, sizes, hidden, defaultSize) {
+  const stop = sheet?.scroll?.[key] ?? 0;
+  let total = 0;
+  for (let index = 0; index < stop; index++) {
+    if ((hidden ?? []).includes(index)) continue;
+    total += sizes?.[index] ?? defaultSize;
+  }
+  return total;
+}
+export function sheetViewState(sheet) {
+  return {
+    zoom: sheet?.zoom ?? 1,
+    scrollX: viewOffset(
+      sheet,
+      "col",
+      sheet?.col_widths,
+      sheet?.hidden_cols,
+      GRID_DEFAULT_COLUMN_WIDTH,
+    ),
+    scrollY: viewOffset(
+      sheet,
+      "row",
+      sheet?.row_heights,
+      sheet?.hidden_rows,
+      sheet?.default_row_height ?? GRID_DEFAULT_ROW_HEIGHT,
+    ),
+  };
+}
 export function inputFill(cell, style, enabled = true) {
   return enabled && editableInput(cell) && !style?.fill
     ? "#EAF2FB"
@@ -54,27 +83,50 @@ export function commandUndo(id, editing) {
 }
 export function renderCell(cell, style, options = {}) {
   const { inputHighlight = true, width, measureText } = options;
+  const effectiveStyle = cell.style_override
+    ? {
+        ...(style ?? {}),
+        ...cell.style_override,
+        ...((style?.border || cell.style_override.border) && {
+          border: {
+            ...(style?.border ?? {}),
+            ...(cell.style_override.border ?? {}),
+          },
+        }),
+      }
+    : style;
   // The server's formula text is deliberately absent from Univer's model.
   const rendered = {
     v: typeof cell.v === "object" && cell.v !== null ? cell.v.error : cell.v,
-    s: String(cell.s),
+    s: cell.style_override ? styleData(effectiveStyle ?? {}) : String(cell.s),
     t: typeof cell.v === "number" ? 2 : typeof cell.v === "boolean" ? 3 : 1,
   };
-  if (typeof cell.v === "number" && (style?.nf ?? "General") === "General")
+  if (
+    typeof cell.v === "number" &&
+    (effectiveStyle?.nf ?? "General") === "General"
+  )
     rendered.s = {
-      ...styleData(style ?? {}),
+      ...styleData(effectiveStyle ?? {}),
       pd: {
         t: 0,
         b: 2,
         l: GRID_NUMBER_HORIZONTAL_PADDING,
         r: GRID_NUMBER_HORIZONTAL_PADDING,
       },
-      n: { pattern: generalPattern(cell.v, { width, style, measureText }) },
+      n: {
+        pattern: generalPattern(cell.v, {
+          width,
+          style: effectiveStyle,
+          measureText,
+        }),
+      },
     };
-  if (inputHighlight && editableInput(cell) && !style?.fill)
+  if (inputHighlight && editableInput(cell) && !effectiveStyle?.fill)
     rendered.s = {
-      ...(typeof rendered.s === "object" ? rendered.s : styleData(style ?? {})),
-      bg: { rgb: inputFill(cell, style, inputHighlight) },
+      ...(typeof rendered.s === "object"
+        ? rendered.s
+        : styleData(effectiveStyle ?? {})),
+      bg: { rgb: inputFill(cell, effectiveStyle, inputHighlight) },
     };
   return rendered;
 }
@@ -160,6 +212,7 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
     columnData[c] = { w };
   for (const c of sheet.hidden_cols ?? [])
     columnData[c] = { ...columnData[c], hd: 1 };
+  const view = sheetViewState(sheet);
   return {
     id: "planning",
     name: meta.template.name,
@@ -175,11 +228,18 @@ export function makeSnapshot(meta, sheetIndex, options = {}) {
         name: sheet.name,
         rowCount: sheet.rows,
         columnCount: sheet.cols,
-        defaultRowHeight: sheet.default_row_height ?? 28,
+        defaultRowHeight: sheet.default_row_height ?? GRID_DEFAULT_ROW_HEIGHT,
         defaultColumnWidth: GRID_DEFAULT_COLUMN_WIDTH,
         cellData,
         rowData,
         columnData,
+        tabColor: sheet.tab_color,
+        showGridlines: sheet.show_gridlines === false ? 0 : 1,
+        zoomRatio: view.zoom,
+        scrollLeft: view.scrollX,
+        scrollTop: view.scrollY,
+        // Univer stores the frozen split, not the template scroll cell; the scroll
+        // position travels separately in scrollLeft/scrollTop.
         freeze: {
           xSplit: sheet.freeze?.cols ?? 0,
           ySplit: sheet.freeze?.rows ?? 0,

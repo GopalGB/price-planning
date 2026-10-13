@@ -17,6 +17,8 @@ import {
   gridFontFamily,
 } from "./model.mjs";
 import { EditController } from "./client.mjs";
+import { NoteLayer } from "./notes.mjs";
+import { LocalTableFilters, TableFilterLayer } from "./tables.mjs";
 import {
   macroButtonsView,
   macroMessagesView,
@@ -39,6 +41,7 @@ import {
   commandSelection,
   advanceDetail,
   commandUndo,
+  sheetViewState,
 } from "./grid-data.mjs";
 import {
   DashboardController,
@@ -52,6 +55,11 @@ import {
   editorDisplay,
 } from "./views.mjs";
 const $ = (id) => document.getElementById(id);
+function initialSheet(meta) {
+  const visible = meta.sheets.filter((s) => !s.hidden);
+  const active = visible.find((s) => s.active);
+  return (active ?? visible[0] ?? meta.sheets[0]).index;
+}
 const DETAIL_REFRESH_LIMIT = 8;
 const COPY_SNAPSHOT_ATTEMPTS = 3;
 export class PlanningGrid {
@@ -76,7 +84,7 @@ export class PlanningGrid {
     this.styleMap = new Map(
       (meta.styles ?? []).map((style) => [String(style.id), style]),
     );
-    this.sheet = meta.sheets.find((s) => !s.hidden).index;
+    this.sheet = initialSheet(meta);
     this.store = new CellStore();
     this.cache = new RowCache(3);
     this.store.inputRevision = meta.input_revision;
@@ -98,6 +106,9 @@ export class PlanningGrid {
     this.goToToken = 0;
     this.loadTokens = new Map();
     this.measureText = createTextMeasurer();
+    this.drawingScroll = { x: 0, y: 0 };
+    this.drawingZoom = 1;
+    this.tableFilters = new LocalTableFilters();
     this.controller = new EditController({
       store: this.store,
       api,
@@ -145,6 +156,14 @@ export class PlanningGrid {
     });
     this.univer = univer;
     this.u = univerAPI;
+    this.noteLayer = new NoteLayer({ container: $("grid") });
+    this.tableFilterLayer = new TableFilterLayer({
+      container: $("grid"),
+      labelAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
+      valuesFor: (control) => this.loadedFilterValues(control),
+      onChange: (control, predicate) =>
+        this.changeTableFilter(control, predicate),
+    });
     this.bindEvents();
     await this.switchSheet(this.sheet);
     if (this.closed) return;
@@ -245,9 +264,24 @@ export class PlanningGrid {
       }
     });
     this.on("Scroll", (event) => {
+      if (!this.currentSheetEvent(event)) return;
+      this.drawingScroll = {
+        x: event.viewportScrollX ?? event.scrollX,
+        y: event.viewportScrollY ?? event.scrollY,
+      };
       this.scheduleVisible();
       this.dashboard?.setScroll(event);
       this.dashboard?.position();
+      this.renderDrawings();
+    });
+    this.on("SheetZoomChanged", (event) => {
+      if (!this.currentSheetEvent(event)) return;
+      this.drawingZoom = event.zoom;
+      this.syncZoomControl(event.zoom);
+      this.renderDrawings();
+    });
+    this.on("SheetSkeletonChanged", (event) => {
+      if (this.currentSheetEvent(event)) this.renderDrawings();
     });
     this.on("CellHover", (event) => {
       const cell = this.store.get(this.sheet, event.row, event.column);
@@ -482,6 +516,12 @@ export class PlanningGrid {
       this.internal--;
     }
   }
+  currentSheetEvent(event) {
+    if (event.worksheet) return event.worksheet === this.worksheet;
+    if (event.subUnitId !== undefined)
+      return event.subUnitId === `s${this.sheet}`;
+    return true;
+  }
   viewMatches(context) {
     return (
       !this.closed &&
@@ -502,6 +542,14 @@ export class PlanningGrid {
       this.internal--;
     }
   }
+  localViewMutation(action) {
+    this.internal++;
+    try {
+      action();
+    } finally {
+      this.internal--;
+    }
+  }
   async switchSheet(index) {
     if (this.controller.busy || this.preparing) {
       this.toast("Wait for your edit to finish");
@@ -513,15 +561,19 @@ export class PlanningGrid {
       )
     )
       return;
+    this.clearTableFilters();
+    this.tableFilterLayer?.clear();
     const generation = ++this.generation;
     this.dashboard?.dispose();
     this.sheet = index;
+    this.noteLayer?.clear();
     this.detailKey = "";
     this.cache = new RowCache(3);
     this.loadTokens = new Map();
     this.store.cells.clear();
     this.store.resetBlocks();
     this.rendered.clear();
+    this.applySheetView(index);
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     if (this.u.getActiveWorkbook()) this.u.disposeUnit("planning");
     this.internal++;
@@ -537,27 +589,52 @@ export class PlanningGrid {
     }
     this.worksheet = this.u.getActiveWorkbook().getSheetBySheetId(`s${index}`);
     // Each switch builds a new workbook, so the sheet's zoom is restored here, per sheet like Excel
-    const zoom = this.zooms?.get(index) ?? 1;
-    if (zoom !== 1) this.worksheet.zoom(zoom);
-    $("zoom").value = `${Math.round(zoom * 100)}%`;
+    const zoom = this.zooms?.get(index);
+    if (zoom !== undefined && zoom !== this.drawingZoom) {
+      this.worksheet.zoom(zoom);
+      this.drawingZoom = zoom;
+    }
+    this.syncZoomControl(this.drawingZoom);
     const context = { sheet: index, worksheet: this.worksheet, generation };
     this.tabs();
     await this.loadBlock(0, true);
     if (!this.viewMatches(context)) return false;
     this.paint();
     this.renderMacros();
+    this.renderTableFilters();
     context.worksheet.getRange(1, 1).activate();
     this.selectionInfo();
     await this.dashboard?.open(this.currentSheet());
     if (!this.viewMatches(context)) return false;
     return true;
   }
+  applySheetView(index) {
+    const view = sheetViewState(
+      this.meta.sheets.find((s) => s.index === index),
+    );
+    this.drawingScroll = { x: view.scrollX, y: view.scrollY };
+    this.drawingZoom = view.zoom;
+    this.syncZoomControl(view.zoom);
+  }
+  syncZoomControl(zoom) {
+    const select = $("zoom");
+    if (!select) return;
+    const label = `${Math.round((zoom ?? 1) * 100)}%`;
+    if (select.options && ![...select.options].some((o) => o.value === label)) {
+      const option = document.createElement("option");
+      option.value = option.textContent = label;
+      select.add(option);
+    }
+    select.value = label;
+  }
   tabs() {
     $("sheet-tabs").innerHTML = this.meta.sheets
       .filter((s) => !s.hidden || this.showHidden)
       .map(
         (s) =>
-          `<button data-sheet="${s.index}" role="tab" aria-selected="${s.index === this.sheet}">${e(s.name)}${s.hidden ? " (hidden)" : ""}</button>`,
+          `<button data-sheet="${s.index}" role="tab" aria-selected="${s.index === this.sheet}"` +
+          `${s.tab_color ? ` class="tab-color" style="--tab-color:${s.tab_color}"` : ""}>` +
+          `${e(s.name)}${s.hidden ? ` (${s.hidden})` : ""}</button>`,
       )
       .join("");
     $("sheet-tabs").onclick = (event) => {
@@ -626,7 +703,17 @@ export class PlanningGrid {
     if (data.calculated_revision < this.store.calculatedRevision) return;
     cache.put(sheet, start, data);
     this.store.registerBlock(sheet, start, data.calculated_revision);
+    this.store.resetBlockStyles(sheet, start, data);
     for (const evicted of cache.lastEvicted) {
+      if (evicted.sheet === this.sheet)
+        this.localViewMutation(() =>
+          this.tableFilters?.release({
+            worksheet: this.worksheet,
+            start: evicted.start,
+            end: Math.min(evicted.start + BLOCK_ROWS, shape.rows),
+            manualHidden: this.manualHiddenRows(),
+          }),
+        );
       const cleared = {};
       for (
         let r = evicted.start;
@@ -656,8 +743,22 @@ export class PlanningGrid {
       this.store.calculatedRevision,
       data.calculated_revision,
     );
+    this.refreshTableFilters(
+      Array.from(
+        { length: Math.min(BLOCK_ROWS, shape.rows - start) },
+        (_, offset) => start + offset,
+      ),
+    );
+    this.warnConditionalFormatting(data.conditional_format_warnings);
     this.paint();
     return true;
+  }
+  warnConditionalFormatting(warnings) {
+    if (!warnings?.length) return;
+    this.cfWarningSheets ??= new Set();
+    if (this.cfWarningSheets.has(this.sheet)) return;
+    this.cfWarningSheets.add(this.sheet);
+    this.toast("Some conditional formatting could not be applied.");
   }
   scheduleVisible() {
     clearTimeout(this.scrollTimer);
@@ -677,6 +778,90 @@ export class PlanningGrid {
         })
         .catch((error) => this.toast(error.message));
     }, 40);
+  }
+  drawingView() {
+    return {
+      worksheet: this.worksheet,
+      scrollX: this.drawingScroll.x,
+      scrollY: this.drawingScroll.y,
+      zoom: this.drawingZoom,
+    };
+  }
+  renderDrawings() {
+    if (!this.worksheet?.getSkeleton()) return;
+    const view = this.drawingView();
+    this.noteLayer?.refresh(view);
+    this.tableFilterLayer?.refresh(view);
+  }
+  renderNotes() {
+    if (!this.noteLayer || !this.worksheet?.getSkeleton()) return;
+    const notes = [];
+    for (const [key, cell] of this.store.cells) {
+      const [sheet, r, c] = key.split(":").map(Number);
+      if (sheet === this.sheet && cell.note)
+        notes.push({ sheet, r, c, ...cell.note });
+    }
+    this.noteLayer.show(notes, this.drawingView());
+  }
+  renderTableFilters() {
+    if (!this.tableFilterLayer || !this.worksheet?.getSkeleton()) return;
+    this.tableFilterLayer.show(
+      this.currentSheet().filters ?? [],
+      this.drawingView(),
+    );
+  }
+  manualHiddenRows() {
+    return new Set(this.currentSheet()?.hidden_rows ?? []);
+  }
+  loadedFilterRows() {
+    const rows = [];
+    for (const key of this.cache?.blocks?.keys?.() ?? []) {
+      const [sheet, start] = key.split(":").map(Number);
+      if (sheet !== this.sheet) continue;
+      const end = Math.min(start + BLOCK_ROWS, this.currentSheet().rows);
+      for (let row = start; row < end; row++) rows.push(row);
+    }
+    return rows;
+  }
+  loadedFilterValues(control) {
+    const values = [],
+      seen = new Set();
+    for (const row of this.loadedFilterRows()) {
+      if (values.length >= 50) break;
+      if (!control.ranges.some((range) => row > range[0] && row <= range[2]))
+        continue;
+      const value = this.store.get(this.sheet, row, control.column)?.v,
+        key = `${typeof value}:${String(value).toLocaleLowerCase()}`;
+      if (row <= control.row || seen.has(key)) continue;
+      seen.add(key);
+      values.push(value);
+    }
+    return values;
+  }
+  refreshTableFilters(rows = this.loadedFilterRows()) {
+    if (!this.worksheet || !this.tableFilters) return;
+    this.localViewMutation(() =>
+      this.tableFilters.apply({
+        worksheet: this.worksheet,
+        rows,
+        valueAt: (row, column) => this.store.get(this.sheet, row, column)?.v,
+        manualHidden: this.manualHiddenRows(),
+      }),
+    );
+  }
+  changeTableFilter(control, predicate) {
+    if (predicate) this.tableFilters.set(control, predicate);
+    else this.tableFilters.delete(control);
+    this.refreshTableFilters();
+  }
+  clearTableFilters() {
+    if (!this.worksheet || !this.tableFilters) return;
+    this.localViewMutation(() =>
+      this.tableFilters.clear({
+        worksheet: this.worksheet,
+        manualHidden: this.manualHiddenRows(),
+      }),
+    );
   }
   paint(coordinates) {
     if (!this.worksheet || this.closed) return;
@@ -717,6 +902,16 @@ export class PlanningGrid {
     $("save-chip").classList.toggle("busy", busy);
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
     this.dashboard?.repaint();
+    if (coordinates?.length)
+      this.refreshTableFilters([
+        ...new Set(
+          coordinates.filter((c) => c.sheet === this.sheet).map((c) => c.r),
+        ),
+      ]);
+    if (!coordinates) {
+      this.renderNotes();
+      this.renderTableFilters();
+    }
     this.selectionInfo();
   }
   refreshInputHighlight(enabled) {
@@ -1024,8 +1219,11 @@ export class PlanningGrid {
   keyDown(event) {
     if (this.closed || $("modal").open) return;
     const input = event.target.closest(
-      "input,textarea,select,[contenteditable=true]",
-    );
+        "input,textarea,select,[contenteditable=true]",
+      ),
+      overlayControl = event.target.closest(
+        ".macro-layer button,.macro-layer input,.macro-layer select,.macro-layer textarea,.note-layer button,.note-layer input,.note-layer select,.note-layer textarea,.table-filter-layer button,.table-filter-layer input,.table-filter-layer select,.table-filter-layer textarea",
+      );
     const mod = event.ctrlKey || event.metaKey,
       key = event.key.toLowerCase(),
       undo = serverUndoShortcut(
@@ -1039,6 +1237,7 @@ export class PlanningGrid {
         !!input,
         !!event.target.closest("#grid"),
       );
+    if (overlayControl) return;
     if (undo) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -1311,8 +1510,52 @@ export class PlanningGrid {
         this.store.inputRevision,
         this.store.calculatedRevision,
       );
+    if (message.type === "calc") await this.refreshCalculatedBlocks();
     if (message.type === "op" && message.at == null)
       await this.refreshOpDetails(message);
+  }
+  async refreshCalculatedBlocks() {
+    if (!this.cache?.blocks) return;
+    const requiresRows =
+      this.currentSheet()?.has_conditional_formats ||
+      this.tableFilters?.active?.size;
+    if (!requiresRows) return;
+    if (this.cfRefreshPromise) {
+      this.cfRefreshDirty = true;
+      return this.cfRefreshPromise;
+    }
+    const pending = this.runCalculatedRefreshes();
+    this.cfRefreshPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.cfRefreshPromise === pending) this.cfRefreshPromise = null;
+    }
+  }
+  async runCalculatedRefreshes() {
+    do {
+      this.cfRefreshDirty = false;
+      if (!(await this.refreshCalculatedBlocksOnce())) return;
+    } while (this.cfRefreshDirty);
+  }
+  async refreshCalculatedBlocksOnce() {
+    const context = {
+      sheet: this.sheet,
+      worksheet: this.worksheet,
+      generation: this.generation,
+      cache: this.cache,
+    };
+    const starts = [...context.cache.blocks.keys()]
+      .map((key) => key.split(":").map(Number))
+      .filter(([sheet]) => sheet === context.sheet)
+      .map(([, start]) => start)
+      .sort((a, b) => a - b);
+    for (const start of starts) {
+      if (!this.viewMatches(context) || this.cache !== context.cache)
+        return false;
+      await this.loadBlock(start, true);
+    }
+    return true;
   }
   async refreshOpDetails(message) {
     const context = {
@@ -1548,6 +1791,7 @@ export class PlanningGrid {
     this.worksheet?.zoom(zoom);
   }
   dispose() {
+    this.clearTableFilters();
     this.closed = true;
     clearTimeout(this.scrollTimer);
     clearTimeout(this.reconnectTimer);
@@ -1555,6 +1799,8 @@ export class PlanningGrid {
     this.dashboard?.dispose();
     document.removeEventListener("keydown", this.keyHandler, true);
     for (const d of [...this.disposables, ...this.highlights]) d.dispose();
+    this.noteLayer?.dispose();
+    this.tableFilterLayer?.dispose();
     this.univer?.dispose();
     if (import.meta.env.DEV) delete window.planning;
   }

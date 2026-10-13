@@ -10,6 +10,10 @@ from pathlib import Path
 
 from .authorization import effective_role
 from .errors import AppError
+from .fidelity.conditional_formatting import (
+    CurrentCopyValues, conditional_style_overrides,
+)
+from .fidelity.tables import merge_style_overrides, table_style_overrides
 from .pivot_state import read_state
 from .template.importer import IMPORT_VERSION
 
@@ -42,6 +46,11 @@ class TemplateSnapshot:
     @lru_cache(maxsize=64)
     def block(self, sheet: int, block: int) -> dict:
         path = self.path / "sheets" / str(sheet) / f"{block}.json"
+        return _read_json(path) if path.exists() else {}
+
+    @lru_cache(maxsize=64)
+    def note_block(self, sheet: int, block: int) -> dict:
+        path = self.path / "notes" / str(sheet) / f"{block}.json"
         return _read_json(path) if path.exists() else {}
 
     def cell(self, sheet: int, row: int, col: int) -> dict:
@@ -252,7 +261,17 @@ class WorkbookService:
                    "row_heights": {key: round(value * 96 / 72) for key, value in item["row_heights"].items()},
                    "hidden_rows": item["hidden_rows"], "hidden_cols": item["hidden_cols"],
                    "merges": item["merges"], "pivots": deepcopy(item.get("pivots", [])),
-                   "slicers": _slicers_with_state(item.get("slicers", []), pivot_state)} for item in snapshot.sheets]
+                   "slicers": _slicers_with_state(item.get("slicers", []), pivot_state),
+                   **({"tab_color": item["tab_color"]} if item.get("tab_color") else {}),
+                   "show_gridlines": item.get("show_gridlines", True),
+                   "zoom": item.get("zoom", 1.0),
+                   "scroll": item.get("scroll") or {"row": 0, "col": 0},
+                   "active": bool(item.get("active")),
+                   "has_conditional_formats": item.get("has_conditional_formats", False),
+                   **({"tables": _client_tables(item.get("tables", [])),
+                       "filters": item.get("filters", [])}
+                      if item.get("tables") or item.get("filters") else {})}
+                  for item in snapshot.sheets]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
@@ -266,19 +285,33 @@ class WorkbookService:
                     or not 1 <= query.count <= 500):
                 raise AppError(422, "invalid", "Sheet row range is invalid")
             render = RowRender(snapshot, query, _overrides(connection, query), _results(connection, query))
-            rows = self._row_data(connection, render)
+            conditional = conditional_style_overrides(
+                snapshot, CurrentCopyValues(connection, snapshot, query.copy_id), query,
+            )
+            table_styles = table_style_overrides(snapshot.sheets[query.sheet], query)
+            styles = merge_style_overrides(table_styles, conditional.styles)
+            rows = self._row_data(connection, render, styles)
         return {"calculated_revision": _calculated_revision(snapshot, copy), "input_revision": copy["input_revision"],
-                "start": query.start, "rows": rows}
+                "start": query.start, "rows": rows,
+                "conditional_format_warnings": conditional.warnings}
 
-    def _row_data(self, connection, render):
+    def _row_data(self, connection, render, style_overrides=None):
         output = {}
+        style_overrides = style_overrides or {}
         query = render.query
+        override_rows = _group_rows(render.overrides)
+        result_rows = _group_rows(render.results)
+        style_rows = _group_rows(style_overrides)
+        note_rows = _requested_notes(render.snapshot, query)
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
             cells = {**implicit, **stored}
-            coordinates = (set(cells) | {str(col) for r, col in render.overrides if r == row}
-                           | {str(col) for r, col in render.results if r == row})
+            styles = style_rows.get(row, {})
+            notes = note_rows.get(row, {})
+            coordinates = (set(cells) | {str(col) for col in override_rows.get(row, {})}
+                           | {str(col) for col in result_rows.get(row, {})}
+                           | {str(col) for col in styles | notes})
             rendered = {}
             for col_text in sorted(coordinates, key=int):
                 col = int(col_text)
@@ -293,6 +326,10 @@ class WorkbookService:
                 record.update(_cell_fields(render.snapshot, coordinate, input_record, published))
                 if not override and not published and record["k"] == "i":
                     record["ver"] = 0
+                if col in styles:
+                    record["style_override"] = styles[col]
+                if col in notes:
+                    record["note"] = notes[col]
                 rendered[col_text] = record
             if rendered:
                 output[str(row)] = rendered
@@ -448,6 +485,29 @@ def _overrides(connection, query):
         (query.copy_id, query.sheet, query.start, query.start + query.count),
     ).fetchall()
     return {(item["row"], item["col"]): item for item in rows}
+
+
+def _group_rows(records):
+    grouped = {}
+    for (row, col), value in records.items():
+        grouped.setdefault(row, {})[col] = value
+    return grouped
+
+
+def _client_tables(tables):
+    return [{key: value for key, value in table.items() if key != "style"}
+            for table in tables]
+
+
+def _requested_notes(snapshot, query):
+    grouped = {}
+    end = query.start + query.count
+    for block in range(query.start // 256, (end - 1) // 256 + 1):
+        for offset, columns in snapshot.note_block(query.sheet, block).items():
+            row = block * 256 + int(offset)
+            if query.start <= row < end:
+                grouped[row] = {int(col): note for col, note in columns.items()}
+    return grouped
 
 
 def _results(connection, query):

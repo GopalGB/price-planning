@@ -1,0 +1,49 @@
+.table-filter-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.table-filter-button {
+  position: absolute;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #777;
+  border-radius: 2px;
+  background: #fff;
+  color: #222;
+  line-height: 1;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.table-filter-button:focus-visible {
+  outline: 2px solid #005fcc;
+  outline-offset: 1px;
+}
+
+.table-filter-menu {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 172px;
+  box-sizing: border-box;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #777;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f1f1f;
+  box-shadow: 0 4px 14px #0003;
+  font-size: 12px;
+  pointer-events: auto;
+}
+
+.table-filter-menu > div {
+  display: grid;
+  gap: 4px;
+}

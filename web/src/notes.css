@@ -1,0 +1,64 @@
+.note-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 21;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.note-anchor {
+  position: absolute;
+  pointer-events: auto;
+}
+
+.note-marker {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: linear-gradient(225deg, #d60000 50%, transparent 51%);
+  pointer-events: auto;
+  cursor: help;
+}
+
+.note-popup {
+  position: absolute;
+  z-index: 1;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  visibility: hidden;
+  opacity: 0;
+  overflow: auto;
+  max-width: 280px;
+  padding: 8px 10px;
+  border: 1px solid #a40000;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f1f1f;
+  box-shadow: 0 4px 14px #0003;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
+
+.note-anchor:hover .note-popup,
+.note-anchor:focus-within .note-popup {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.note-author {
+  font-weight: 600;
+}
+
+.note-marker:focus-visible {
+  outline: 2px solid #005fcc;
+  outline-offset: 1px;
+}
