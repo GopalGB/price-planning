@@ -16,8 +16,12 @@ feat/v2-integration at 2392afe. CI green through 8c8124a; later pushes not yet c
   again after a zoom change. Checked in Ego Lite on the synthetic fixture at 75/100/125/150%; the
   fixture is too small to scroll, so frozen plus scrolled placement is covered by unit tests only.
 - Tests: 822 Python OK, 198 web OK, content guard 0, ruff F clean, bandit -ll exit 0, prettier clean.
-- Open: an adversarial review of the upload safety changes was started (Sonnet); its result is not
-  recorded here yet. Sir pulls on the office server (port 8211) and retries upload.
+- Adversarial review (Sonnet) of the upload safety changes found one real hole: a UTF-16LE part with
+  no BOM passed LinkScan as UTF-8, so a dangling r:id was accepted on the in-process path (a
+  regression from 2392afe; 4543416 rejected it). Fixed: any NUL byte forces the full parse; tests
+  for both encodings, mutation-checked. Everything else it tried held (chunk boundaries, declared
+  encodings, duplicate entries, deferred-but-unread parts, fallback path, export skip).
+- Next: Sir pulls on the office server (port 8211) and retries upload.
 - 18:24: lan-real (8765) had stopped (graceful shutdown, cause unknown); restarted 19:12.
 
 ## 2026-10-13 (OpenCode runner, perf/tab-cache)
