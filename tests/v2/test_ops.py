@@ -186,7 +186,7 @@ class OperationContractTests(unittest.TestCase):
         rules = [
             {"type": "list", "formula1": "'Lookup'!$A$1:$A$3"},
             {"type": "custom", "formula1": "=B2>0"},
-            {"type": "decimal", "operator": "between", "min": "=Lookup!A1", "max": 5},
+            {"type": "decimal", "operator": "between", "min": "=Lookup!A1", "max": 50},
         ]
         for index, rule in enumerate(rules):
             with self.subTest(rule=rule["type"]):
@@ -197,6 +197,16 @@ class OperationContractTests(unittest.TestCase):
                 result = self.service.apply("copy-a", "editor", operation(f"unevaluated-{index}", 10 + index, index))
                 self.assertEqual(result["accepted"], 1)
                 self.assertEqual(self.fixture.override()["value"], 10 + index)
+
+    def test_the_static_bound_of_a_half_formula_rule_still_holds(self):
+        self.fixture.snapshot.sheets[0]["validations"] = [{
+            "type": "decimal", "operator": "between", "min": "=Lookup!A1", "max": 5,
+            "ranges": [[1, 1, 1, 1]], "showErrorMessage": True, "errorStyle": "stop",
+        }]
+        with self.assertRaises(AppError) as caught:
+            self.service.apply("copy-a", "editor", operation("above-max", 6))
+        self.assertIn("outside the validation bounds", caught.exception.message)
+        self.assertEqual(self.service.apply("copy-a", "editor", operation("below-max", 4))["accepted"], 1)
 
     def test_whole_validation_accepts_integral_float(self):
         """A mathematically integral finite float is a valid whole number."""

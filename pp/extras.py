@@ -48,12 +48,12 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
     try:
         imported = import_template(upload_path, target, "cached")
         _prune(imported, plan)
-        graft_extras(template.source_path, upload_path, GraftPlan(plan.sheets, dict(plan.columns)),
-                     target / GRAFTED)
+        counts = graft_extras(template.source_path, upload_path, GraftPlan(plan.sheets, dict(plan.columns)),
+                              target / GRAFTED)
         (target / EXTRAS_FILE).write_text(json.dumps({
             "snapshot": str(imported.relative_to(target)), "template": template.hash,
             "sheets": list(plan.sheets), "columns": plan.columns, "order": list(plan.order),
-            "template_sheets": len(template.sheets),
+            "template_sheets": len(template.sheets), "counts": counts,
             "column_indexes": {str(_sheet_index(template, name)): first for name, first in plan.columns.items()},
         }), encoding="utf-8")
         return target
@@ -87,11 +87,12 @@ def _sheet_index(template, name):
     return next(item["index"] for item in template.sheets if item["name"].casefold() == name.casefold())
 
 
-def attach(connection, copy_id, built: Path | None, data_dir) -> Path | None:
-    """Make ``built`` the copy's extras (None removes them); returns the replaced directory to delete
-    after the transaction commits. Values the copy held inside old or new extras give way to the file's."""
+def attach(connection, copy_id, built: Path | None, data_dir):
+    """Make ``built`` the copy's extras (None removes them). Returns (the replaced folder to delete after the
+    commit, the folder ``built`` moved to). Values the copy held inside old or new extras give way to the file's."""
     old = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
     regions = [_regions(Path(old["path"]))] if old else []
+    final = None
     if built is not None:
         final = Path(data_dir) / "extras" / copy_id / built.name
         final.parent.mkdir(parents=True, exist_ok=True)
@@ -112,10 +113,24 @@ def attach(connection, copy_id, built: Path | None, data_dir) -> Path | None:
                 connection.execute(f"DELETE FROM {table} WHERE copy_id=? AND sheet=? AND col>=?",  # nosec B608
                                    (copy_id, sheet, first))
     if old is None:
-        return None
+        return None, final
     shared = connection.execute("SELECT 1 FROM pp_copy_extras WHERE path=? AND copy_id<>?",
                                 (old["path"], copy_id)).fetchone()
-    return None if shared else Path(old["path"])  # a fork still reads the folder: keep it
+    return (None if shared else Path(old["path"])), final  # a fork still reads the folder: keep it
+
+
+def edited_since(connection, copy_id, revision) -> bool:
+    """Whether the copy's own tabs or columns were edited in the app after ``revision`` (None: ever)."""
+    row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
+    if row is None:
+        return False
+    first_sheet, columns = _regions(Path(row["path"]))
+    clause = "sheet>=?" + " OR (sheet=? AND col>=?)" * len(columns)
+    values = [first_sheet] + [value for item in columns.items() for value in item]
+    return connection.execute(
+        f"SELECT 1 FROM pp_history WHERE copy_id=? AND revision>? AND ({clause}) LIMIT 1",  # nosec B608
+        (copy_id, -1 if revision is None else revision, *values),
+    ).fetchone() is not None
 
 
 def current_plan(connection, copy_id) -> dict | None:
@@ -164,9 +179,10 @@ class CopySnapshot(TemplateSnapshot):
         first, source = extra
         upload = self.extras.sheets[source]
         widths = {key: value for key, value in upload["col_widths"].items() if int(key) >= first}
+        merges = [merge for merge in upload.get("merges", []) if len(merge) == 4 and merge[1] >= first]
         return {**item, "cols": max(item["cols"], upload["cols"]),
                 "rows": max(item["rows"], upload["rows"]),
-                "col_widths": {**item["col_widths"], **widths}}
+                "col_widths": {**item["col_widths"], **widths}, "merges": item["merges"] + merges}
 
     def _extra_sheet(self, item, index):
         meta = {key: value for key, value in item.items() if key not in _DROPPED_SHEET_KEYS}
@@ -239,7 +255,7 @@ class CopySnapshot(TemplateSnapshot):
         extra = self.extra_columns.get(sheet)
         if extra is not None and row < self.sheets[sheet]["rows"]:
             stored = self.block(sheet, row // 256).get(str(row % 256), {})
-            for col in range(extra[0], self.sheets[sheet]["cols"]):
+            for col in range(extra[0], min(self.sheets[sheet]["cols"], self.extras._used_cols(extra[1]))):
                 if str(col) not in stored and str(col) not in cells:
                     cells[str(col)] = {"v": None, "s": self._default_style(sheet, row, col), "k": "c"}
         return cells
@@ -293,10 +309,25 @@ class ExtrasCache:
         return snapshot
 
 
+_REIMPORT = threading.Lock()  # forks share a folder: one rebuild at a time
+
+
 def _reimport(directory: Path) -> Path:
     """After an app update changes the import format, rebuild the extras snapshot from the stored file."""
     from .template.importer import import_template
 
+    with _REIMPORT:
+        info = _read_json(directory / EXTRAS_FILE)
+        try:
+            TemplateSnapshot(directory / info["snapshot"])
+            return directory  # another request rebuilt it while this one waited
+        except AppError as exc:
+            if exc.code != "template_reimport_required":
+                raise
+        return _rebuild(directory, import_template)
+
+
+def _rebuild(directory, import_template):
     info = _read_json(directory / EXTRAS_FILE)
     old = directory / info["snapshot"]
     staged = directory / "reimport-source.xlsm"

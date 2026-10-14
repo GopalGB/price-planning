@@ -22,8 +22,17 @@ show them in the app, editable like inputs.
   keep values mode) and prints EXCEL MODE or VALUES MODE. Macro and slicer messages now say the server
   runs without Excel. Cross-tab recalculation and macros need the Excel engine; values mode never
   recalculates. Still unverified on the office server.
-- Open: extras in Excel-engine calculation need the engine's caches per grafted package (untested);
-  forks do not inherit extras; extras folders are not in backups.
+- Adversarial review (Sonnet) found 3 HIGH, 6 MEDIUM, 1 LOW; fixed with tests: new columns on sheets
+  whose rows moved are refused (they sat at file rows); an older download no longer reverts extras
+  edited in the app since (kept, with a note); extras span at most 200 columns and empty-cell rendering
+  is capped (a stray XFD1 made a 428 MB rows response); the first extra column also sits past the
+  template's rightmost input (real sheet 4: inputs to index 138, extras from 139; scan 6.5 s, warmed);
+  failed confirms delete the moved folder, startup sweeps preview extras; shared-formula children whose
+  master stays left get their own formula; merges in extra columns kept; lost charts/comments named;
+  rebuild of a shared folder is locked; a half-formula validation rule keeps its numeric bound.
+  Folders: 78 MB per copy on the real file (pruned), forks share the parent's folder.
+- Open: Excel-engine calculation with extras (caches per grafted package) untested; extras folders are
+  not in backups; extras paths are absolute in the DB like template snapshot paths.
 
 ## 2026-10-14 (Claude, upload adapts to moved rows, .xlsb)
 

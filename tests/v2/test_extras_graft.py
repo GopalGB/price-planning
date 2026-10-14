@@ -151,7 +151,7 @@ class GraftTests(unittest.TestCase):
     def test_graft_adds_sheet_and_columns_with_styles_formulas_and_names(self):
         counts = self.graft()
         self.assertEqual(counts['sheets'], 1)
-        self.assertEqual(counts['dropped_formulas'], 2)
+        self.assertEqual(counts['dropped_formulas'], 0)
         wb = load_workbook(self.out)
         self.assertEqual(wb.sheetnames, ['Plan', 'Lookup', 'My calc'])
 
@@ -178,8 +178,8 @@ class GraftTests(unittest.TestCase):
         self.assertEqual(plan['E6'].value, 'beyond')
         self.assertEqual(plan['E7'].value, 1.5)
         self.assertEqual(plan.column_dimensions['E'].width, 15)
-        self.assertEqual(plan['E5'].value, 3)
-        self.assertEqual(plan['F5'].value, 4)
+        self.assertEqual(plan['E5'].value, '=E4*2')  # shared children whose master stays left get their own formula
+        self.assertEqual(plan['F5'].value, '=F4*2')
         self.assertIn('<dimension ref="A1:F7"', _sheet_xml(self.out, PLAN_SHEET))
 
         calc = wb['My calc']
@@ -203,12 +203,12 @@ class GraftTests(unittest.TestCase):
             self.assertNotIn('xl/calcChain.xml', z.namelist())
             self.assertIn('fullCalcOnLoad="1"', z.read('xl/workbook.xml').decode('utf-8'))
 
-    def test_dropped_shared_formulas_keep_cached_values(self):
+    def test_shared_children_of_a_master_left_behind_get_their_own_formula(self):
         self.graft()
         xml = _sheet_xml(self.out, PLAN_SHEET)
-        for ref in ('E5', 'F5'):
+        for ref, formula in (('E5', 'E4*2'), ('F5', 'F4*2')):
             cell = re.search(rf'<c r="{ref}"[^>]*>.*?</c>', xml, re.S).group(0)
-            self.assertNotIn('<f', cell)
+            self.assertIn(f'<f>{formula}</f>', cell)
             self.assertIn('<v>', cell)
 
     def test_untouched_parts_are_copied_byte_for_byte(self):

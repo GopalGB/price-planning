@@ -445,7 +445,10 @@ def _validation_error(code, message, cell):
 
 def _numeric_rule(value, rule):
     lower, upper, operator = rule.get("min"), rule.get("max"), rule.get("operator", "between")
-    if not _is_number(lower) or operator in {"between", "notBetween"} and not _is_number(upper):
+    if operator == "between" and (_is_number(lower) or _is_number(upper)):
+        # A bound written as a formula is unknown here; the other one still holds
+        return ((not _is_number(lower) or lower <= value) and (not _is_number(upper) or value <= upper))
+    if not _is_number(lower) or operator == "notBetween" and not _is_number(upper):
         return None
     if operator == "between":
         return lower <= value <= upper

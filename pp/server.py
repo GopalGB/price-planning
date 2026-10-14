@@ -10,6 +10,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import shutil
 import tempfile
 from urllib.parse import unquote
 from uuid import uuid4
@@ -1033,6 +1034,8 @@ def _sweep_transfer_files(data_dir):
         for path in directory.rglob("*"):
             if path.is_file():
                 path.unlink(missing_ok=True)
+    for path in (root / "uploads" / "previews").glob("extras-*"):
+        shutil.rmtree(path, ignore_errors=True)  # an unconfirmed preview's own tabs and columns
     uploads = root / "uploads"
     if uploads.is_dir():
         for path in uploads.glob("preview-*.xlsx"):

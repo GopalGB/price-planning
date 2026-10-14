@@ -29,7 +29,7 @@ from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .authorization import effective_role
 from .errors import AppError
-from .extras import ExtrasPlan, attach, build_extras, current_plan
+from .extras import ExtrasPlan, attach, build_extras, current_plan, edited_since
 from .export.transfer import (
     REL_ATTRIBUTE_NAMESPACES,
     LinkScan,
@@ -358,6 +358,7 @@ class UploadService:
         self.converter = dependencies.converter
         self.data_dir = Path(dependencies.preview_dir).parents[1]
         self._template_models = {}
+        self._input_cols = {}  # template hash -> {sheet index: one past its rightmost input column}
 
     def preview(self, request):
         path = self._readable(request)
@@ -402,7 +403,9 @@ class UploadService:
                         else self._new_copy_snapshot(connection, provenance, request))
             edited = frozenset(_overrides(connection, copy["id"])) if copy is not None else frozenset()
             template_model = self._template_model(snapshot)
-            limits = {name.casefold(): template_model.filled_cols.get(name, 0) for name in template_model.sheets}
+            inputs = self._input_limits(snapshot)
+            limits = {name.casefold(): max(template_model.filled_cols.get(name, 0), inputs.get(index, 0))
+                      for index, name in enumerate(template_model.sheets)}
             model = _read_workbook(request.path, snapshot=snapshot, fingerprint=provenance is None,
                                    progress=progress, overrides=edited, deferred=deferred,
                                    column_limits=limits)
@@ -416,12 +419,25 @@ class UploadService:
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
             structure = _structure_report(model, self._template_model(snapshot))
             kept = current_plan(connection, copy["id"]) if copy is not None else None
+            stale = kept is not None and edited_since(connection, copy["id"], revision)
         plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
         built, replace_extras = None, kept is not None
+        if stale:
+            # The file would undo edits made in the app since it was downloaded: keep the app's version
+            details["ignored"].append({"sheet": None, "cell": None, "reason":
+                                       "Your own tabs and columns were changed in the app after this file was "
+                                       "downloaded, so the copy keeps the app's version of them. Download the "
+                                       "copy again to change them in Excel"})
+            plan, replace_extras, kept = ExtrasPlan((), {}, model.sheets), False, None
         if not plan.empty():
             progress("Reading your own tabs and columns")
             try:
                 built, replace_extras = build_extras(request.path, plan, snapshot, self.previews.directory), True
+                lost = json.loads((built / "extras.json").read_text(encoding="utf-8"))["counts"]["dropped_objects"]
+                if lost:
+                    details["ignored"].append({"sheet": None, "cell": None, "reason":
+                                               f"{lost} charts, pictures, comments or tables in your own tabs are "
+                                               "not kept; their cells are"})
             except Exception as exc:  # the input changes still apply; the copy keeps what it had
                 LOGGER.exception("Reading an upload's own tabs and columns failed")
                 details["ignored"].append({"sheet": None, "cell": None, "reason":
@@ -536,10 +552,17 @@ class UploadService:
             self._template_models[snapshot.hash] = model
         return model
 
+    def _input_limits(self, snapshot):
+        limits = self._input_cols.get(snapshot.hash)
+        if limits is None:
+            limits = self._input_cols[snapshot.hash] = _input_limits(snapshot)
+        return limits
+
     def warm(self, snapshot):
         """Build the template's upload identity off the request path; uploads then skip a full template read."""
         try:
             self._template_model(snapshot)
+            self._input_limits(snapshot)
         except Exception:
             LOGGER.exception("Upload template identity warm-up failed")
 
@@ -552,30 +575,38 @@ class UploadService:
             copy = self.copies.get(request.user_id, preview["copy_id"])
             return {"copy_id": preview["copy_id"], "copy": copy,
                     "accepted": 0, "operation": None}
-        ack, operation = {"accepted": 0}, None
-        with self.database.transaction() as connection:
-            if effective_role(connection, preview["copy_id"], request.user_id) not in EDIT_ROLES:
-                raise AppError(403, "forbidden", "Editor access is required")
-            replaced = self._attach_extras(connection, preview["copy_id"], preview)
-            if changes:
-                ack, _, prepared = self.operations.apply_upload_in_transaction(
-                    UploadOperationRequest(
-                        connection, preview["copy_id"], request.user_id,
-                        _operation_payload(preview["filename"], changes), request.session_check,
+        ack, operation, moved = {"accepted": 0}, None, []
+        try:
+            with self.database.transaction() as connection:
+                if effective_role(connection, preview["copy_id"], request.user_id) not in EDIT_ROLES:
+                    raise AppError(403, "forbidden", "Editor access is required")
+                replaced = self._attach_extras(connection, preview["copy_id"], preview, moved)
+                if changes:
+                    ack, _, prepared = self.operations.apply_upload_in_transaction(
+                        UploadOperationRequest(
+                            connection, preview["copy_id"], request.user_id,
+                            _operation_payload(preview["filename"], changes), request.session_check,
+                        )
                     )
-                )
-                operation = _operation_receipt(ack, prepared)
+                    operation = _operation_receipt(ack, prepared)
+        except BaseException:
+            for folder in moved:  # the copy never pointed at it: the transaction rolled back
+                _drop(folder)
+            raise
         _drop(replaced)
         copy = self.copies.get(request.user_id, preview["copy_id"])
         return {**ack, "copy_id": preview["copy_id"], "copy": copy, "operation": operation}
 
-    def _attach_extras(self, connection, copy_id, preview):
-        """Store the file's own tabs and columns with the copy; returns the folder they replace."""
+    def _attach_extras(self, connection, copy_id, preview, moved):
+        """Store the file's own tabs and columns with the copy; returns the folder they replace. The folder
+        moved into the copy's place is added to ``moved``, for the caller to delete if the commit fails."""
         if not preview.get("replace_extras"):
             return None
         built = Path(preview["extras_dir"]) if preview.get("extras_dir") else None
-        replaced = attach(connection, copy_id, built, self.data_dir)
+        replaced, final = attach(connection, copy_id, built, self.data_dir)
         preview["extras_dir"] = None  # moved into the copy's folder: no longer the preview's to delete
+        if final is not None:
+            moved.append(final)
         return replaced
 
     def _new_copy(self, preview, request):
@@ -586,25 +617,55 @@ class UploadService:
             "default_role": "viewer",
         }
         inputs = [{**item, "expected_version": 0} for item in preview["all_inputs"]]
-        with self.database.transaction() as connection:
-            if self.copies.template_id != preview["template_id"]:
-                raise AppError(409, "refresh_preview", "The active template changed; preview the upload again")
-            copy = self.copies.create_in_transaction(
-                connection, request.user_id, body, request.session_check,
-            )
-            self._attach_extras(connection, copy["id"], preview)
-            if inputs:
-                ack, _, prepared = self.operations.apply_upload_in_transaction(
-                    UploadOperationRequest(
-                        connection, copy["id"], request.user_id,
-                        _operation_payload(preview["filename"], inputs), request.session_check,
-                    )
+        moved = []
+        try:
+            with self.database.transaction() as connection:
+                if self.copies.template_id != preview["template_id"]:
+                    raise AppError(409, "refresh_preview", "The active template changed; preview the upload again")
+                copy = self.copies.create_in_transaction(
+                    connection, request.user_id, body, request.session_check,
                 )
-                operation = _operation_receipt(ack, prepared)
-            else:
-                ack, operation = {"accepted": 0, "input_revision": 0}, None
+                self._attach_extras(connection, copy["id"], preview, moved)
+                if inputs:
+                    ack, _, prepared = self.operations.apply_upload_in_transaction(
+                        UploadOperationRequest(
+                            connection, copy["id"], request.user_id,
+                            _operation_payload(preview["filename"], inputs), request.session_check,
+                        )
+                    )
+                    operation = _operation_receipt(ack, prepared)
+                else:
+                    ack, operation = {"accepted": 0, "input_revision": 0}, None
+        except BaseException:
+            for folder in moved:
+                _drop(folder)
+            raise
         copy = self.copies.get(request.user_id, copy["id"])
         return {**ack, "copy": copy, "operation": operation}
+
+
+def _input_limits(snapshot):
+    """Per sheet, one past the rightmost template input cell (stored, masked, or unlocked by a column or
+    row style), so a user's own columns never start on an input column the template leaves empty."""
+    limits = {}
+    for key in snapshot.input_mask:
+        sheet, _, col = map(int, key.split(":"))
+        limits[sheet] = max(limits.get(sheet, 0), col + 1)
+    for info in snapshot.sheets:
+        sheet = info["index"]
+        for path in (snapshot.path / "sheets" / str(sheet)).glob("*.json"):
+            for cells in json.loads(path.read_text(encoding="utf-8")).values():
+                for col, record in cells.items():
+                    if record["k"] == "i":
+                        limits[sheet] = max(limits.get(sheet, 0), int(col) + 1)
+        if info.get("protected", False):
+            width = min(info["cols"], snapshot._used_cols(sheet))
+            unlocked = [min(last, width - 1) + 1 for _, last, style in snapshot._column_spans(sheet)
+                        if not snapshot.styles[style].get("locked", True)]
+            if any(not snapshot.styles[style].get("locked", True) for style in info.get("row_styles", {}).values()):
+                unlocked.append(width)
+            limits[sheet] = max([limits.get(sheet, 0), *unlocked])
+    return limits
 
 
 def _drop(folder):
@@ -1553,7 +1614,20 @@ def _preview_details(context):
             matched = _matched_sheet(context, sheet_name, index, overrides, ignored)
             if matched is None:
                 continue
+            if added and (matched[0] is not sheet_cells or matched[1]):
+                # Rows were matched back to the template's, but the new columns sit at the file's rows
+                ignored.append({"sheet": sheet_name, "cell": None, "reason":
+                                "Your new columns on this sheet are not kept because rows were added or removed "
+                                "inside the table. Add rows at the end instead, then upload again"})
+                added = False
             sheet_cells, skipped_rows = matched
+        if added:
+            span = max(model.columns.get(sheet_name, {})) + 1 - limit
+            if span > MAX_EXTRA_COLUMNS:
+                ignored.append({"sheet": sheet_name, "cell": None, "reason":
+                                f"Your new columns on this sheet are not kept: they span {span} columns, more "
+                                f"than the {MAX_EXTRA_COLUMNS} a copy can add to one sheet"})
+                added = False
         if added:
             extra_columns[expected_name] = limit
         sheet_context = SheetContext(snapshot, index, sheet_name, overrides, ignored, limit)
@@ -1592,6 +1666,7 @@ def _moved_heading(model, template, name, expected_name):
 
 
 MAX_ROW_NOTES = 20
+MAX_EXTRA_COLUMNS = 200  # a copy's own columns per sheet: each is rendered for every row of the sheet
 HEADER_ROWS = 30  # a column's name is the first text in its top rows
 MAX_LISTED_COLUMNS = 40
 

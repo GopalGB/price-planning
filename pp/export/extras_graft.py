@@ -16,6 +16,7 @@ from pathlib import Path
 from xml.sax.saxutils import escape, unescape
 
 import defusedxml.ElementTree as SafeET
+from openpyxl.formula.translate import Translator
 
 from .xlsm import (CHUNK, MAIN_NS, REL_NS, _attr, _clone, _drop_calc_chain, _patch_workbook,
                    _sheet_parts, col_index, col_letters)
@@ -26,6 +27,11 @@ REL_ELEMENTS = 'drawing|legacyDrawing|legacyDrawingHF|tableParts|picture|oleObje
 ITEMS = (('fonts', 'font'), ('fills', 'fill'), ('borders', 'border'), ('cellXfs', 'xf'), ('dxfs', 'dxf'))
 STYLE_ORDER = ('numFmts', 'fonts', 'fills', 'borders', 'cellStyleXfs', 'cellXfs', 'cellStyles', 'dxfs',
                'tableStyles', 'colors', 'extLst')
+# Worksheet children from mergeCells on, in schema order (a new mergeCells goes before the first present)
+SHEET_ORDER = ('mergeCells', 'phoneticPr', 'conditionalFormatting', 'dataValidations', 'hyperlinks',
+               'printOptions', 'pageMargins', 'pageSetup', 'headerFooter', 'rowBreaks', 'colBreaks',
+               'customProperties', 'cellWatches', 'ignoredErrors', 'smartTags', 'drawing', 'legacyDrawing',
+               'legacyDrawingHF', 'picture', 'oleObjects', 'controls', 'webPublishItems', 'tableParts', 'extLst')
 BOOK_ORDER = ('sheets', 'functionGroups', 'externalReferences', 'definedNames', 'calcPr', 'oleSize',
               'customWorkbookViews', 'pivotCaches', 'extLst')
 CELL_RE = re.compile(r'<(?:\w+:)?c(?=[\s/>])[^>]*?/>|<(?P<q>(?:\w+:)?)c(?=[\s/>])[^>]*>.*?</(?P=q)c>', re.S)
@@ -286,6 +292,18 @@ class _Copier:
     def __init__(self, p, styles, strings, shared_offset):
         self.p, self.styles, self.strings, self.offset = p, styles, strings, shared_offset
         self.masters, self.cells, self.dropped = set(), 0, 0
+        self.outside = {}  # si -> (formula, origin) of shared masters left of the copied columns
+
+    def note(self, col, row, raw):
+        """Remember a shared master the copy leaves behind, so its copied children can be spelled out."""
+        m = F_RE.search(raw)
+        if m is None:
+            return
+        f = m.group(0)
+        start = f[:f.index('>') + 1]
+        if _attr(start, 't') == 'shared' and _attr(start, 'ref') is not None and not start.endswith('/>'):
+            text = unescape(f[len(start):f.rindex('</')], ENTITIES)
+            self.outside[int(_attr(start, 'si'))] = (text, f'{col_letters(col)}{row + 1}')
 
     def cell(self, col, row, raw):
         p = self.p
@@ -303,12 +321,12 @@ class _Copier:
             kind = 'inlineStr'
         if kind:
             attrs += f' t="{kind}"'
-        body = self._formula(body)
-        self.cells += 1
         ref = f'{col_letters(col)}{row + 1}'
+        body = self._formula(body, ref)
+        self.cells += 1
         return f'<{p}c r="{ref}"{attrs}>{body}</{p}c>' if body else f'<{p}c r="{ref}"{attrs}/>'
 
-    def _formula(self, body):
+    def _formula(self, body, ref):
         m = F_RE.search(body)
         if m is None or self.offset is None or _attr(m.group(0)[:m.group(0).index('>') + 1], 't') != 'shared':
             return body
@@ -318,6 +336,10 @@ class _Copier:
         if _attr(start, 'ref') is not None:
             self.masters.add(si)
         elif si not in self.masters:
+            if si in self.outside:  # the master stays in a template column: write this cell's own formula
+                text, origin = self.outside[si]
+                own = Translator('=' + text.lstrip('='), origin=origin).translate_formula(ref)[1:]
+                return body[:m.start()] + f'<{self.p}f>{escape(own)}</{self.p}f>' + body[m.end():]
             self.dropped += 1
             return body[:m.start()] + body[m.end():]
         return body[:m.start()] + _attrs(f, si=si + self.offset) + body[m.end():]
@@ -360,7 +382,11 @@ def _merged(tmpl_xml, cells, p):
 def _copied_rows(rows, copier, first):
     """Upload rows reduced to their cells at column >= first, as (row, [(col, xml)])."""
     for r, xml in rows:
-        cells = [(c, copier.cell(c, r, raw)) for c, raw in _cells(xml) if c >= first]
+        found = _cells(xml)
+        for c, raw in found:
+            if c < first and 't="shared"' in raw:
+                copier.note(c, r, raw)
+        cells = [(c, copier.cell(c, r, raw)) for c, raw in found if c >= first]
         if cells:
             yield r, cells
 
@@ -478,7 +504,11 @@ def _graft_columns(tz, uz, tpart, upart, first, styles, strings, spool):
         spool.write(head + f'<{tsheet.p}sheetData>')
         for xml in _merge_rows(tsheet.rows(), _copied_rows(usheet.rows(), copier, first), tsheet.p):
             spool.write(xml)
-        spool.write(f'</{tsheet.p}sheetData>' + tsheet.rest())
+        merges = [f'<{tsheet.p}mergeCell ref="{ref}"/>'
+                  for ref in re.findall(r'<(?:\w+:)?mergeCell\b[^>]*?\sref="([^"]+)"', usheet.rest())
+                  if _box(ref)[0] >= first]
+        tail = _extend(tsheet.rest(), tsheet.p, 'mergeCells', 'mergeCell', merges, SHEET_ORDER, counted=True)
+        spool.write(f'</{tsheet.p}sheetData>' + tail)
     return copier.cells, copier.dropped
 
 
@@ -495,8 +525,10 @@ def _copy_sheet(uz, upart, styles, strings, spool):
         for r, xml in usheet.rows():
             cells = [copier.cell(c, r, raw) for c, raw in _cells(xml)]
             spool.write(_row_xml(_row_start(xml[:xml.index('>') + 1], styles), cells, usheet.p))
-        spool.write(f'</{usheet.p}sheetData>' + _strip_rels(_remap_dxf(usheet.rest(), styles), rel))
-    return copier.cells
+        rest = usheet.rest()
+        objects = len(re.findall(rf'<(?:\w+:)?(?:{REL_ELEMENTS})\b', head + rest))
+        spool.write(f'</{usheet.p}sheetData>' + _strip_rels(_remap_dxf(rest, styles), rel))
+    return copier.cells, objects
 
 
 def _style_cols(head, p, styles):
@@ -580,7 +612,7 @@ def _graft(tz, uz, plan, zout, spool_dir):
     new = [(uinfo[name.lower()][0], _new_part(existing)) for name in plan.sheets]
     strings = _shared_strings(uz)
     styles = _Styles(_read(tz, 'xl/styles.xml'), _read(uz, 'xl/styles.xml'))
-    spool, cells, dropped = {}, 0, 0
+    spool, cells, dropped, objects = {}, 0, 0, 0
     for name, first in plan.columns.items():
         part = tpart_of[name]
         spool[part] = tempfile.TemporaryFile('w+', encoding='utf-8', newline='', dir=spool_dir)
@@ -588,7 +620,8 @@ def _graft(tz, uz, plan, zout, spool_dir):
         cells, dropped = cells + c, dropped + d
     for name, part in new:
         spool[part] = tempfile.TemporaryFile('w+', encoding='utf-8', newline='', dir=spool_dir)
-        cells += _copy_sheet(uz, uinfo[name.lower()][1], styles, strings, spool[part])
+        copied, lost = _copy_sheet(uz, uinfo[name.lower()][1], styles, strings, spool[part])
+        cells, objects = cells + copied, objects + lost
 
     rels_text = _drop_calc_chain('xl/_rels/workbook.xml.rels', tz.read('xl/_rels/workbook.xml.rels'))
     rels_text = rels_text.decode('utf-8')
@@ -623,7 +656,7 @@ def _graft(tz, uz, plan, zout, spool_dir):
         zinfo = zipfile.ZipInfo(part, date_time=(1980, 1, 1, 0, 0, 0))
         zinfo.compress_type = zipfile.ZIP_DEFLATED
         _write_spool(zout, zinfo, spool.pop(part))
-    return {'sheets': len(new), 'cells': cells, 'dropped_formulas': dropped}
+    return {'sheets': len(new), 'cells': cells, 'dropped_formulas': dropped, 'dropped_objects': objects}
 
 
 def graft_extras(template_path, upload_path, plan, out_path):
