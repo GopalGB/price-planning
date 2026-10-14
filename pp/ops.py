@@ -177,7 +177,7 @@ class OperationService:
             request.connection, request.copy_id, request.actor_id, request.payload,
         ), request.trusted_action)
         cells, _, action = _shape(payload, trusted)
-        prepared = self._prepare(request.connection, copy, cells)
+        prepared = self._prepare(request.connection, copy, cells, request.trusted_action == "upload")
         revision = copy["input_revision"] + 1
         ack = {"op_id": op_id, "input_revision": revision, "accepted": len(prepared)}
         commit = OperationCommit(
@@ -186,7 +186,7 @@ class OperationService:
         self._commit(request.connection, commit)
         return ack, True, prepared
 
-    def _prepare(self, connection, copy, cells: list[dict]) -> list[dict]:
+    def _prepare(self, connection, copy, cells: list[dict], uploaded=False) -> list[dict]:
         # A values-only template (no Excel here) still saves typed values; its formulas keep Excel's saved results
         snapshot = self.templates.for_copy(connection, copy)
         prepared, conflicts, seen = [], [], set()
@@ -212,7 +212,8 @@ class OperationService:
                 raise AppError(422, "locked", ErrorPayload(
                     "This cell is locked", {"cells": [_public_cell(cell)]}
                 ))
-            _validate_rule(snapshot.validation(sheet, row, col), value, cell)
+            if not uploaded:  # Excel checks typed values only: a file may hold any value, like a paste
+                _validate_rule(snapshot.validation(sheet, row, col), value, cell)
             current = connection.execute(
                 "SELECT * FROM pp_overrides WHERE copy_id=? AND sheet=? AND row=? AND col=?",
                 (copy["id"], sheet, row, col),

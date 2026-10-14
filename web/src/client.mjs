@@ -1,4 +1,18 @@
 import { buildOp, invertOp, rollback, cellName, keyOf } from "./model.mjs";
+// A proxy or a crashed request can answer with an HTML page: say what happened instead of a JSON parse error
+async function readJson(response) {
+  try {
+    return await response.json();
+  } catch {
+    return {};
+  }
+}
+export const httpMessage = (status) =>
+  status === 502 || status === 503 || status === 504
+    ? `The server did not answer in time (HTTP ${status}). It may be busy or restarting; try again in a minute`
+    : status === 413
+      ? "The file is too large for the server (HTTP 413)"
+      : `The server answered with an error (HTTP ${status})`;
 export class ApiClient {
   constructor(fetcher = globalThis.fetch.bind(globalThis)) {
     this.fetcher = fetcher;
@@ -24,10 +38,10 @@ export class ApiClient {
       },
       body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
     });
-    const result = response.status === 204 ? {} : await response.json();
+    const result = response.status === 204 ? {} : await readJson(response);
     if (!response.ok)
       throw Object.assign(
-        new Error(result.message ?? "Request failed"),
+        new Error(result.message ?? httpMessage(response.status)),
         result,
         { status: response.status },
       );
@@ -63,7 +77,7 @@ export class ApiClient {
         else
           reject(
             Object.assign(
-              new Error(result.message ?? "Upload failed"),
+              new Error(result.message ?? httpMessage(xhr.status)),
               result,
               { status: xhr.status },
             ),
@@ -92,8 +106,9 @@ export class ApiClient {
         job = await this.request(`/jobs/${encodeURIComponent(token)}`);
         dropped = 0;
       } catch (error) {
-        // A dropped poll is retried; the job keeps running on the server
-        if (error.status !== undefined || ++dropped > 5) throw error;
+        // A dropped poll, or a busy proxy, is retried for a minute; the job keeps running on the server
+        const transient = error.status === undefined || error.status >= 502;
+        if (!transient || ++dropped > 60) throw error;
         await sleep(interval);
         continue;
       }
