@@ -1,5 +1,14 @@
 # STATE
 
+## 2026-10-14 (Claude, upload errors on the office server, PR #10 10ab5a4)
+- Sir: uploads show "preview expired", "value is outside...", timeouts; cross-tab formulas (BU RECAP to Sales
+  by Mkting Block) do not update. Formulas: values mode (no Excel on the server); waiting on Sir/IT to install
+  Excel, else build a no-Excel recalculation (his call).
+- Fixed: uploaded values skip dropdown/bound checks; a failed confirm restores its preview and extras folder;
+  non-JSON error pages show "did not answer in time (HTTP 504)"; job polls retry 502-504 for a minute.
+- Mac real-template HTTP run: own-tabs preview 4 s, 37 MB full file 21 s, both confirm. The server-side
+  timeout is NOT reproduced; need Sir's exact message and the server window's last lines.
+
 ## 2026-10-14 (Claude, files of own tabs add to the copy, clearer upload preview)
 - Sir uploaded a workbook whose tabs are all his own (none of the template's) and it was refused; he wants
   such files accepted. Now any file without all of the template's tabs ADDS its own tabs and columns to the
