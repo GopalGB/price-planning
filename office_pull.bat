@@ -15,14 +15,22 @@ tar -xf "%TEMP%\mingit.zip" -C "%LOCALAPPDATA%\MinGit"
 if not exist "%GIT%" goto git_failed
 :have_git
 rem Windows certificate store, like curl.exe here; the office proxy breaks revocation checks
-set GITCMD="%GIT%" -c http.sslBackend=schannel -c http.schannelCheckRevoke=false
+set GITCMD="%GIT%" -c http.sslBackend=schannel -c http.schannelCheckRevoke=false -c core.autocrlf=false
 if exist "%HOME_DIR%app\.git" goto update
 %GITCMD% clone --branch feat/v2-integration https://github.com/GopalGB/price-planning.git "%HOME_DIR%app"
 if errorlevel 1 goto pull_failed
 goto done
 :update
-%GITCMD% -C "%HOME_DIR%app" pull --ff-only
-if errorlevel 1 goto pull_failed
+rem The app folder holds only the app's own files: a local edit there would block every update.
+rem One block: cmd reads it whole before the pull replaces this file under it.
+(
+  %GITCMD% -C "%HOME_DIR%app" checkout -- .
+  %GITCMD% -C "%HOME_DIR%app" pull --ff-only || goto pull_failed
+  echo.
+  echo App is up to date in %HOME_DIR%app
+  echo Start it with:  app\office_run.bat
+  exit /b 0
+)
 :done
 echo.
 echo App is up to date in %HOME_DIR%app
@@ -33,6 +41,6 @@ echo Could not get Git. Check the internet connection, then run this again.
 pause
 exit /b 1
 :pull_failed
-echo Could not download the app. Check the internet connection, then run this again.
+echo Could not update the app. Read the lines above for the reason, then run this again.
 pause
 exit /b 1
