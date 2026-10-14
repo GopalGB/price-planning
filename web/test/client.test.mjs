@@ -760,3 +760,18 @@ test("a failed job rejects with the server's message", async () => {
     code: "invalid_workbook",
   });
 });
+
+test("an HTML error page from a proxy reads as a clear message, not a JSON error", async () => {
+  const { httpMessage } = await import("../src/client.mjs");
+  const api = new ApiClient(async () => ({
+    ok: false,
+    status: 504,
+    json: async () => JSON.parse("<html>Gateway Timeout</html>"),
+  }));
+  await assert.rejects(api.request("/jobs/x"), (error) => {
+    assert.equal(error.status, 504);
+    assert.match(error.message, /did not answer in time \(HTTP 504\)/);
+    return true;
+  });
+  assert.match(httpMessage(500), /HTTP 500/);
+});

@@ -289,16 +289,25 @@ class PreviewStore:
             )
         return token
 
+    def restore(self, token, value):
+        """Put back a preview a failed confirm took; it keeps its token, and expires a full period later."""
+        path = self._write(token, value)
+        with self._lock:
+            self._items[token] = PreviewEntry(
+                path, value["user_id"], value["session_hash"],
+                time.monotonic() + PREVIEW_SECONDS, path.stat().st_size, value.get("extras_dir"),
+            )
+
     def take(self, token, user_id, session_hash):
         with self._lock:
             self._purge()
             value = self._items.pop(token, None)
         if value is None:
-            raise AppError(404, "preview_expired", "Upload preview expired; preview the file again")
+            raise AppError(404, "preview_expired", "This upload preview is no longer available (a preview lasts 15 minutes, and a server restart clears it). Upload the file again")
         try:
             if value.user_id != user_id or value.session_hash != session_hash:
                 _remove_extras(value)
-                raise AppError(404, "preview_expired", "Upload preview expired; preview the file again")
+                raise AppError(404, "preview_expired", "This upload preview is no longer available (a preview lasts 15 minutes, and a server restart clears it). Upload the file again")
             return json.loads(value.path.read_text(encoding="utf-8"))  # the caller now owns the extras
         finally:
             value.path.unlink(missing_ok=True)
@@ -514,9 +523,10 @@ class UploadService:
             if request.payload["mode"] == "update":
                 return self._update(preview, request)
             return self._new_copy(preview, request)
-        finally:
-            if preview.get("extras_dir"):  # still here when the confirm failed before attaching it
-                shutil.rmtree(preview["extras_dir"], ignore_errors=True)
+        except BaseException:
+            # Nothing was applied: keep the preview so the user can choose again and apply, not upload again
+            self.previews.restore(request.token, preview)
+            raise
 
     def _target_copy(self, connection, provenance, request):
         provenance_id = provenance["copy_id"] if provenance else None
@@ -616,8 +626,7 @@ class UploadService:
                     )
                     operation = _operation_receipt(ack, prepared)
         except BaseException:
-            for folder in moved:  # the copy never pointed at it: the transaction rolled back
-                _drop(folder)
+            _unmove(preview, moved)  # the copy never pointed at it: the transaction rolled back
             raise
         _drop(replaced)
         copy = self.copies.get(request.user_id, preview["copy_id"])
@@ -625,7 +634,7 @@ class UploadService:
 
     def _attach_extras(self, connection, copy_id, preview, moved):
         """Store the file's own tabs and columns with the copy; returns the folder they replace. The folder
-        moved into the copy's place is added to ``moved``, for the caller to delete if the commit fails."""
+        moved into the copy's place is added to ``moved``, for the caller to move back if the commit fails."""
         if not preview.get("replace_extras"):
             return None
         built = Path(preview["extras_dir"]) if preview.get("extras_dir") else None
@@ -634,7 +643,7 @@ class UploadService:
         replaced, final = attach(connection, copy_id, built, self.data_dir, keep)
         preview["extras_dir"] = None  # moved into the copy's folder: no longer the preview's to delete
         if final is not None:
-            moved.append(final)
+            moved.append((final, built))
         return replaced
 
     def _new_copy(self, preview, request):
@@ -665,8 +674,7 @@ class UploadService:
                 else:
                     ack, operation = {"accepted": 0, "input_revision": 0}, None
         except BaseException:
-            for folder in moved:
-                _drop(folder)
+            _unmove(preview, moved)
             raise
         copy = self.copies.get(request.user_id, copy["id"])
         return {**ack, "copy": copy, "operation": operation}
@@ -705,6 +713,13 @@ def _extras_stale(connection, model, copy, kept, revision, new_columns):
             provenance["copy_id"] != copy["id"] or provenance.get("extras_id") != kept["id"]):
         return True  # downloaded before the current extras (or from another copy): it cannot replace them
     return edited_since(connection, copy["id"], revision, new_columns)
+
+
+def _unmove(preview, moved):
+    """Give the preview back the extras folder a rolled-back confirm had moved into the copy's place."""
+    for final, built in moved:
+        shutil.move(str(final), built)
+        preview["extras_dir"] = str(built)
 
 
 def _drop(folder):

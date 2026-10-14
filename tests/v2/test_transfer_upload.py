@@ -1314,7 +1314,7 @@ class UploadAPITests(unittest.TestCase):
         rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=2&count=1").json()["rows"]
         self.assertEqual(rows["2"]["3"]["v"], "typed later")
 
-    def test_a_failed_confirm_leaves_no_extras_folder_behind(self):
+    def test_a_failed_confirm_keeps_the_preview_and_moves_no_extras_into_the_copy(self):
         def edit(workbook):
             workbook["Plan"]["B2"] = 11
             workbook.create_sheet("Mine")["A1"] = 1
@@ -1331,7 +1331,9 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(failed.status_code, 409, failed.body)
         root = fixture.app.state.services.uploads.data_dir
         self.assertEqual(list((root / "extras").rglob("extras-*")), [])
-        self.assertEqual(list((root / "uploads" / "previews").glob("extras-*")), [])
+        self.assertEqual(len(list((root / "uploads" / "previews").glob("extras-*"))), 1)  # back with the preview
+        again = client.post(f"/api/uploads/{body['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
+        self.assertEqual(again.json()["error"], "conflict")  # the same answer, not "preview expired"
 
     def test_preview_compares_the_file_with_the_template_by_sheet_column_and_row(self):
         fixture = APIFixture(_open_table_fixture)
@@ -1904,7 +1906,7 @@ class UploadAPITests(unittest.TestCase):
             second = store.put({"user_id": "two", "session_hash": "two"})
             third = store.put({"user_id": "three", "session_hash": "three"})
 
-        with self.assertRaisesRegex(AppError, "expired"):
+        with self.assertRaisesRegex(AppError, "no longer available"):
             store.take(first, "one", "one")
         self.assertEqual(store.take(second, "two", "two")["user_id"], "two")
         self.assertEqual(store.take(third, "three", "three")["user_id"], "three")

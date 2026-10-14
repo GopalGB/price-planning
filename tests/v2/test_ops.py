@@ -208,6 +208,23 @@ class OperationContractTests(unittest.TestCase):
         self.assertIn("outside the validation bounds", caught.exception.message)
         self.assertEqual(self.service.apply("copy-a", "editor", operation("below-max", 4))["accepted"], 1)
 
+    def test_uploaded_values_skip_dropdown_lists_but_typed_values_do_not(self):
+        """Excel checks typed values only, so a file's value outside a list must not refuse the whole upload."""
+        from pp.ops import UploadOperationRequest
+        self.fixture.snapshot.sheets[0]["validations"] = [{
+            "type": "list", "list": ["A", "B"], "ranges": [[1, 1, 1, 1]],
+            "showErrorMessage": True, "errorStyle": "stop",
+        }]
+        with self.assertRaises(AppError) as caught:
+            self.service.apply("copy-a", "editor", operation("typed", "Z"))
+        self.assertIn("outside the validation list", caught.exception.message)
+        with self.service.database.transaction() as connection:
+            ack, _, _ = self.service.apply_upload_in_transaction(UploadOperationRequest(
+                connection, "copy-a", "editor",
+                {**operation("uploaded", "Z"), "action": "upload: plan.xlsx"},
+            ))
+        self.assertEqual(ack["accepted"], 1)
+
     def test_whole_validation_accepts_integral_float(self):
         """A mathematically integral finite float is a valid whole number."""
         self.fixture.snapshot.sheets[0]["validations"] = [{
