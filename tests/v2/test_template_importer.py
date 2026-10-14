@@ -139,6 +139,26 @@ class TemplateImporterTests(unittest.TestCase):
             self.assertEqual(blocks["1"]["1"]["k"], "i")
             self.assertEqual(blocks["1"]["1"]["v"], 10)
 
+    def test_import_of_named_sheets_reads_only_those_and_does_not_reuse_a_full_snapshot(self):
+        """Own-tab uploads read only the kept tabs; a full workbook took minutes when every tab was read."""
+        from pp.template.importer import import_template
+
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            workspace = Path(temp)
+            source = workspace / "semantic.xlsm"
+            make_semantic(source)
+            import_template(source, workspace / "data", "cached")
+
+            snapshot = import_template(source, workspace / "data", "cached", ["lookup"])
+
+            meta = json.loads((snapshot / "meta.json").read_text(encoding="utf-8"))
+            self.assertEqual([sheet["name"] for sheet in meta["sheets"]], ["Inputs", "Lookup", "Calc"])
+            self.assertEqual(meta["sheets"][0]["rows"], 0)
+            self.assertFalse((snapshot / "sheets" / "0").exists())
+            self.assertGreater(meta["sheets"][1]["rows"], 0)
+            self.assertTrue((snapshot / "sheets" / "1").is_dir())
+
     def test_failed_import_does_not_publish_partial_snapshot(self):
         """Publishing staging data after a malformed archive would be corruption."""
         from pp.template.importer import TemplateImportError, import_template

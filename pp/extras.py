@@ -46,7 +46,8 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
     target = Path(work_dir) / f"extras-{secrets.token_hex(8)}"
     target.mkdir(parents=True)
     try:
-        imported = import_template(upload_path, target, "cached")
+        # Only the tabs the copy keeps: reading all of a full workbook took minutes
+        imported = import_template(upload_path, target, "cached", [*plan.sheets, *plan.columns])
         _prune(imported, plan)
         counts = graft_extras(template.source_path, upload_path, GraftPlan(plan.sheets, dict(plan.columns)),
                               target / GRAFTED)
@@ -385,7 +386,7 @@ def _rebuild(directory, import_template):
     staged = directory / "reimport-source.xlsm"
     shutil.copyfile(old / "source.xlsm", staged)  # the rebuild replaces the folder holding the file
     try:
-        imported = import_template(staged, directory, "cached")
+        imported = import_template(staged, directory, "cached", [*info["sheets"], *info["columns"]])
     finally:
         staged.unlink(missing_ok=True)
     info["snapshot"] = str(imported.relative_to(directory))
