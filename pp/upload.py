@@ -1410,6 +1410,13 @@ def _preview_details(context):
                             f"column is {_cell_name(0, filled - 1)[:-1] if filled else 'none'}, the "
                             f"template's is {_cell_name(0, expected_filled - 1)[:-1]}"})
             continue
+        if sheet_name in model.suspect and filled > expected_filled:
+            # Values in locked cells past the template's last filled column: a column was inserted
+            ignored.append({"sheet": sheet_name, "cell": None, "reason":
+                            "Input changes are ignored because columns may have moved: values sit in "
+                            f"locked cells up to column {_cell_name(0, filled - 1)[:-1]}, past the "
+                            f"template's last filled column {_cell_name(0, expected_filled - 1)[:-1]}"})
+            continue
         if (sheet_name in model.displaced or sheet_name in model.suspect
                 or model.formula_rows.get(sheet_name, {})
                 != context.template_model.formula_rows.get(expected_name, {})):
@@ -1444,7 +1451,8 @@ def _matched_sheet(context, name, index, overrides, ignored):
     sheet_overrides = {(row, col): item["value"] for (sheet, row, col), item in overrides.items()
                        if sheet == index}
     alignment = align_rows(_template_rows(context.snapshot, index, sheet_overrides),
-                           _sheet_rows(context.path, model.parts[name], model.strings_part))
+                           _sheet_rows(context.path, model.parts[name], model.strings_part),
+                           model.extents.get(name, (None, None))[0])
     if alignment.failure is not None:
         ignored.append({"sheet": name, "cell": None, "reason":
                         f"Input changes are ignored because rows or columns may have moved: {alignment.failure}"})
@@ -1454,6 +1462,11 @@ def _matched_sheet(context, name, index, overrides, ignored):
             ignored.append({"sheet": name, "cell": None, "reason":
                             "Input changes are ignored because rows, columns, or locked cells may have moved"})
             return None
+        if alignment.unsure:
+            ignored.append({"sheet": name, "cell": None, "reason":
+                            "New rows were read as added at the end of the table. No unchanged value (an item "
+                            "number or label) shows where they were added; if you inserted rows in the "
+                            "middle, cancel and add them at the end instead"})
         return model.cells[name], frozenset()  # the table only grew: formulas copied into new rows
     data = _remapped_sheet(context, name, index, frozenset(sheet_overrides), alignment)
     if data.displaced:
@@ -1470,9 +1483,10 @@ def _matched_sheet(context, name, index, overrides, ignored):
 
 def _note_rows(ignored, name, alignment):
     shifted = sum(1 for upload_row, row in alignment.mapping.items() if upload_row != row)
-    ignored.append({"sheet": name, "cell": None, "reason":
-                    f"Rows were added or removed in your file; {shifted} rows were matched back to their "
-                    "template rows by their contents"})
+    if shifted:
+        ignored.append({"sheet": name, "cell": None, "reason":
+                        f"Rows were added or removed in your file; {shifted} rows were matched back to "
+                        "their template rows by their contents"})
     notes = [f"Row {row + 1} of your file is a new row inside the table; the template's rows are fixed, "
              "so its values were not added" for row in alignment.inserted]
     notes += [f"Row {row + 1} of the template is missing from your file; its values were left unchanged"
