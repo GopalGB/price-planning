@@ -135,7 +135,7 @@ def measure_edits(wb, picks, m):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('--xlsm', required=True); ap.add_argument('--manifest', required=True)
-    ap.add_argument('--public-dir', default='.planning/excel-grid/results')
+    ap.add_argument('--public-dir', default='results-private/public')
     ap.add_argument('--private-dir', default='results-private')
     ap.add_argument('--max-rss-mb', type=float, default=12000); ap.add_argument('--max-seconds', type=float, default=3600)
     a = ap.parse_args(argv)

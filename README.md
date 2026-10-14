@@ -1,11 +1,7 @@
 # Price Planning
 
-The Excel-like multi-user v2 is in P0 Repo + rails. Read [AGENTS.md](AGENTS.md)
-for agent rules, [.planning/STATE.md](.planning/STATE.md) for the current handoff,
-and [docs/DEPLOY.md](docs/DEPLOY.md) for the office deployment workflow.
-The approved design is [.planning/excel-grid/SPEC.md](.planning/excel-grid/SPEC.md).
-The synthetic Univer prototype is documented in [proto/univer-gate/README.md](proto/univer-gate/README.md).
-CI, Windows offline/LAN acceptance and the Univer gate still require verification.
+Multi-user web app for the Spring 2027 price-plan workbook. See [docs/DEPLOY.md](docs/DEPLOY.md)
+for the office deployment workflow and [docs/API.md](docs/API.md) for the API.
 
 ## Legacy LAN demo: validation build, being replaced by v2
 

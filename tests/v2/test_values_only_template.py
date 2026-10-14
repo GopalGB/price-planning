@@ -97,7 +97,7 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
         }, {"x-csrf-token": csrf})
         self.assertEqual(edit.status_code, 200, edit.body)
         # the live calc_state message must report it calculated, or the browser shows "Calculating..."
-        # forever (seen in Ego Lite 2026-10-13); the stored job stays queued so that once Excel works
+        # forever (seen in a browser 2026-10-13); the stored job stays queued so that once Excel works
         # the engine recalculates this copy instead of skipping it
         from pp.server import _calc_state
         self.assertEqual(_calc_state(runtime.app.state.services, copy_id),

@@ -1,4 +1,4 @@
-# Company data never enters git (SPEC D1). Copy the template onto the server by hand.
+# Company data never enters git. Copy the template onto the server by hand.
 /template/
 *.xlsm
 *.xlsx
@@ -19,7 +19,6 @@ docs/vba_audit/
 docs/workbook_audit.json
 docs/parity_report.json
 results-private/
-.planning/excel-grid/results-private/
 
 # Runtime state and secrets
 /data/
@@ -31,10 +30,6 @@ results-private/
 *.db-wal
 *.db-shm
 *.log
-.planning/excel-grid/tracks/*.log
-.planning/excel-grid/backend-*.log
-.planning/excel-grid/frontend-shots/
-.planning/excel-grid/**/frontend-shots/
 frontend-shots/
 logs/
 .content-denylist
@@ -46,9 +41,5 @@ __pycache__/
 *.pyc
 node_modules/
 .DS_Store
-strix_runs/
-.superpowers/
-codedb.snapshot
-proto/univer-gate/dist/
 
 logo.svg
