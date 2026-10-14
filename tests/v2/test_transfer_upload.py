@@ -1037,6 +1037,30 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(body["changes"], [])
         self.assertTrue(any("columns look inserted" in item["reason"] for item in body["ignored"]))
 
+    def test_preview_compares_the_file_with_the_template_by_sheet_column_and_row(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("compare@example.test", "Compare")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        upload = _workbook_bytes(exported, fixture.root, (
+            ("Plan", "A5", "S-4"), ("Plan", "B5", 40), ("Plan", "E1", "Notes"), ("Plan", "E2", "check"),
+        ), new_sheet=True)
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", upload,
+            {"x-csrf-token": csrf, "x-upload-filename": "compare.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        structure = {item["sheet"]: item for item in response.json()["structure"]}
+        plan = structure["Plan"]
+        self.assertEqual((plan["status"], plan["rows"]), ("different", {"template": 4, "file": 5}))
+        self.assertEqual(plan["extra_columns"], [{"column": "E", "header": "Notes"}])
+        self.assertEqual(plan["missing_columns"], [])
+        self.assertEqual(structure["Unexpected"]["status"], "extra")
+
     def test_row_inserted_inside_a_formula_table_keeps_values_on_their_items(self):
         fixture = APIFixture(_open_table_fixture)
         self.addCleanup(fixture.close)

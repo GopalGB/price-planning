@@ -22,6 +22,9 @@ safe Excel workbook".
   converted with Excel Save As (pp/engine/excel.py convert_to_xlsm, untested on real Excel). Other
   unreadable files name the part and the error type; the server log has the detail.
 - Files without download information are matched by sheet names; differing formulas are noted.
+- Upload preview now has "Your file compared with the template": per sheet, rows with data (file vs
+  template), columns empty in the file and columns only in the file (letter and top text), missing and
+  extra sheets; matching sheets collapse. Real template: 20 same, the 2 edited sheets +3 rows.
 - Real template (Mac): append preview 23 s; insert on 2 sheets 47 s. Tests: 847 Python OK, 198 web OK,
   content guard 0.
 
