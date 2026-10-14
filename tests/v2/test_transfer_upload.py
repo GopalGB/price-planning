@@ -328,10 +328,23 @@ class UploadAPITests(unittest.TestCase):
         workbook = load_workbook(source)
         workbook["Lookup"].title = "Prices"
         workbook.save(output)
-        refused = self.preview(self.owner, self.owner_csrf, output.read_bytes())
+        renamed = self.preview(self.owner, self.owner_csrf, output.read_bytes())
+        self.assertEqual(renamed.status_code, 200, renamed.body)  # a missing tab stays as it is in the copy
+        statuses = {item["sheet"]: item["status"] for item in renamed.json()["structure"]}
+        self.assertEqual((statuses["Lookup"], statuses["Prices"]), ("missing", "extra"))
+        self.assertEqual(renamed.json()["extras"]["sheets"], [])  # own tabs need a file with every template tab
+        self.assertTrue(any("only updated from a file with all" in item["reason"]
+                            for item in renamed.json()["ignored"]))
+
+        other = Workbook()
+        other.active.title = "BU data"
+        other.active["A1"] = 1
+        foreign = self.fixture.root / "foreign.xlsx"
+        other.save(foreign)
+        refused = self.preview(self.owner, self.owner_csrf, foreign.read_bytes())
         self.assertEqual(refused.status_code, 422, refused.body)
         self.assertEqual(refused.json()["error"], "different_template")
-        self.assertIn("no sheet named Lookup", refused.json()["message"])
+        self.assertIn('its sheets are "BU data"', refused.json()["message"])
 
     def test_tampered_or_incomplete_provenance_is_rejected(self):
         def rewrite_property(data, name, value):

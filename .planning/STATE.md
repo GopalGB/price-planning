@@ -1,5 +1,13 @@
 # STATE
 
+## 2026-10-14 (Claude, partial uploads)
+
+Sir: "This file does not match the template: it has no sheet named Config and Lookup, ... and 14 more"
+(all 22 template tabs). The original template .xlsm previews fine on the Mac (all same), so the file had
+none of the template's tab names. Now a file with some template tabs is accepted (missing tabs stay as
+they are in the copy; own tabs and columns change only from a file with every template tab), and a file
+with none names its own tabs in the refusal so the wrong file is obvious. 865 Python, 200 web OK.
+
 ## 2026-10-14 (Claude, own tabs and columns, validation, Excel mode)
 
 feat/v2-integration. Sir: "Validation formula is not supported" when typing; let users upload their
