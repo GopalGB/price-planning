@@ -22,6 +22,7 @@ import pp.upload as upload_module
 from pp.errors import AppError
 from pp.upload import PreviewStore
 from tests.v2.api_support import APIFixture
+from tests.v2.support import SYNTHETIC_LOGIN
 from tests.v2.test_template_importer import default_style_fixture
 
 
@@ -1056,14 +1057,15 @@ class UploadAPITests(unittest.TestCase):
         headers = {"x-csrf-token": csrf, "x-upload-filename": "scorecard.xlsx",
                    "content-type": "application/octet-stream"}
 
-        def upload(tabs):
+        def upload(tabs, session=client, token=csrf):
             book = Workbook()
             for number, (name, value) in enumerate(tabs):
                 sheet = book.active if number == 0 else book.create_sheet()
                 sheet.title, sheet["A1"], sheet["B1"] = name, value, "=A1*2"
             path = fixture.root / f"own-{len(tabs)}-{tabs[0][1]}.xlsx"
             book.save(path)
-            preview = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", path.read_bytes(), headers)
+            preview = session.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", path.read_bytes(),
+                                  {**headers, "x-csrf-token": token})
             self.assertEqual(preview.status_code, 200, preview.body)
             return preview.json()
 
@@ -1079,24 +1081,35 @@ class UploadAPITests(unittest.TestCase):
         }, {"x-csrf-token": csrf})
         self.assertEqual(edit.status_code, 200, edit.body)
 
+        other = fixture.client()  # the same user in another browser
+        self.assertEqual(other.post("/api/auth/login", {"email": "addtabs@example.test",
+                                                        "password": SYNTHETIC_LOGIN}).status_code, 200)
+        other_csrf = other.get("/api/me").json()["csrf"]
+        raced = upload([("Raced", 1)], other, other_csrf)
+        second = upload([("Definition & Calculations", 100), ("Scorecard", 3)])
+        first_wins = other.post(f"/api/uploads/{raced['token']}/confirm", {"mode": "update"},
+                                {"x-csrf-token": other_csrf})
+        self.assertEqual(first_wins.status_code, 200, first_wins.body)
+        refused = client.post(f"/api/uploads/{second['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
+        self.assertEqual((refused.status_code, refused.json()["error"]), (409, "refresh_preview"))
         second = upload([("Definition & Calculations", 100), ("Scorecard", 3)])
         extras = second["extras"]
         self.assertEqual((extras["sheets"], extras["replaced_sheets"], extras["other_sheets"], extras["removed_sheets"]),
-                         (["Definition & Calculations", "Scorecard"], ["Definition & Calculations"], ["Data"], []))
+                         (["Definition & Calculations", "Scorecard"], ["Definition & Calculations"], ["Data", "Raced"], []))
         confirmed = client.post(f"/api/uploads/{second['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
         self.assertEqual(confirmed.status_code, 200, confirmed.body)
 
         meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
         self.assertEqual([(sheet["name"], sheet["index"]) for sheet in meta["sheets"]],
-                         [("Plan", 0), ("Definition & Calculations", 1), ("Data", 2), ("Scorecard", 3)])
+                         [("Plan", 0), ("Definition & Calculations", 1), ("Data", 2), ("Raced", 3), ("Scorecard", 4)])
         value = lambda sheet: client.get(f"/api/copies/{copy['id']}/sheets/{sheet}/rows?start=0&count=1").json()["rows"]["0"]["0"]["v"]
-        self.assertEqual((value(1), value(2), value(3)), (100, 9, 3))  # replaced, app edit kept, added
+        self.assertEqual((value(1), value(2), value(4)), (100, 9, 3))  # replaced, app edit kept, added
         download = client.get(f"/api/copies/{copy['id']}/export.xlsx")
         self.assertEqual(download.status_code, 200, download.body)
         saved = fixture.root / "added-download.xlsx"
         saved.write_bytes(download.body)
         result = load_workbook(saved)
-        self.assertEqual(result.sheetnames, ["Plan", "Definition & Calculations", "Data", "Scorecard"])
+        self.assertEqual(result.sheetnames, ["Plan", "Definition & Calculations", "Data", "Raced", "Scorecard"])
         self.assertEqual((result["Data"]["A1"].value, result["Scorecard"]["B1"].value), (9, "=A1*2"))
 
         third = upload([("Data", 5)])

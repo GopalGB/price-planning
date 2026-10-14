@@ -420,6 +420,7 @@ class UploadService:
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
             structure = _structure_report(model, self._template_model(snapshot))
             kept = current_plan(connection, copy["id"]) if copy is not None else None
+            base_extras = kept["id"] if kept is not None else None
             plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
             present = {name.casefold() for name in model.sheets}
             # A file without all of the template's tabs adds its own tabs and columns to the copy's: it cannot
@@ -479,6 +480,7 @@ class UploadService:
             "extras_dir": str(built) if built is not None else None,
             "replace_extras": replace_extras,
             "keep_regions": [list(region) for region in unchanged],
+            "base_extras": base_extras,
         }
         try:
             token = self.previews.put(stored)
@@ -598,6 +600,12 @@ class UploadService:
             with self.database.transaction() as connection:
                 if effective_role(connection, preview["copy_id"], request.user_id) not in EDIT_ROLES:
                     raise AppError(403, "forbidden", "Editor access is required")
+                if preview.get("replace_extras"):
+                    now = current_plan(connection, preview["copy_id"])
+                    if (now["id"] if now is not None else None) != preview.get("base_extras"):
+                        # Built from the own tabs the copy had at preview time: it would undo the newer ones
+                        raise AppError(409, "refresh_preview",
+                                       "This copy's own tabs changed after the preview; upload the file again")
                 replaced = self._attach_extras(connection, preview["copy_id"], preview, moved)
                 if changes:
                     ack, _, prepared = self.operations.apply_upload_in_transaction(
