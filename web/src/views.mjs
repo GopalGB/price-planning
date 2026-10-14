@@ -189,11 +189,11 @@ export function uploadStructureView(structure = []) {
         return `<li><b>${e(item.sheet)}</b>: not in your file</li>`;
       if (item.status === "extra")
         return `<li><b>${e(item.sheet)}</b>: not in the template, ignored</li>`;
-      const parts = [];
-      if (item.rows.template !== item.rows.file)
-        parts.push(
-          `rows with data: ${item.rows.file} in your file, ${item.rows.template} in the template`,
-        );
+      const parts = [
+        item.rows.template === item.rows.file
+          ? `rows with data: ${item.rows.file}, same as the template`
+          : `rows with data: ${item.rows.file} in your file, ${item.rows.template} in the template`,
+      ];
       if (item.missing_count)
         parts.push(
           `columns empty in your file: ${columnList(item.missing_columns, item.missing_count)}`,

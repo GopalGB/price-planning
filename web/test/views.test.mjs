@@ -343,12 +343,15 @@ test("upload structure lists what the file and the template each have", () => {
       extra_columns: [{ column: "H", header: "<Notes>" }], extra_count: 1 },
     { sheet: "Data", status: "same", rows: { template: 5, file: 5 }, columns: { template: 3, file: 3 },
       missing_columns: [], missing_count: 0, extra_columns: [], extra_count: 0 },
+    { sheet: "Wide", status: "different", rows: { template: 7, file: 7 }, columns: { template: 3, file: 4 },
+      missing_columns: [], missing_count: 0, extra_columns: [{ column: "D", header: null }], extra_count: 1 },
     { sheet: "Old", status: "missing" },
     { sheet: "Mine", status: "extra" },
   ]);
   assert.match(html, /rows with data: 12 in your file, 10 in the template/);
   assert.match(html, /columns empty in your file: C \(Price\)/);
   assert.match(html, /columns only in your file: H \(&lt;Notes&gt;\)/);
+  assert.match(html, /<b>Wide<\/b>: rows with data: 7, same as the template; columns only in your file: D</);
   assert.match(html, /<b>Old<\/b>: not in your file/);
   assert.match(html, /<b>Mine<\/b>: not in the template, ignored/);
   assert.match(html, /1 sheet matches the template/);
