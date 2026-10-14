@@ -681,8 +681,7 @@ def _record_cell(element: ET.Element, context: CellContext) -> tuple[int, int, d
     return row, col, record
 
 
-def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
-    index = sheet_info["index"]
+def _blank_sheet(sheet_info) -> dict:
     metadata = {**sheet_info, "rows": 0, "cols": 0, "freeze": {"rows": 0, "cols": 0},
                 "col_widths": {}, "row_heights": {}, "hidden_rows": [], "hidden_cols": [],
                 "col_styles": [], "row_styles": {}, "merges": [], "validations": [],
@@ -691,6 +690,12 @@ def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
                 "tab_color": None, "show_gridlines": True, "zoom": 1.0,
                 "scroll": {"row": 0, "col": 0}}
     metadata.pop("part")
+    return metadata
+
+
+def _sheet_pass(context: SheetContext, sheet_info) -> tuple[dict, bool]:
+    index = sheet_info["index"]
+    metadata = _blank_sheet(sheet_info)
     block_index, block_rows, protected = None, {}, False
     sheet_dir = context.destination / "sheets" / str(index)
     state = SheetState(block_rows, metadata, CellContext(context.database, index, context.unlocked))
@@ -1067,7 +1072,7 @@ def _dashboard_or_saved_values(archive: zipfile.ZipFile, sheet_specs: list[dict]
         return {spec["index"]: {"pivots": [], "slicers": []} for spec in sheet_specs}
 
 
-def _import_archive(source: CapturedSource, staging: Path, results: str = "engine") -> None:
+def _import_archive(source: CapturedSource, staging: Path, results: str = "engine", only=None) -> None:
     database = sqlite3.connect(staging / "import.sqlite")
     database.execute("CREATE TABLE candidates (sheet INTEGER, row INTEGER, col INTEGER, PRIMARY KEY(sheet,row,col))")
     database.execute("CREATE TABLE formulas (sheet INTEGER, id INTEGER, row INTEGER, col INTEGER, formula TEXT, PRIMARY KEY(sheet,id))")
@@ -1087,7 +1092,10 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
                 _custom_table_styles(archive, palette), palette,
             )
             for spec in sheet_specs:
-                info, is_protected = _sheet_pass(context, spec)
+                if only is not None and spec["name"].casefold() not in only:
+                    info, is_protected = _blank_sheet(spec), False  # left empty: the caller never shows it
+                else:
+                    info, is_protected = _sheet_pass(context, spec)
                 info.update(dashboard[spec["index"]])
                 metadata.append(info)
                 if is_protected:
@@ -1111,7 +1119,8 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
                     "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,
-                    "defined_names": names, "refreshable": refreshable})
+                    "defined_names": names, "refreshable": refreshable,
+                    "only": sorted(only) if only is not None else None})
         _write_json(staging / "progress.json", {"complete": True,
                     "sheets_completed": len(metadata), "sheets_total": len(metadata)})
     finally:
@@ -1127,13 +1136,14 @@ def _snapshot_current(destination: Path, results: str = "engine") -> bool:
     return (meta.get("hash") == destination.name
             and meta.get("import_version") == IMPORT_VERSION
             and meta.get("results", "engine") == results
+            and meta.get("only") is None  # a snapshot of some tabs never serves a full import
             and (destination / "source.xlsm").is_file())
 
 
-def _build_snapshot(source: CapturedSource, destination: Path, results: str = "engine") -> Path:
+def _build_snapshot(source: CapturedSource, destination: Path, results: str = "engine", only=None) -> Path:
     staging = staging_directory(destination.parent)
     try:
-        _import_archive(source, staging, results)
+        _import_archive(source, staging, results, only)
         source.path.replace(staging / "source.xlsm")
         if destination.exists():
             return replace_snapshot(staging, destination)
@@ -1148,13 +1158,15 @@ def _build_snapshot(source: CapturedSource, destination: Path, results: str = "e
         raise
 
 
-def import_template(source: str | Path, data_dir: str | Path, results: str = "engine") -> Path:
+def import_template(source: str | Path, data_dir: str | Path, results: str = "engine", sheets=None) -> Path:
+    """Import a workbook into a snapshot. ``sheets`` (names) limits which tabs are read; the others stay empty."""
     source, data_dir = Path(source), Path(data_dir)
     captured = _capture_source(source, data_dir / "templates")
     destination = data_dir / "templates" / captured.digest
     try:
-        if _snapshot_current(destination, results):
+        only = None if sheets is None else {name.casefold() for name in sheets}
+        if only is None and _snapshot_current(destination, results):
             return destination
-        return _build_snapshot(captured, destination, results)
+        return _build_snapshot(captured, destination, results, only)
     finally:
         captured.path.unlink(missing_ok=True)
