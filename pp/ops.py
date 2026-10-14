@@ -402,12 +402,14 @@ def _value(value):
 
 
 def _validate_rule(rule, value, cell):
+    # Rules the app cannot evaluate (custom formulas, lists from a range, formula bounds) accept the value,
+    # like Excel does for pasted values; blocking them made those input cells impossible to fill.
     if not _blocking_validation(rule) or value is None:
         return
     kind = rule.get("type")
     if kind == "list":
         if "list" not in rule:
-            _validation_error("invalid", "Reference validation is not supported", cell)
+            return
         if value not in rule["list"]:
             _validation_error("invalid", "Value is outside the validation list", cell)
         return
@@ -417,7 +419,7 @@ def _validate_rule(rule, value, cell):
         _validate_static_rule(len(value), rule, cell)
         return
     if kind not in {"whole", "decimal", "date", "time"}:
-        _validation_error("invalid", "Validation formula is not supported", cell)
+        return
     numeric = isinstance(value, (int, float)) and not isinstance(value, bool)
     integral = not isinstance(value, float) or value.is_integer()
     if not numeric or kind == "whole" and not integral:
@@ -433,9 +435,7 @@ def _blocking_validation(rule):
 
 def _validate_static_rule(value, rule, cell):
     valid = _numeric_rule(value, rule)
-    if valid is None:
-        _validation_error("invalid", "Validation bounds are not static", cell)
-    if not valid:
+    if valid is False:
         _validation_error("invalid", "Value is outside the validation bounds", cell)
 
 
