@@ -1119,7 +1119,8 @@ def _import_archive(source: CapturedSource, staging: Path, results: str = "engin
         _write_json(staging / "styles.json", styles)
         _write_json(staging / "meta.json", {"hash": source.digest, "name": source.name,
                     "import_version": IMPORT_VERSION, "results": results, "sheets": metadata,
-                    "defined_names": names, "refreshable": refreshable})
+                    "defined_names": names, "refreshable": refreshable,
+                    "only": sorted(only) if only is not None else None})
         _write_json(staging / "progress.json", {"complete": True,
                     "sheets_completed": len(metadata), "sheets_total": len(metadata)})
     finally:
@@ -1135,6 +1136,7 @@ def _snapshot_current(destination: Path, results: str = "engine") -> bool:
     return (meta.get("hash") == destination.name
             and meta.get("import_version") == IMPORT_VERSION
             and meta.get("results", "engine") == results
+            and meta.get("only") is None  # a snapshot of some tabs never serves a full import
             and (destination / "source.xlsm").is_file())
 
 

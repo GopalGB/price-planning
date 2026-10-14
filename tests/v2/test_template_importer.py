@@ -159,6 +159,10 @@ class TemplateImporterTests(unittest.TestCase):
             self.assertGreater(meta["sheets"][1]["rows"], 0)
             self.assertTrue((snapshot / "sheets" / "1").is_dir())
 
+            full = import_template(source, workspace / "data", "cached")
+            meta = json.loads((full / "meta.json").read_text(encoding="utf-8"))
+            self.assertGreater(meta["sheets"][0]["rows"], 0)
+
     def test_failed_import_does_not_publish_partial_snapshot(self):
         """Publishing staging data after a malformed archive would be corruption."""
         from pp.template.importer import TemplateImportError, import_template
