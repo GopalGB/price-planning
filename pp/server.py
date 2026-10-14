@@ -10,6 +10,7 @@ import io
 import json
 import logging
 from pathlib import Path
+import shutil
 import tempfile
 from urllib.parse import unquote
 from uuid import uuid4
@@ -682,8 +683,11 @@ def _write_export(job):
         template_path=job.snapshot["source"], cells=cells, out_path=job.path,
         template_hash=job.snapshot["template_id"], copy_id=job.copy_id,
         input_revision=job.snapshot["input_revision"], fmt=job.fmt,
-        selected=job.selected, results=job.snapshot["results"],
+        selected=job.selected, results=job.snapshot["results"], extras_id=job.snapshot.get("extras_id") or "",
     ))
+    if job.snapshot.get("order"):
+        from .export.extras_graft import reorder_sheets
+        reorder_sheets(job.path, job.snapshot["order"])  # the copy's own tabs go back where the user put them
 
 
 def _write_export_job(payload):
@@ -1030,6 +1034,8 @@ def _sweep_transfer_files(data_dir):
         for path in directory.rglob("*"):
             if path.is_file():
                 path.unlink(missing_ok=True)
+    for path in (root / "uploads" / "previews").glob("extras-*"):
+        shutil.rmtree(path, ignore_errors=True)  # an unconfirmed preview's own tabs and columns
     uploads = root / "uploads"
     if uploads.is_dir():
         for path in uploads.glob("preview-*.xlsx"):

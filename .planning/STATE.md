@@ -1,5 +1,39 @@
 # STATE
 
+## 2026-10-14 (Claude, own tabs and columns, validation, Excel mode)
+
+feat/v2-integration. Sir: "Validation formula is not supported" when typing; let users upload their
+version with extra tabs or calculation columns and show what exists and what is new; macros say they
+run on the office server; BU recap values do not flow to other tabs. Grill: keep extras in the copy,
+show them in the app, editable like inputs.
+- abd0366: rules the app cannot evaluate (custom formulas, lists from a range, formula bounds) accept
+  the value instead of blocking the cell. The real template's custom rules on 2 sheets blocked entry.
+- 6131814 (plan .planning/excel-grid/PLAN-extras.md): extra tabs and columns at or right of a template
+  sheet's first empty column are imported once (template importer, Excel's saved values) and grafted
+  into the template package (pp/export/extras_graft.py, written by a Haiku executor, reviewed).
+  pp/extras.py CopySnapshot serves them via TemplateCatalog.for_copy: tabs at their file position with
+  indexes after the template's, formulas show saved values, other cells open for typing, no validation.
+  Downloads keep them in the user's tab order with fullCalcOnLoad. Preview lists "Kept in your copy" and
+  "Removed from your copy"; a second upload replaces extras and their values. Columns inserted in the
+  middle are refused (a template column emptied, or a heading found in another column).
+- Real template (Mac, lan-check): own tab + 59-formula column: preview 87 s (import + graft), confirm
+  instant, rows render, export 13 s with VBA and formulas, peak 1.46 GB.
+- ac5129d: office_run.bat forces PP_ENGINE=excel when Excel is registered (an older settings.json could
+  keep values mode) and prints EXCEL MODE or VALUES MODE. Macro and slicer messages now say the server
+  runs without Excel. Cross-tab recalculation and macros need the Excel engine; values mode never
+  recalculates. Still unverified on the office server.
+- Adversarial review (Sonnet) found 3 HIGH, 6 MEDIUM, 1 LOW; fixed with tests: new columns on sheets
+  whose rows moved are refused (they sat at file rows); an older download no longer reverts extras
+  edited in the app since (kept, with a note); extras span at most 200 columns and empty-cell rendering
+  is capped (a stray XFD1 made a 428 MB rows response); the first extra column also sits past the
+  template's rightmost input (real sheet 4: inputs to index 138, extras from 139; scan 6.5 s, warmed);
+  failed confirms delete the moved folder, startup sweeps preview extras; shared-formula children whose
+  master stays left get their own formula; merges in extra columns kept; lost charts/comments named;
+  rebuild of a shared folder is locked; a half-formula validation rule keeps its numeric bound.
+  Folders: 78 MB per copy on the real file (pruned), forks share the parent's folder.
+- Open: Excel-engine calculation with extras (caches per grafted package) untested; extras folders are
+  not in backups; extras paths are absolute in the DB like template snapshot paths.
+
 ## 2026-10-14 (Claude, upload adapts to moved rows, .xlsb)
 
 feat/v2-integration. Sir: edited downloads with more rows were rejected as moved, and "File is not a

@@ -18,7 +18,10 @@ from .pivot_state import EMPTY_STATE as EMPTY_PIVOT_STATE, read_state
 from .row_cache import RowBlockCache
 from .template.importer import IMPORT_VERSION
 
-SLICER_MESSAGE = "Slicers change on the office server, where the app uses Microsoft Excel."
+SLICER_MESSAGE = ("Slicers need Microsoft Excel, and this server is running without it (values mode). "
+                  "They work once Excel is set up for the app on the server.")
+MACRO_MESSAGE = ("Macros need Microsoft Excel, and this server is running without it (values mode), so "
+                 "buttons and recalculation are off. They work once Excel is set up for the app on the server.")
 
 
 class TemplateSnapshot:
@@ -252,6 +255,18 @@ class TemplateCatalog:
         self.database = database
         self.current_hash = current.hash
         self._snapshots = {current.hash: current}
+        self._extras = None
+
+    def for_copy(self, connection, copy):
+        """The copy's template, plus the tabs and columns its owner added in Excel, when it has any."""
+        template = self.get(connection, copy["template_id"])
+        row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy["id"],)).fetchone()
+        if row is None:
+            return template
+        if self._extras is None:
+            from .extras import ExtrasCache
+            self._extras = ExtrasCache()
+        return self._extras.get(template, row["path"])
 
     def current(self, connection):
         return self.get(connection, self.current_hash)
@@ -279,7 +294,7 @@ class WorkbookService:
     def workbook(self, copy_id: str, user_id: str) -> dict:
         with self.database.connect() as connection:
             copy = self._copy(connection, copy_id, user_id)
-            snapshot = self.templates.get(connection, copy["template_id"])
+            snapshot = self.templates.for_copy(connection, copy)
             extents = _result_extents(connection, copy_id)
             pivot_state = read_state(connection, copy_id)
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
@@ -301,8 +316,9 @@ class WorkbookService:
                    "has_conditional_formats": item.get("has_conditional_formats", False),
                    **({"tables": _client_tables(item.get("tables", [])),
                        "filters": item.get("filters", [])}
-                      if item.get("tables") or item.get("filters") else {})}
-                  for item in snapshot.sheets]
+                      if item.get("tables") or item.get("filters") else {}),
+                   **({"extra": True} if item.get("extra") else {})}
+                  for item in _tab_order(snapshot)]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
@@ -311,7 +327,7 @@ class WorkbookService:
     def rows(self, query: RowQuery) -> dict:
         with self.database.read_transaction() as connection:
             copy = self._copy(connection, query.copy_id, query.user_id)
-            snapshot = self.templates.get(connection, copy["template_id"])
+            snapshot = self.templates.for_copy(connection, copy)
             if (not 0 <= query.sheet < len(snapshot.sheets) or query.start < 0
                     or not 1 <= query.count <= 500):
                 raise AppError(422, "invalid", "Sheet row range is invalid")
@@ -344,6 +360,7 @@ class WorkbookService:
         style_rows = _group_rows(style_overrides)
         note_rows = _requested_notes(render.snapshot, query)
         open_sheet = not render.snapshot.sheets[query.sheet].get("protected", False)
+        extra_cell = getattr(render.snapshot, "extra_cell", None)  # a copy's own columns are open cells
         for row in range(query.start, query.start + query.count):
             implicit = render.snapshot.implicit_cells(query.sheet, row)
             stored = render.snapshot.block(query.sheet, row // 256).get(str(row % 256), {})
@@ -367,7 +384,8 @@ class WorkbookService:
                 record.update(_cell_fields(render.snapshot, coordinate, input_record, published))
                 if not override and not published and record["k"] == "i":
                     record["ver"] = 0
-                if record["k"] == "c" and open_sheet and not render.snapshot._pivot_output(*coordinate):
+                if record["k"] == "c" and (open_sheet or extra_cell and extra_cell(*coordinate)) \
+                        and not render.snapshot._pivot_output(*coordinate):
                     record.update({"open": True, "ver": record.get("ver", 0)})
                 if col in styles:
                     record["style_override"] = styles[col]
@@ -381,7 +399,7 @@ class WorkbookService:
     def cell(self, query: CellQuery) -> dict:
         with self.database.read_transaction() as connection:
             copy = self._copy(connection, query.copy_id, query.user_id)
-            snapshot = self.templates.get(connection, copy["template_id"])
+            snapshot = self.templates.for_copy(connection, copy)
             if min(query.sheet, query.row, query.col) < 0 or query.sheet >= len(snapshot.sheets):
                 raise AppError(422, "invalid", "Cell coordinate is invalid")
             override = connection.execute(
@@ -458,25 +476,25 @@ class WorkbookService:
             copy = self._copy(connection, copy_id, user_id)
             if effective_role(connection, copy_id, user_id) not in {"owner", "editor"}:
                 raise AppError(403, "forbidden", "Editor access is required")
-            return self.templates.get(connection, copy["template_id"])
+            return self.templates.for_copy(connection, copy)
 
     def source_and_overrides(self, copy_id: str, user_id: str):
         with self.database.connect() as connection:
             copy = self._copy(connection, copy_id, user_id)
-            snapshot = self.templates.get(connection, copy["template_id"])
+            snapshot = self.templates.for_copy(connection, copy)
             template = connection.execute("SELECT source_path FROM pp_templates WHERE id=?",
                                           (copy["template_id"],)).fetchone()
             rows = connection.execute("SELECT sheet,row,col,value_json FROM pp_overrides WHERE copy_id=?",
                                       (copy_id,)).fetchall()
             _check_overrides(connection, snapshot, copy_id, rows)
-        return Path(template["source_path"]), {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
-                                                 for item in rows}
+        return _source(snapshot, template), {(item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
+                                             for item in rows}
 
     def export_snapshot(self, copy_id: str, user_id: str):
         """Read inputs and only results calculated for the same copy revision."""
         with self.database.read_transaction() as connection:
             copy = self._copy(connection, copy_id, user_id)
-            snapshot = self.templates.get(connection, copy["template_id"])
+            snapshot = self.templates.for_copy(connection, copy)
             template = connection.execute(
                 "SELECT source_path FROM pp_templates WHERE id=?", (copy["template_id"],)
             ).fetchone()
@@ -494,7 +512,8 @@ class WorkbookService:
                     (item["sheet"], item["row"], item["col"]): json.loads(item["value_json"])
                     for item in result_rows})
         return {
-            "source": Path(template["source_path"]), "template_id": copy["template_id"],
+            "source": _source(snapshot, template), "template_id": copy["template_id"],
+            "order": getattr(snapshot, "order", None), "extras_id": getattr(snapshot, "extras_id", ""),
             "input_revision": copy["input_revision"],
             "calculated_revision": copy["calculated_revision"], "overrides": {
                 (item["sheet"], item["row"], item["col"]): json.loads(item["value_json"]) for item in rows
@@ -504,22 +523,36 @@ class WorkbookService:
     def calculation_source(self, copy_id: str) -> Path:
         with self.database.connect() as connection:
             copy = connection.execute(
-                "SELECT template_id FROM pp_copies WHERE id=?", (copy_id,)
+                "SELECT * FROM pp_copies WHERE id=?", (copy_id,)
             ).fetchone()
             if copy is None:
                 raise AppError(404, "not_found", "Copy not found")
             template = connection.execute(
                 "SELECT source_path FROM pp_templates WHERE id=?", (copy["template_id"],)
             ).fetchone()
-        if template is None:
-            raise AppError(500, "template_missing", "The copy template is unavailable")
-        return Path(template["source_path"])
+            if template is None:
+                raise AppError(500, "template_missing", "The copy template is unavailable")
+            return _source(self.templates.for_copy(connection, copy), template)
 
     def _copy(self, connection, copy_id, user_id):
         copy = connection.execute("SELECT * FROM pp_copies WHERE id=?", (copy_id,)).fetchone()
         if copy is None or effective_role(connection, copy_id, user_id) is None:
             raise AppError(404, "not_found", "Copy not found")
         return copy
+
+
+def _tab_order(snapshot):
+    """Sheets in the order the copy's file had them; a copy's own tabs keep their place among the template's."""
+    order = getattr(snapshot, "order", None)
+    if not order:
+        return snapshot.sheets
+    position = {name.casefold(): number for number, name in enumerate(order)}
+    return sorted(snapshot.sheets, key=lambda item: (position.get(item["name"].casefold(), len(order)), item["index"]))
+
+
+def _source(snapshot, template):
+    """The package a copy is calculated and downloaded from: the template, with the copy's extras grafted in."""
+    return getattr(snapshot, "grafted_path", None) or Path(template["source_path"])
 
 
 def _overrides(connection, query):
@@ -541,6 +574,11 @@ def _row_cache_key(connection, copy, query):
     results, so it is keyed by content rather than by the revision written next to it.
     """
     state = read_state(connection, query.copy_id)
+    extras = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (query.copy_id,)).fetchone()
+    if extras is not None:
+        return (query.copy_id, copy["template_id"], extras["path"], query.sheet, query.start, query.count,
+                copy["input_revision"], copy["calculated_revision"],
+                json.dumps(state, sort_keys=True, separators=(",", ":")))
     if state == EMPTY_PIVOT_STATE and not _copy_has_values(connection, query.copy_id):
         # A copy with no edits, results or slicer choices renders exactly the template, so all
         # such copies share one body: 50 fresh copies cost one render per block, not 50
@@ -695,7 +733,7 @@ def _spill_input_metadata(snapshot, coordinate, input_record):
 
 
 def _require_excel(snapshot, engine_kind: str | None, code: str = "macros_unavailable",
-                   message: str = "Macros run on the office server, where the app uses Microsoft Excel.") -> None:
+                   message: str = MACRO_MESSAGE) -> None:
     if engine_kind != "excel" or snapshot.results == "cached":
         raise AppError(409, code, message)
 

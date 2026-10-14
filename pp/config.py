@@ -335,7 +335,8 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
 
 def _engine(settings) -> str:
     # "excel" calculates copies in Microsoft Excel (Windows server with Excel installed).
-    value = settings.get("engine", "formualizer")
+    # PP_ENGINE wins so office_run.bat can switch Excel on even when an older settings.json says otherwise
+    value = os.environ.get("PP_ENGINE") or settings.get("engine", "formualizer")
     if value not in ("formualizer", "excel"):
         raise ValueError("engine must be 'formualizer' or 'excel'")
     return value

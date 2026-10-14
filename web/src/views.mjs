@@ -179,8 +179,9 @@ const columnList = (columns, count) =>
     .join(", ") +
   (count > columns.length ? ` and ${count - columns.length} more` : "");
 
-export function uploadStructureView(structure = []) {
+export function uploadStructureView(structure = [], extras = null) {
   if (!structure.length) return "";
+  const kept = new Set((extras?.sheets ?? []).map((name) => name.toLowerCase()));
   const same = structure.filter((item) => item.status === "same");
   const lines = structure
     .filter((item) => item.status !== "same")
@@ -188,7 +189,9 @@ export function uploadStructureView(structure = []) {
       if (item.status === "missing")
         return `<li><b>${e(item.sheet)}</b>: not in your file</li>`;
       if (item.status === "extra")
-        return `<li><b>${e(item.sheet)}</b>: not in the template, ignored</li>`;
+        return kept.has(item.sheet.toLowerCase())
+          ? `<li><b>${e(item.sheet)}</b>: new tab, kept in your copy</li>`
+          : `<li><b>${e(item.sheet)}</b>: not in the template, ignored</li>`;
       const parts = [
         item.rows.template === item.rows.file
           ? `rows with data: ${item.rows.file}, same as the template`
@@ -213,7 +216,28 @@ export function uploadStructureView(structure = []) {
         )
         .join("")}</ul></details>`
     : "";
-  return `<h3>Your file compared with the template</h3>${lines ? `<ul>${lines}</ul>` : ""}${matching}`;
+  return `<h3>Your file compared with the template</h3>${lines ? `<ul>${lines}</ul>` : ""}${matching}${uploadExtrasView(extras)}`;
+}
+
+export function uploadExtrasView(extras) {
+  if (!extras) return "";
+  const keep = [
+    ...extras.sheets.map((name) => `<li>Tab <b>${e(name)}</b></li>`),
+    ...extras.columns.map(
+      (item) =>
+        `<li><b>${e(item.sheet)}</b>: ${item.count === 1 ? "new column" : "new columns"} ${columnList(item.columns, item.count)}</li>`,
+    ),
+  ].join("");
+  const gone = [
+    ...extras.removed_sheets.map((name) => `<li>Tab <b>${e(name)}</b></li>`),
+    ...extras.removed_columns.map((name) => `<li>New columns on <b>${e(name)}</b></li>`),
+  ].join("");
+  return (
+    (keep
+      ? `<h3>Kept in your copy</h3><p>Your own tabs and columns are saved with this copy and come back in downloads. Their formulas show the values Excel saved.</p><ul>${keep}</ul>`
+      : "") +
+    (gone ? `<h3>Removed from your copy</h3><p>Your file no longer has these, so they are removed.</p><ul>${gone}</ul>` : "")
+  );
 }
 
 export function uploadPreviewView(preview, categories, categoryId, name) {
@@ -247,5 +271,5 @@ export function uploadPreviewView(preview, categories, categoryId, name) {
   const update = preview.can_update
     ? '<label><input type="radio" name="mode" value="update" checked>Update this copy</label>'
     : "";
-  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${uploadStructureView(preview.structure)}${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
+  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${uploadStructureView(preview.structure, preview.extras)}${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
 }

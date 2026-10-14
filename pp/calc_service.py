@@ -59,7 +59,7 @@ class CalculationService:
             if publication.delta and publication.base_revision != previous_revision:
                 raise PublicationBaseMismatch("calculation publication base changed")
             delta = _published_delta(connection, publication)
-            snapshot = self.templates.get(connection, copy["template_id"]) if self.templates else None
+            snapshot = self.templates.for_copy(connection, copy) if self.templates else None
             if snapshot:
                 delta = _include_touched(connection, delta, (previous_revision, revision))
             _persist_results(connection, publication)

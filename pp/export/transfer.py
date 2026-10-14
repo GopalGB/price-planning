@@ -78,6 +78,7 @@ class TransferRequest:
     fmt: str = "xlsx"
     selected: object = None
     results: object = None
+    extras_id: str = ""  # the copy's own tabs and columns this file carries, so an upload knows its age
 
 
 @dataclass(frozen=True)
@@ -1309,7 +1310,7 @@ def _transform_replacements(archive, state, request):
     existing = archive.read("docProps/custom.xml") if "docProps/custom.xml" in state.parts else None
     custom = _custom_properties(existing, {
         "TemplateHash": request.template_hash, "CopyId": request.copy_id,
-        "InputRevision": str(request.input_revision),
+        "InputRevision": str(request.input_revision), "ExtrasId": request.extras_id,
     })
     replacements["docProps/custom.xml"] = custom
     return replacements, custom

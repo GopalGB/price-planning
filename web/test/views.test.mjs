@@ -357,3 +357,21 @@ test("upload structure lists what the file and the template each have", () => {
   assert.match(html, /1 sheet matches the template/);
   assert.equal(uploadStructureView([]), "");
 });
+
+test("upload structure says which of the file's own tabs and columns the copy keeps", () => {
+  const html = uploadStructureView(
+    [
+      { sheet: "Plan", status: "different", rows: { template: 3, file: 3 }, columns: { template: 3, file: 5 },
+        missing_columns: [], missing_count: 0,
+        extra_columns: [{ column: "D", header: "Margin" }, { column: "E", header: null }], extra_count: 2 },
+      { sheet: "My calc", status: "extra" },
+    ],
+    { sheets: ["My calc"], columns: [{ sheet: "Plan", count: 2,
+      columns: [{ column: "D", header: "Margin" }, { column: "E", header: null }] }],
+      removed_sheets: ["Old notes"], removed_columns: ["Data"] },
+  );
+  assert.match(html, /<b>My calc<\/b>: new tab, kept in your copy/);
+  assert.match(html, /<h3>Kept in your copy<\/h3>/);
+  assert.match(html, /<b>Plan<\/b>: new columns D \(Margin\), E/);
+  assert.match(html, /<h3>Removed from your copy<\/h3>.*Tab <b>Old notes<\/b>.*New columns on <b>Data<\/b>/);
+});

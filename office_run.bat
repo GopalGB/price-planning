@@ -47,6 +47,9 @@ reg query "HKCR\Excel.Application\CLSID" >nul 2>&1
 if errorlevel 1 reg query "HKCR\CLSID\%EXCEL_CLSID%\LocalServer32" >nul 2>&1
 if errorlevel 1 reg query "HKCR\CLSID\%EXCEL_CLSID%\LocalServer32" /reg:32 >nul 2>&1
 if errorlevel 1 goto no_excel
+rem Excel is registered: use it even when an older settings.json names another engine
+set "PP_ENGINE=excel"
+set "PP_MODE=EXCEL MODE: formulas recalculate across tabs, macros and refresh run in Excel."
 if /i "%~1"=="check" goto checks
 if exist "%HOME_DIR%\checks-done.txt" goto start_app
 :checks
@@ -75,8 +78,10 @@ reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" /v Platform 
 reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\REGISTRY\MACHINE\Software\Classes\Excel.Application\CLSID" 2>nul | findstr /i "REG_SZ"
 echo.
 set "PP_TEMPLATE_RESULTS=cached"
+set "PP_MODE=VALUES MODE: typed values save, but formulas do not recalculate and macros do not run."
 :start_app
 echo.
+echo %PP_MODE%
 echo Starting the app. Share the "Share with your team" link below. Ctrl+C stops it.
 "%VENV_PY%" -u run_v2.py
 goto leave

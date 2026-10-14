@@ -325,6 +325,15 @@ class ConfigContractTests(unittest.TestCase):
             self.assertEqual(config.template_path, env_template)
             self.assertEqual(config.max_workers, 3)
 
+    def test_engine_environment_wins_over_an_older_settings_file(self):
+        with tempfile.TemporaryDirectory(dir=TMP) as temp:
+            root = Path(temp)
+            (root / "settings.json").write_text(json.dumps({"engine": "formualizer"}), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PP_ENGINE": "excel"}, clear=True):
+                self.assertEqual(load_config(root).engine, "excel")
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(load_config(root).engine, "formualizer")
+
     def test_invalid_settings_are_rejected(self):
         with tempfile.TemporaryDirectory(dir=TMP) as temp:
             root = Path(temp)

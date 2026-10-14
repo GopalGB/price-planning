@@ -181,11 +181,12 @@ class OperationContractTests(unittest.TestCase):
         self.assertEqual((caught.exception.status, caught.exception.code), (422, "invalid"))
         self.assertEqual(self.service.apply("copy-a", "editor", operation("length-good", "abc"))["accepted"], 1)
 
-    def test_unevaluated_validations_fail_closed(self):
-        """Unevaluated validation must fail closed with the documented API code."""
+    def test_unevaluated_validations_accept_the_value(self):
+        """Custom, range-list and formula-bound rules the app cannot evaluate must not block typing."""
         rules = [
             {"type": "list", "formula1": "'Lookup'!$A$1:$A$3"},
             {"type": "custom", "formula1": "=B2>0"},
+            {"type": "decimal", "operator": "between", "min": "=Lookup!A1", "max": 50},
         ]
         for index, rule in enumerate(rules):
             with self.subTest(rule=rule["type"]):
@@ -193,10 +194,19 @@ class OperationContractTests(unittest.TestCase):
                 rule["showErrorMessage"] = True
                 rule["errorStyle"] = "stop"
                 self.fixture.snapshot.sheets[0]["validations"] = [rule]
-                with self.assertRaises(AppError) as caught:
-                    self.service.apply("copy-a", "editor", operation(f"unsupported-{index}", 10))
-                self.assertEqual((caught.exception.status, caught.exception.code), (422, "invalid"))
-                self.assertIn("not supported", caught.exception.message)
+                result = self.service.apply("copy-a", "editor", operation(f"unevaluated-{index}", 10 + index, index))
+                self.assertEqual(result["accepted"], 1)
+                self.assertEqual(self.fixture.override()["value"], 10 + index)
+
+    def test_the_static_bound_of_a_half_formula_rule_still_holds(self):
+        self.fixture.snapshot.sheets[0]["validations"] = [{
+            "type": "decimal", "operator": "between", "min": "=Lookup!A1", "max": 5,
+            "ranges": [[1, 1, 1, 1]], "showErrorMessage": True, "errorStyle": "stop",
+        }]
+        with self.assertRaises(AppError) as caught:
+            self.service.apply("copy-a", "editor", operation("above-max", 6))
+        self.assertIn("outside the validation bounds", caught.exception.message)
+        self.assertEqual(self.service.apply("copy-a", "editor", operation("below-max", 4))["accepted"], 1)
 
     def test_whole_validation_accepts_integral_float(self):
         """A mathematically integral finite float is a valid whole number."""

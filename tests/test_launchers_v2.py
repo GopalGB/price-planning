@@ -80,6 +80,10 @@ class OfficeRun(unittest.TestCase):
             self.assertIn(flag, text)
         # an existing settings.json is never rewritten
         self.assertIn('if exist settings.json goto have_settings', text)
+        # Excel registered: the Excel engine is forced over an older settings.json, and the mode is printed
+        self.assertLess(text.index('set "PP_ENGINE=excel"'), text.index(':checks'))
+        self.assertIn('EXCEL MODE', text)
+        self.assertIn('VALUES MODE', text)
 
     def test_pull_gets_user_git_then_clones_or_updates(self):
         import re

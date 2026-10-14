@@ -125,4 +125,8 @@ CREATE TABLE IF NOT EXISTS pp_pivot_state (
 CREATE TABLE IF NOT EXISTS pp_legacy_events (
     event_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS pp_copy_extras (
+    copy_id TEXT PRIMARY KEY REFERENCES pp_copies(id) ON DELETE CASCADE,
+    path TEXT NOT NULL, created_at TEXT NOT NULL
+);
 """

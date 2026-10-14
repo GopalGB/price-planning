@@ -10,6 +10,7 @@ from openpyxl import load_workbook
 
 from ops.fixtures import make_semantic
 from pp.engine.formualizer import EngineError, MacroTimeout
+from pp.workbook_service import MACRO_MESSAGE, SLICER_MESSAGE
 from pp.export.xlsm import export_xlsm
 from tests.v2.api_support import APIFixture
 from tests.v2.support import TMP
@@ -44,7 +45,7 @@ class MacroEndpointContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.json()["error"], "macros_unavailable")
         self.assertEqual(response.json()["message"],
-                         "Macros run on the office server, where the app uses Microsoft Excel.")
+                         MACRO_MESSAGE)
 
     def test_unknown_button_is_404(self):
         response = self.client.post(f"/api/copies/{self.copy_id}/macros", {"button": "b9", "op_id": "press-2"},
