@@ -12,7 +12,7 @@ and prints only counts, so no company data can leave the machine:
 Cell values, cell addresses, formula text and defined names are never printed.
 
     .venv/bin/python -m ops.native_parity --template /path/to/template.xlsm \\
-        --sample 20000 --output .planning/excel-grid/results/native-parity.json
+        --sample 20000 --output results-private/native-parity.json
 
 Exit status is 0 when the audit passed and 1 when it did not.
 """

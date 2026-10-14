@@ -9,8 +9,7 @@
     "test": "node --test test/*.test.mjs",
     "build": "vite build && node scripts/build-manifest.mjs",
     "format": "prettier --write src/*.mjs",
-    "format:check": "prettier --check src/*.mjs",
-    "test:ego": "ego-browser nodejs < test/ego.mjs"
+    "format:check": "prettier --check src/*.mjs"
   },
   "dependencies": {
     "@univerjs/preset-sheets-core": "1.0.4",

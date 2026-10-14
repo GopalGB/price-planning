@@ -62,7 +62,7 @@ for %%A in ("" "--macros" "--refresh" "--slicers") do (
   if errorlevel 1 set /a FAILED+=1
 )
 > "%HOME_DIR%\checks-done.txt" echo Excel checks run %DATE% %TIME%: %FAILED% of 4 did not pass
-if not "%FAILED%"=="0" echo %FAILED% of 4 checks did not PASS. Send the lines above to Claude. Starting the app anyway.
+if not "%FAILED%"=="0" echo %FAILED% of 4 checks did not PASS. Keep the lines above for troubleshooting. Starting the app anyway.
 goto start_app
 
 :no_excel
@@ -73,7 +73,7 @@ echo recalculate when the copy is downloaded and opened in Excel. No macros or r
 for %%D in ("%ProgramFiles%\Microsoft Office" "%ProgramFiles(x86)%\Microsoft Office") do if exist "%%~D" (
   dir /s /b "%%~D\EXCEL.EXE" 2>nul | findstr /i "excel.exe" >nul && echo Excel is installed here but not registered for automation: ask IT to run an Office Quick Repair.
 )
-echo For Claude: Excel registration found below (empty means none).
+echo Excel registration found below (empty means none).
 reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\Configuration" /v Platform 2>nul | findstr /i "Platform"
 reg query "HKLM\SOFTWARE\Microsoft\Office\ClickToRun\REGISTRY\MACHINE\Software\Classes\Excel.Application\CLSID" 2>nul | findstr /i "REG_SZ"
 echo.
@@ -100,7 +100,7 @@ goto fail
 echo Could not get Python 3.12. Check the internet connection, then run this again.
 goto fail
 :install_failed
-echo Installing the packages failed. Send the lines above to Claude.
+echo Installing the packages failed. Keep the lines above for troubleshooting.
 :fail
 popd
 pause

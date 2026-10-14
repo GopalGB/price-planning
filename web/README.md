@@ -1,6 +1,6 @@
 # Price Planning frontend
 
-The app speaks `.planning/excel-grid/API.md`. The production server serves committed `static/dist/`; Node is required only for development and rebuilding.
+The app speaks `docs/API.md`. The production server serves committed `static/dist/`; Node is required only for development and rebuilding.
 
 ## Development
 
@@ -26,7 +26,5 @@ npm run build --prefix web
 ```
 
 The build writes `static/dist/BUILD.json`: SHA-256 over sorted relative file names and bytes for `web/` and the bundle, excluding `node_modules` and `BUILD.json`, plus the pinned Univer version and dependency licenses. Rebuilding unchanged source must reproduce the same manifest and bundle hashes.
-
-The Ego Lite acceptance script is `web/test/ego.mjs`. It resumes the existing TaskSpace supplied as `globalThis.frontendSpaceId` and uses `globalThis.frontendRoot` as the worktree root; the recorded run defaults are 35 and this worktree. Run it through `ego-browser nodejs`, with those globals prepended when running in another worktree. Create one TaskSpace for the entire task, then resume it throughout. The successful script closes its managed pages with `finish({keep: []})`; on failure it records diagnostics for recovery in the same TaskSpace. Screenshots and aggregate checks contain synthetic data only.
 
 Windows/LAN clipboard behavior, desktop Excel export fidelity, real backend integration, and measured scrolling frame rate require office acceptance. The Mac synthetic run does not establish those results.

@@ -14,4 +14,4 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 exit /b 1
 "%VENV_PY%" ops\bench_real.py --xlsm "%XLSM%" --manifest results-private\manifest.json
 if errorlevel 1 exit /b 1
-echo Done. Commit .planning\excel-grid\results\*.json on a branch and push.
+echo Done. The results are in results-private\public.
