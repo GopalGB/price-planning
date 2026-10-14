@@ -1117,13 +1117,16 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual((again.json()["changes"], again.json()["extras"]["sheets"]), ([], ["My calc"]))
 
         stale = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", output.read_bytes(), headers)
-        self.assertTrue(any("changed in the app" in item["reason"] for item in stale.json()["ignored"]))
+        self.assertTrue(any("kept as they are in the app" in item["reason"] for item in stale.json()["ignored"]))
         self.assertEqual(stale.json()["extras"]["sheets"], [])  # the older file would undo the app's edits
         confirmed = client.post(f"/api/uploads/{stale.json()['token']}/confirm", {"mode": "update"},
                                 {"x-csrf-token": csrf})
         self.assertEqual(confirmed.status_code, 200, confirmed.body)
         own = client.get(f"/api/copies/{copy['id']}/sheets/1/rows?start=0&count=1").json()["rows"]
         self.assertEqual(own["0"]["0"]["v"], 7)
+
+        older = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", exported, headers)
+        self.assertEqual(older.json()["extras"]["removed_sheets"], [])  # made before the extras: cannot remove them
 
         latest = fixture.root / "extras-latest.xlsx"
         latest.write_bytes(client.get(f"/api/copies/{copy['id']}/export.xlsx").body)
@@ -1198,6 +1201,39 @@ class UploadAPITests(unittest.TestCase):
 
         self.assertEqual(sorted((item["cell"], item["new"]) for item in body["changes"]), [("B2", 4), ("B3", 6)])
         self.assertEqual(body["extras"]["columns"], [])
+
+    def test_an_app_edit_where_an_older_file_adds_a_column_is_kept(self):
+        def wide_table(path):  # a formatted column past the data makes the open sheet wider than its cells
+            _open_table_fixture(path)
+            workbook = load_workbook(path)
+            workbook["Plan"].column_dimensions["H"].width = 30
+            workbook.save(path)
+
+        fixture = APIFixture(wide_table)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("typed-right@example.test", "Typed Right")
+        _, copy = fixture.make_copy(client, csrf)
+        source, output = fixture.root / "typed-source.xlsx", fixture.root / "typed.xlsx"
+        source.write_bytes(client.get(f"/api/copies/{copy['id']}/export.xlsx").body)
+        typed = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "typed", "action": "edit",
+            "cells": [{"sheet": 0, "r": 2, "c": 3, "v": "typed later", "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        self.assertEqual(typed.status_code, 200, typed.body)
+        workbook = load_workbook(source)
+        workbook["Plan"]["D2"] = "=B2*0.4"
+        workbook.save(output)
+
+        body = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", output.read_bytes(),
+                          {"x-csrf-token": csrf, "x-upload-filename": "typed.xlsx",
+                           "content-type": "application/octet-stream"}).json()
+        confirmed = client.post(f"/api/uploads/{body['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
+
+        self.assertEqual(body["extras"]["columns"], [])
+        self.assertTrue(any("kept as they are in the app" in item["reason"] for item in body["ignored"]))
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+        rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=2&count=1").json()["rows"]
+        self.assertEqual(rows["2"]["3"]["v"], "typed later")
 
     def test_a_failed_confirm_leaves_no_extras_folder_behind(self):
         def edit(workbook):

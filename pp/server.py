@@ -683,7 +683,7 @@ def _write_export(job):
         template_path=job.snapshot["source"], cells=cells, out_path=job.path,
         template_hash=job.snapshot["template_id"], copy_id=job.copy_id,
         input_revision=job.snapshot["input_revision"], fmt=job.fmt,
-        selected=job.selected, results=job.snapshot["results"],
+        selected=job.selected, results=job.snapshot["results"], extras_id=job.snapshot.get("extras_id") or "",
     ))
     if job.snapshot.get("order"):
         from .export.extras_graft import reorder_sheets

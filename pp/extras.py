@@ -54,7 +54,7 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
             "snapshot": str(imported.relative_to(target)), "template": template.hash,
             "sheets": list(plan.sheets), "columns": plan.columns, "order": list(plan.order),
             "template_sheets": len(template.sheets), "counts": counts,
-            "column_indexes": {str(_sheet_index(template, name)): first for name, first in plan.columns.items()},
+            "column_indexes": {str(sheet_index(template, name)): first for name, first in plan.columns.items()},
         }), encoding="utf-8")
         return target
     except BaseException:
@@ -83,7 +83,7 @@ def _prune(snapshot: Path, plan: ExtrasPlan) -> None:
     (snapshot / "input_mask.json").write_text("[]", encoding="utf-8")  # inputs come from the template
 
 
-def _sheet_index(template, name):
+def sheet_index(template, name):
     return next(item["index"] for item in template.sheets if item["name"].casefold() == name.casefold())
 
 
@@ -119,14 +119,16 @@ def attach(connection, copy_id, built: Path | None, data_dir):
     return (None if shared else Path(old["path"])), final  # a fork still reads the folder: keep it
 
 
-def edited_since(connection, copy_id, revision) -> bool:
-    """Whether the copy's own tabs or columns were edited in the app after ``revision`` (None: ever)."""
+def edited_since(connection, copy_id, revision, new_columns=None) -> bool:
+    """Whether the copy's own tabs or columns, or the cells ``new_columns`` ({template sheet index: first
+    column}) would take over, were edited in the app after ``revision`` (None: ever)."""
     row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
-    if row is None:
+    first_sheet, columns = _regions(Path(row["path"])) if row else (None, {})
+    regions = list(columns.items()) + list((new_columns or {}).items())
+    if first_sheet is None and not regions:
         return False
-    first_sheet, columns = _regions(Path(row["path"]))
-    clause = "sheet>=?" + " OR (sheet=? AND col>=?)" * len(columns)
-    values = [first_sheet] + [value for item in columns.items() for value in item]
+    clause = " OR ".join((["sheet>=?"] if first_sheet is not None else []) + ["(sheet=? AND col>=?)"] * len(regions))
+    values = ([first_sheet] if first_sheet is not None else []) + [value for item in regions for value in item]
     return connection.execute(
         f"SELECT 1 FROM pp_history WHERE copy_id=? AND revision>? AND ({clause}) LIMIT 1",  # nosec B608
         (copy_id, -1 if revision is None else revision, *values),
@@ -135,7 +137,7 @@ def edited_since(connection, copy_id, revision) -> bool:
 
 def current_plan(connection, copy_id) -> dict | None:
     row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
-    return _read_json(Path(row["path"]) / EXTRAS_FILE) if row else None
+    return {**_read_json(Path(row["path"]) / EXTRAS_FILE), "id": Path(row["path"]).name} if row else None
 
 
 def _regions(directory: Path):

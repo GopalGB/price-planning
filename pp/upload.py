@@ -29,7 +29,7 @@ from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .authorization import effective_role
 from .errors import AppError
-from .extras import ExtrasPlan, attach, build_extras, current_plan, edited_since
+from .extras import ExtrasPlan, attach, build_extras, current_plan, edited_since, sheet_index
 from .export.transfer import (
     REL_ATTRIBUTE_NAMESPACES,
     LinkScan,
@@ -419,15 +419,17 @@ class UploadService:
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
             structure = _structure_report(model, self._template_model(snapshot))
             kept = current_plan(connection, copy["id"]) if copy is not None else None
-            stale = kept is not None and edited_since(connection, copy["id"], revision)
+            stale = _extras_stale(connection, model, copy, kept, revision,
+                                  {sheet_index(snapshot, name): first
+                                   for name, first in details["extras"]["columns"].items()})
         plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
         built, replace_extras = None, kept is not None
         if stale:
-            # The file would undo edits made in the app since it was downloaded: keep the app's version
+            # The file would undo what the app holds now: keep the app's version
             details["ignored"].append({"sheet": None, "cell": None, "reason":
-                                       "Your own tabs and columns were changed in the app after this file was "
-                                       "downloaded, so the copy keeps the app's version of them. Download the "
-                                       "copy again to change them in Excel"})
+                                       "Your own tabs and columns are kept as they are in the app, because they "
+                                       "changed there after this file was downloaded. Download the copy again "
+                                       "to change them in Excel"})
             plan, replace_extras, kept = ExtrasPlan((), {}, model.sheets), False, None
         if not plan.empty():
             progress("Reading your own tabs and columns")
@@ -666,6 +668,17 @@ def _input_limits(snapshot):
                 unlocked.append(width)
             limits[sheet] = max([limits.get(sheet, 0), *unlocked])
     return limits
+
+
+def _extras_stale(connection, model, copy, kept, revision, new_columns):
+    """Whether the file is older than the copy's own tabs and columns, or than app edits where it adds some."""
+    if copy is None:
+        return False
+    provenance = model.provenance
+    if kept is not None and provenance is not None and (
+            provenance["copy_id"] != copy["id"] or provenance.get("extras_id") != kept["id"]):
+        return True  # downloaded before the current extras (or from another copy): it cannot replace them
+    return edited_since(connection, copy["id"], revision, new_columns)
 
 
 def _drop(folder):
@@ -1555,7 +1568,7 @@ def _provenance(archive):
     if revision < 0:
         raise AppError(422, "invalid_provenance", "Workbook revision is invalid")
     return {"template_hash": values["TemplateHash"], "copy_id": values["CopyId"],
-            "input_revision": revision}
+            "input_revision": revision, "extras_id": values.get("ExtrasId")}
 
 
 def _preview_details(context):

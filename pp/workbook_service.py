@@ -513,7 +513,7 @@ class WorkbookService:
                     for item in result_rows})
         return {
             "source": _source(snapshot, template), "template_id": copy["template_id"],
-            "order": getattr(snapshot, "order", None),
+            "order": getattr(snapshot, "order", None), "extras_id": getattr(snapshot, "extras_id", ""),
             "input_revision": copy["input_revision"],
             "calculated_revision": copy["calculated_revision"], "overrides": {
                 (item["sheet"], item["row"], item["col"]): json.loads(item["value_json"]) for item in rows
