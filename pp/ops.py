@@ -121,7 +121,7 @@ class OperationService:
             raise AppError(403, "forbidden", "Editor access is required")
         if copy["input_revision"] + 1 != expected_revision:
             raise AppError(409, "conflict", "The copy changed while the macro ran")
-        snapshot = self.templates.get(connection, copy["template_id"])
+        snapshot = self.templates.for_copy(connection, copy)
         cells = []
         for sheet, row, col, value in contents:
             current = connection.execute(
@@ -188,7 +188,7 @@ class OperationService:
 
     def _prepare(self, connection, copy, cells: list[dict]) -> list[dict]:
         # A values-only template (no Excel here) still saves typed values; its formulas keep Excel's saved results
-        snapshot = self.templates.get(connection, copy["template_id"])
+        snapshot = self.templates.for_copy(connection, copy)
         prepared, conflicts, seen = [], [], set()
         for cell in cells:
             coordinate = _coordinate(cell)

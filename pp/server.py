@@ -684,6 +684,9 @@ def _write_export(job):
         input_revision=job.snapshot["input_revision"], fmt=job.fmt,
         selected=job.selected, results=job.snapshot["results"],
     ))
+    if job.snapshot.get("order"):
+        from .export.extras_graft import reorder_sheets
+        reorder_sheets(job.path, job.snapshot["order"])  # the copy's own tabs go back where the user put them
 
 
 def _write_export_job(payload):

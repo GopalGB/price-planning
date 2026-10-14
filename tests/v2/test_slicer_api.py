@@ -4,6 +4,7 @@ import unittest
 
 import ops.fixtures as fixtures
 from pp.engine.formualizer import EngineError, MacroTimeout
+from pp.workbook_service import MACRO_MESSAGE, SLICER_MESSAGE
 from tests.v2.api_support import APIFixture
 
 
@@ -170,7 +171,7 @@ class SlicerEndpointTests(unittest.TestCase):
                 self.assertEqual((response.status_code, response.json()["error"]),
                                  (409, "slicers_unavailable"))
                 self.assertEqual(response.json()["message"],
-                                 "Slicers change on the office server, where the app uses Microsoft Excel.")
+                                 SLICER_MESSAGE)
 
     def test_viewer_is_forbidden_and_csrf_is_required(self):
         viewer, viewer_csrf, _ = self.fixture.signup("slicer-spy@example.test", "Viewer")

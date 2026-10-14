@@ -296,8 +296,7 @@ class UploadAPITests(unittest.TestCase):
         self.assertTrue(any(item["cell"] is None and item.get("count") == 1
                             and "locked" in item["reason"]
                             for item in body["ignored"] if item["sheet"] == "Calc"))
-        self.assertTrue(any(item["sheet"] == "Unexpected" and "new sheet" in item["reason"]
-                            for item in body["ignored"]))
+        self.assertIn("Unexpected", body["extras"]["sheets"])  # the user's own tab is kept, not ignored
         self.assertEqual(body["filename"], "renamed.bin")
         self.assertEqual(
             (self.fixture.count("pp_overrides"), self.fixture.count("pp_history")), before,
@@ -1035,7 +1034,86 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.body)
         body = response.json()
         self.assertEqual(body["changes"], [])
-        self.assertTrue(any("columns look inserted" in item["reason"] for item in body["ignored"]))
+        self.assertTrue(any("columns may have moved" in item["reason"] for item in body["ignored"]))
+        self.assertEqual(body["extras"]["columns"], [])  # an inserted column is not kept as the user's own
+
+    def test_own_tabs_and_calculation_columns_are_kept_shown_editable_and_downloaded(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("extras@example.test", "Extras")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        source, output = fixture.root / "extras-source.xlsx", fixture.root / "extras.xlsx"
+        source.write_bytes(exported)
+        workbook = load_workbook(source)
+        plan = workbook["Plan"]
+        plan["D1"], plan["D2"], plan["D3"] = "Margin", "=B2*0.4", "=B3*0.4"
+        plan["E2"] = "note"
+        plan["B2"] = 11  # an ordinary input change rides along
+        mine = workbook.create_sheet("My calc", 0)  # placed before the template's tab
+        mine["A1"], mine["B1"] = 5, "=A1+Plan!B2"
+        workbook.save(output)
+        headers = {"x-csrf-token": csrf, "x-upload-filename": "extras.xlsx",
+                   "content-type": "application/octet-stream"}
+
+        preview = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", output.read_bytes(), headers)
+
+        self.assertEqual(preview.status_code, 200, preview.body)
+        body = preview.json()
+        self.assertEqual(body["extras"]["sheets"], ["My calc"])
+        self.assertEqual([(item["sheet"], [col["column"] for col in item["columns"]])
+                          for item in body["extras"]["columns"]], [("Plan", ["D", "E"])])
+        self.assertEqual([(item["cell"], item["new"]) for item in body["changes"]], [("B2", 11)])
+        self.assertFalse(any("new sheet" in item["reason"] for item in body["ignored"]))
+        confirmed = client.post(f"/api/uploads/{body['token']}/confirm", {"mode": "update"},
+                                {"x-csrf-token": csrf})
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+
+        meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
+        self.assertEqual([(sheet["name"], sheet["index"], sheet.get("extra", False)) for sheet in meta["sheets"]],
+                         [("My calc", 1, True), ("Plan", 0, False)])
+        rows = client.get(f"/api/copies/{copy['id']}/sheets/0/rows?start=0&count=5").json()["rows"]
+        self.assertEqual((rows["0"]["3"]["v"], rows["1"]["3"]["k"], rows["1"]["4"]["v"]), ("Margin", "f", "note"))
+        self.assertTrue(rows["1"]["4"]["open"])
+        self.assertTrue(rows["3"]["4"]["open"])  # an empty cell of the user's column can be typed into
+        own = client.get(f"/api/copies/{copy['id']}/sheets/1/rows?start=0&count=5").json()["rows"]
+        self.assertEqual((own["0"]["0"]["v"], own["0"]["1"]["k"]), (5, "f"))
+        styles = {style["id"] for style in meta["styles"]}
+        self.assertTrue({cell["s"] for row in own.values() for cell in row.values()} <= styles)
+        edit = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "extra-edit", "action": "edit",
+            "cells": [{"sheet": 1, "r": 0, "c": 0, "v": 7, "expected_version": 0},
+                      {"sheet": 0, "r": 1, "c": 4, "v": "kept", "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        self.assertEqual(edit.status_code, 200, edit.body)
+        locked = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "extra-formula", "action": "edit",
+            "cells": [{"sheet": 1, "r": 0, "c": 1, "v": 1, "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        self.assertEqual(locked.status_code, 422, locked.body)
+
+        download = client.get(f"/api/copies/{copy['id']}/export.xlsx")
+        self.assertEqual(download.status_code, 200, download.body)
+        saved = fixture.root / "extras-download.xlsx"
+        saved.write_bytes(download.body)
+        result = load_workbook(saved)
+        self.assertEqual(result.sheetnames, ["My calc", "Plan"])
+        self.assertEqual((result["My calc"]["A1"].value, result["My calc"]["B1"].value), (7, "=A1+Plan!B2"))
+        self.assertEqual((result["Plan"]["B2"].value, result["Plan"]["D2"].value, result["Plan"]["E2"].value),
+                         (11, "=B2*0.4", "kept"))
+
+        again = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", saved.read_bytes(), headers)
+        self.assertEqual(again.status_code, 200, again.body)
+        self.assertEqual((again.json()["changes"], again.json()["extras"]["sheets"]), ([], ["My calc"]))
+
+        plain = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", exported, headers)
+        self.assertEqual((plain.json()["extras"]["removed_sheets"], plain.json()["extras"]["removed_columns"]),
+                         (["My calc"], ["Plan"]))
+        removed = client.post(f"/api/uploads/{plain.json()['token']}/confirm", {"mode": "update"},
+                              {"x-csrf-token": csrf})
+        self.assertEqual(removed.status_code, 200, removed.body)
+        meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
+        self.assertEqual([sheet["name"] for sheet in meta["sheets"]], ["Plan"])
 
     def test_preview_compares_the_file_with_the_template_by_sheet_column_and_row(self):
         fixture = APIFixture(_open_table_fixture)
@@ -1644,8 +1722,7 @@ class UploadAPITests(unittest.TestCase):
         self.assertLess(len(ignored), 10)
         self.assertTrue(any(item["sheet"] == "Calc" and item.get("count") == 3_000
                             and "locked" in item["reason"] for item in ignored))
-        self.assertTrue(any(item["sheet"] == "Bulk ignored" and "new sheet" in item["reason"]
-                            for item in ignored))
+        self.assertIn("Bulk ignored", response.json()["extras"]["sheets"])
         store = self.fixture.app.state.services.uploads.previews
         cached = store._items[response.json()["token"]]
         self.assertFalse(any(

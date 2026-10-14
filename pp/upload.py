@@ -14,6 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import secrets
+import shutil
 import tempfile
 import threading
 import time
@@ -28,6 +29,7 @@ from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .authorization import effective_role
 from .errors import AppError
+from .extras import ExtrasPlan, attach, build_extras, current_plan
 from .export.transfer import (
     REL_ATTRIBUTE_NAMESPACES,
     LinkScan,
@@ -100,6 +102,8 @@ class WorkbookModel:
     columns: dict[str, dict[int, int]] = field(default_factory=dict)  # filled cells per column
     headers: dict[str, dict[int, str]] = field(default_factory=dict)  # a name for each column
     filled_rows: dict[str, int] = field(default_factory=dict)
+    # Per template sheet, the first column past the template's own: cells there are the user's extras
+    limits: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,6 +155,7 @@ class SheetContext:
     name: str
     overrides: dict
     ignored: list
+    limit: int | None = None  # first extra column; the copy's values there belong to its extras
 
 
 @dataclass(frozen=True)
@@ -181,6 +186,7 @@ class PreviewEntry:
     session_hash: str
     expires: float
     size: int
+    extras: str | None = None  # the extras folder built for this preview, removed with it
 
 
 @dataclass(frozen=True)
@@ -194,6 +200,7 @@ class SheetScan:
     all_formulas: bool
     keep: frozenset = frozenset()  # (row, col) of the copy's saved edits on this sheet
     moved: bool = False  # rows were matched to template rows: shifted formulas are not differences
+    limit: int | None = None  # first extra column: cells from here on are the user's own, not inputs
 
 
 @dataclass(frozen=True)
@@ -226,7 +233,7 @@ class DisplacementDetector:
     filled_rows: int = 0
     last_filled_row: int = -1
 
-    def observe(self, record):
+    def observe(self, record, extra=False):
         self.rows = max(self.rows, record["row"] + 1)
         self.cols = max(self.cols, record["col"] + 1)
         if record["formula"] is not None or record["value"] not in (None, ""):
@@ -238,7 +245,7 @@ class DisplacementDetector:
             if (col not in self.headers and record["formula"] is None and isinstance(record["value"], str)
                     and record["row"] < HEADER_ROWS):
                 self.headers[col] = record["value"][:60]
-        if record["formula"] is not None:
+        if record["formula"] is not None and not extra:
             row = record["row"]
             self.formula_rows[row] = (self.formula_rows.get(row, 0) + formula_column_hash(record["col"])) & MASK
 
@@ -277,7 +284,7 @@ class PreviewStore:
             self._make_room(value["user_id"], value["session_hash"], size)
             self._items[token] = PreviewEntry(
                 path, value["user_id"], value["session_hash"],
-                time.monotonic() + PREVIEW_SECONDS, size,
+                time.monotonic() + PREVIEW_SECONDS, size, value.get("extras_dir"),
             )
         return token
 
@@ -289,8 +296,9 @@ class PreviewStore:
             raise AppError(404, "preview_expired", "Upload preview expired; preview the file again")
         try:
             if value.user_id != user_id or value.session_hash != session_hash:
+                _remove_extras(value)
                 raise AppError(404, "preview_expired", "Upload preview expired; preview the file again")
-            return json.loads(value.path.read_text(encoding="utf-8"))
+            return json.loads(value.path.read_text(encoding="utf-8"))  # the caller now owns the extras
         finally:
             value.path.unlink(missing_ok=True)
 
@@ -332,6 +340,12 @@ class PreviewStore:
         value = self._items.pop(token, None)
         if value is not None:
             value.path.unlink(missing_ok=True)
+            _remove_extras(value)
+
+
+def _remove_extras(entry):
+    if entry.extras:
+        shutil.rmtree(entry.extras, ignore_errors=True)
 
 
 class UploadService:
@@ -342,6 +356,7 @@ class UploadService:
         self.operations = dependencies.operations
         self.previews = PreviewStore(dependencies.preview_dir)
         self.converter = dependencies.converter
+        self.data_dir = Path(dependencies.preview_dir).parents[1]
         self._template_models = {}
 
     def preview(self, request):
@@ -386,8 +401,11 @@ class UploadService:
             snapshot = (self.templates.get(connection, copy["template_id"]) if copy is not None
                         else self._new_copy_snapshot(connection, provenance, request))
             edited = frozenset(_overrides(connection, copy["id"])) if copy is not None else frozenset()
+            template_model = self._template_model(snapshot)
+            limits = {name.casefold(): template_model.filled_cols.get(name, 0) for name in template_model.sheets}
             model = _read_workbook(request.path, snapshot=snapshot, fingerprint=provenance is None,
-                                   progress=progress, overrides=edited, deferred=deferred)
+                                   progress=progress, overrides=edited, deferred=deferred,
+                                   column_limits=limits)
             progress("Comparing with the copy")
             identification, revision = self._identify(model, snapshot, copy)
             details = _preview_details(PreviewContext(
@@ -397,6 +415,21 @@ class UploadService:
             if identification == "structure":
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
             structure = _structure_report(model, self._template_model(snapshot))
+            kept = current_plan(connection, copy["id"]) if copy is not None else None
+        plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
+        built, replace_extras = None, kept is not None
+        if not plan.empty():
+            progress("Reading your own tabs and columns")
+            try:
+                built, replace_extras = build_extras(request.path, plan, snapshot, self.previews.directory), True
+            except Exception as exc:  # the input changes still apply; the copy keeps what it had
+                LOGGER.exception("Reading an upload's own tabs and columns failed")
+                details["ignored"].append({"sheet": None, "cell": None, "reason":
+                                           "Your own tabs and columns could not be read, so this copy keeps "
+                                           f"the ones it had ({type(exc).__name__})"})
+                plan, replace_extras = ExtrasPlan((), {}, model.sheets), False
+                kept = None
+        extras = _extras_summary(plan, kept, model)
         stored = {
             **details,
             "user_id": request.user_id,
@@ -404,8 +437,15 @@ class UploadService:
             "copy_id": copy["id"] if copy is not None else None,
             "template_id": snapshot.hash,
             "filename": filename,
+            "extras_dir": str(built) if built is not None else None,
+            "replace_extras": replace_extras,
         }
-        token = self.previews.put(stored)
+        try:
+            token = self.previews.put(stored)
+        except BaseException:
+            if built is not None:
+                shutil.rmtree(built, ignore_errors=True)
+            raise
         return {
             "token": token,
             "target_copy_id": copy["id"] if copy is not None else None,
@@ -417,6 +457,7 @@ class UploadService:
             "conflicts": details["conflicts"],
             "ignored": details["ignored"],
             "structure": structure,
+            "extras": extras,
         }
 
     def close(self):
@@ -427,9 +468,13 @@ class UploadService:
                 or request.payload.get("mode") not in {"update", "new_copy"}):
             raise AppError(422, "invalid", "Choose update or new copy")
         preview = self.previews.take(request.token, request.user_id, request.session_hash)
-        if request.payload["mode"] == "update":
-            return self._update(preview, request)
-        return self._new_copy(preview, request)
+        try:
+            if request.payload["mode"] == "update":
+                return self._update(preview, request)
+            return self._new_copy(preview, request)
+        finally:
+            if preview.get("extras_dir"):  # still here when the confirm failed before attaching it
+                shutil.rmtree(preview["extras_dir"], ignore_errors=True)
 
     def _target_copy(self, connection, provenance, request):
         provenance_id = provenance["copy_id"] if provenance else None
@@ -503,20 +548,35 @@ class UploadService:
             raise AppError(403, "forbidden", "Choose a copy you can edit")
         excluded = _excluded_conflicts(request.payload, preview["conflicts"])
         changes = [item for item in preview["changes"] if item["key"] not in excluded]
-        if not changes:
+        if not changes and not preview.get("replace_extras"):
             copy = self.copies.get(request.user_id, preview["copy_id"])
             return {"copy_id": preview["copy_id"], "copy": copy,
                     "accepted": 0, "operation": None}
+        ack, operation = {"accepted": 0}, None
         with self.database.transaction() as connection:
-            ack, _, prepared = self.operations.apply_upload_in_transaction(
-                UploadOperationRequest(
-                    connection, preview["copy_id"], request.user_id,
-                    _operation_payload(preview["filename"], changes), request.session_check,
+            if effective_role(connection, preview["copy_id"], request.user_id) not in EDIT_ROLES:
+                raise AppError(403, "forbidden", "Editor access is required")
+            replaced = self._attach_extras(connection, preview["copy_id"], preview)
+            if changes:
+                ack, _, prepared = self.operations.apply_upload_in_transaction(
+                    UploadOperationRequest(
+                        connection, preview["copy_id"], request.user_id,
+                        _operation_payload(preview["filename"], changes), request.session_check,
+                    )
                 )
-            )
+                operation = _operation_receipt(ack, prepared)
+        _drop(replaced)
         copy = self.copies.get(request.user_id, preview["copy_id"])
-        return {**ack, "copy_id": preview["copy_id"], "copy": copy,
-                "operation": _operation_receipt(ack, prepared)}
+        return {**ack, "copy_id": preview["copy_id"], "copy": copy, "operation": operation}
+
+    def _attach_extras(self, connection, copy_id, preview):
+        """Store the file's own tabs and columns with the copy; returns the folder they replace."""
+        if not preview.get("replace_extras"):
+            return None
+        built = Path(preview["extras_dir"]) if preview.get("extras_dir") else None
+        replaced = attach(connection, copy_id, built, self.data_dir)
+        preview["extras_dir"] = None  # moved into the copy's folder: no longer the preview's to delete
+        return replaced
 
     def _new_copy(self, preview, request):
         body = {
@@ -532,6 +592,7 @@ class UploadService:
             copy = self.copies.create_in_transaction(
                 connection, request.user_id, body, request.session_check,
             )
+            self._attach_extras(connection, copy["id"], preview)
             if inputs:
                 ack, _, prepared = self.operations.apply_upload_in_transaction(
                     UploadOperationRequest(
@@ -544,6 +605,31 @@ class UploadService:
                 ack, operation = {"accepted": 0, "input_revision": 0}, None
         copy = self.copies.get(request.user_id, copy["id"])
         return {**ack, "copy": copy, "operation": operation}
+
+
+def _drop(folder):
+    if folder is not None:
+        shutil.rmtree(folder, ignore_errors=True)
+
+
+def _extras_summary(plan, kept, model):
+    """What the copy keeps from the file, and its earlier own tabs and columns the file no longer has."""
+    names = {name.casefold(): name for name in model.sheets}
+    columns = []
+    for sheet, first in plan.columns.items():
+        upload = names[sheet.casefold()]
+        found = sorted(col for col in model.columns.get(upload, {}) if col >= first)
+        columns.append({"sheet": upload, "count": len(found),
+                        "columns": [_named_column(col, model.headers.get(upload, {}))
+                                    for col in found[:MAX_LISTED_COLUMNS]]})
+    removed_sheets, removed_columns = [], []
+    if kept:
+        now = {name.casefold() for name in plan.sheets}
+        removed_sheets = [name for name in kept["sheets"] if name.casefold() not in now]
+        now = {name.casefold() for name in plan.columns}
+        removed_columns = [name for name in kept["columns"] if name.casefold() not in now]
+    return {"sheets": list(plan.sheets), "columns": columns,
+            "removed_sheets": removed_sheets, "removed_columns": removed_columns}
 
 
 def _filename(value):
@@ -838,8 +924,10 @@ def _no_progress(*_args):
 
 
 def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progress=_no_progress,
-                   overrides=frozenset(), deferred=frozenset()):
-    """overrides: (sheet, row, col) of the copy's saved edits; deferred: parts _validate_archive left to us."""
+                   overrides=frozenset(), deferred=frozenset(), column_limits=None):
+    """overrides: (sheet, row, col) of the copy's saved edits; deferred: parts _validate_archive left to us;
+    column_limits: template sheet name (casefolded) -> first column past the template's own."""
+    column_limits = column_limits or {}
     with zipfile.ZipFile(path) as archive:
         graph = _relationship_graph(archive)
         sheets = _sheet_records(archive.read("xl/workbook.xml"), graph)
@@ -860,6 +948,7 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
                 index, item["name"], item["hidden"], snapshot is None and not provenance, fingerprint,
                 frozenset((row, col) for sheet, row, col in overrides if sheet == index),
                 item["part"] in deferred,
+                column_limits.get(item["name"].casefold()) if index is not None else None,
             ))
         parallel = (_scan_workers(len(jobs)) > 1
                     and sum(sizes.get(job.part, 0) for job in jobs) >= PARALLEL_MIN_BYTES)
@@ -899,7 +988,8 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
                          formula_rows, parts, strings_part, filled_cols, suspect, digests,
                          {name: results[name].data.columns for name in names},
                          {name: results[name].data.headers for name in names},
-                         {name: results[name].data.filled_rows for name in names})
+                         {name: results[name].data.filled_rows for name in names},
+                         {job.name: job.limit for job in jobs if job.limit is not None})
 
 
 @dataclass(frozen=True)
@@ -916,6 +1006,7 @@ class PartJob:
     fingerprint: bool
     keep: frozenset
     screen: bool  # the archive check deferred this part's XML screening and link check to here
+    limit: int | None = None
 
 
 @dataclass(frozen=True)
@@ -991,7 +1082,7 @@ def _scan_part(job, snapshot=None, strings=None):
             found, references = _empty_structure(), set() if job.screen else None
             with archive.open(job.part) as stream:
                 data = _sheet_cells(SheetScan(archive, job.part, strings, snapshot, job.index, job.name,
-                                              job.all_formulas, job.keep),
+                                              job.all_formulas, job.keep, limit=job.limit),
                                     _iter_sheet(stream, found, references))
             structure = (job.hidden, tuple(sorted(found["merge"])), tuple(found["row"]),
                          tuple(found["column"]), found["protection"])
@@ -1186,6 +1277,11 @@ def _sheet_cells(request, stream_cells):
         if request.snapshot is not None and request.index is None:
             continue
         formula = next((child for child in cell if _local(child.tag) == "f"), None)
+        if request.limit is not None and col >= request.limit:
+            # The user's own columns: counted for the comparison, kept as extras, never read as inputs
+            detector.observe({"row": row, "col": col, "value": _cell_value(cell, request.strings),
+                              "formula": "=" if formula is not None else None}, extra=True)
+            continue
         coordinate = (None if request.snapshot is None
                       else (request.index, row, col))
         expected = None if coordinate is None else request.snapshot.cell(*coordinate)
@@ -1407,6 +1503,7 @@ def _preview_details(context):
     overrides = _overrides(context.connection, copy["id"]) if copy is not None else {}
     history = _history_since(context.connection, HistoryRequest(copy["id"], context.revision)) if copy is not None else {}
     changes, conflicts, ignored, all_inputs = [], [], list(model.ignored), []
+    extra_sheets, extra_columns = [], {}
     if copy is not None and context.revision is None:
         ignored.append({"sheet": None, "cell": None, "reason":
                         "This file has no download information, so later edits cannot be checked for conflicts"})
@@ -1420,7 +1517,7 @@ def _preview_details(context):
     for sheet_name in model.sheets:
         index = sheet_indexes.get(sheet_name.casefold())
         if index is None:
-            ignored.append({"sheet": sheet_name, "cell": None, "reason": "new sheet is ignored"})
+            extra_sheets.append(sheet_name)  # the user's own tab: kept with the copy
             continue
         expected_name = context.template_model.sheets[index]
         if model.structures[sheet_name] != context.template_model.structures[expected_name]:
@@ -1439,12 +1536,14 @@ def _preview_details(context):
                             f"column is {_cell_name(0, filled - 1)[:-1] if filled else 'none'}, the "
                             f"template's is {_cell_name(0, expected_filled - 1)[:-1]}"})
             continue
-        if sheet_name in model.suspect and filled > expected_filled:
-            # Values in locked cells past the template's last filled column: a column was inserted
+        limit = model.limits.get(sheet_name)
+        added = limit is not None and any(col >= limit for col in model.columns.get(sheet_name, {}))
+        moved = added and _moved_heading(model, context.template_model, sheet_name, expected_name)
+        if moved:
+            # A template column's heading is no longer in its place: a column was inserted, not added
             ignored.append({"sheet": sheet_name, "cell": None, "reason":
-                            "Input changes are ignored because columns may have moved: values sit in "
-                            f"locked cells up to column {_cell_name(0, filled - 1)[:-1]}, past the "
-                            f"template's last filled column {_cell_name(0, expected_filled - 1)[:-1]}"})
+                            "Input changes and new columns are ignored because columns may have moved: "
+                            f"{moved}. Add new columns after column {_cell_name(0, expected_filled - 1)[:-1]}"})
             continue
         if (sheet_name in model.displaced or sheet_name in model.suspect
                 or model.formula_rows.get(sheet_name, {})
@@ -1455,7 +1554,9 @@ def _preview_details(context):
             if matched is None:
                 continue
             sheet_cells, skipped_rows = matched
-        sheet_context = SheetContext(snapshot, index, sheet_name, overrides, ignored)
+        if added:
+            extra_columns[expected_name] = limit
+        sheet_context = SheetContext(snapshot, index, sheet_name, overrides, ignored, limit)
         found, seen = _inspect_sheet(sheet_cells, sheet_context)
         _add_missing_inputs(found, seen, sheet_context, skipped_rows)
         for item in sorted(found.values(), key=lambda value: (value["r"], value["c"])):
@@ -1467,7 +1568,27 @@ def _preview_details(context):
                 if "conflict" in change:
                     conflicts.append(_public_change(change))
     return {"changes": changes, "conflicts": conflicts, "ignored": ignored, "all_inputs": all_inputs,
-            "current_revision": copy["input_revision"] if copy is not None else None}
+            "current_revision": copy["input_revision"] if copy is not None else None,
+            "extras": {"sheets": extra_sheets, "columns": extra_columns}}
+
+
+def _moved_heading(model, template, name, expected_name):
+    """Why the template's columns look moved in the file (emptied, or a heading elsewhere); None when in place."""
+    filled = model.columns.get(name, {})
+    emptied = next((col for col in sorted(template.columns.get(expected_name, {})) if not filled.get(col)), None)
+    if emptied is not None:
+        # A column the template fills is now empty while new columns appeared: they moved right
+        return f"column {_cell_name(0, emptied)[:-1]} has data in the template and none in your file"
+    found = model.headers.get(name, {})
+    places = {}
+    for col, heading in found.items():
+        places.setdefault(heading, col)
+    for col, heading in sorted(template.headers.get(expected_name, {}).items()):
+        # Text typed over a heading is an edit; the same heading in another column is a shift
+        if found.get(col) != heading and heading in places:
+            return (f"the heading \"{heading}\" of column {_cell_name(0, col)[:-1]} is in column "
+                    f"{_cell_name(0, places[heading])[:-1]} of your file")
+    return None
 
 
 MAX_ROW_NOTES = 20
@@ -1507,10 +1628,11 @@ def _matched_sheet(context, name, index, overrides, ignored):
     """Rows of this sheet moved: line them up with the template's, then read the inputs at the matched
     rows. Returns (cells, template rows the file no longer has), or None when nothing can be applied."""
     model = context.model
+    limit = model.limits.get(name)
     sheet_overrides = {(row, col): item["value"] for (sheet, row, col), item in overrides.items()
-                       if sheet == index}
+                       if sheet == index and (limit is None or col < limit)}
     alignment = align_rows(_template_rows(context.snapshot, index, sheet_overrides),
-                           _sheet_rows(context.path, model.parts[name], model.strings_part),
+                           _sheet_rows(context.path, model.parts[name], model.strings_part, limit),
                            model.extents.get(name, (None, None))[0])
     if alignment.failure is not None:
         ignored.append({"sheet": name, "cell": None, "reason":
@@ -1575,14 +1697,17 @@ def _template_rows(snapshot, index, overrides):
     return {row: cells for row, cells in rows.items() if cells}
 
 
-def _sheet_rows(path, part, strings_part):
-    """Every filled cell of one uploaded sheet by row: its value, or FORMULA."""
+def _sheet_rows(path, part, strings_part, limit=None):
+    """Every filled cell of one uploaded sheet left of ``limit`` (the user's own columns) by row: its value,
+    or FORMULA."""
     rows = {}
     with zipfile.ZipFile(path) as archive:
         strings = _shared_strings(archive, strings_part)
         with archive.open(part) as stream:
             for cell in _iter_sheet(stream, _empty_structure()):
                 row, col = _coordinate((cell.get("r") or "").replace("$", "").upper())
+                if limit is not None and col >= limit:
+                    continue
                 if any(_local(child.tag) == "f" for child in cell):
                     rows.setdefault(row, {})[col] = FORMULA
                     continue
@@ -1599,7 +1724,7 @@ def _remapped_sheet(context, name, index, keep, alignment):
         strings = _shared_strings(archive, model.strings_part)
         with archive.open(model.parts[name]) as stream:
             scan = SheetScan(archive, model.parts[name], strings, context.snapshot, index, name, False, keep,
-                             moved=True)
+                             moved=True, limit=model.limits.get(name))
             return _sheet_cells(scan, _placed(_iter_sheet(stream, _empty_structure()), alignment))
 
 
@@ -1663,7 +1788,8 @@ def _add_missing_inputs(inputs, seen, context, skipped_rows=frozenset()):
     }
     implicit_overrides = {
         coordinate for coordinate in context.overrides
-        if coordinate[0] == context.sheet and context.snapshot.is_input(*coordinate)
+        if coordinate[0] == context.sheet and (context.limit is None or coordinate[2] < context.limit)
+        and context.snapshot.is_input(*coordinate)
     }
     for coordinate in explicit | implicit_overrides:
         if coordinate in seen or coordinate[1] in skipped_rows:
