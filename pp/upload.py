@@ -97,6 +97,9 @@ class WorkbookModel:
     filled_cols: dict[str, int] = field(default_factory=dict)  # one past the last filled column
     suspect: frozenset[str] = frozenset()  # sheets with values in locked empty cells
     digests: dict[str, str] = field(default_factory=dict)  # per-sheet formula hash, when fingerprinted
+    columns: dict[str, dict[int, int]] = field(default_factory=dict)  # filled cells per column
+    headers: dict[str, dict[int, str]] = field(default_factory=dict)  # a name for each column
+    filled_rows: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -203,6 +206,9 @@ class SheetData:
     formula_rows: dict = field(default_factory=dict)
     filled_cols: int = 0
     suspect: bool = False  # a locked empty cell holds a value: rows or columns may have moved
+    columns: dict = field(default_factory=dict)
+    headers: dict = field(default_factory=dict)
+    filled_rows: int = 0
 
 
 @dataclass
@@ -215,12 +221,23 @@ class DisplacementDetector:
     formula_rows: dict = field(default_factory=dict)
     filled_cols: int = 0  # one past the last column holding a value or formula
     locked_filled: bool = False
+    columns: dict = field(default_factory=dict)  # col -> filled cells, for the file/template comparison
+    headers: dict = field(default_factory=dict)  # col -> first text near the top, to name the column
+    filled_rows: int = 0
+    last_filled_row: int = -1
 
     def observe(self, record):
         self.rows = max(self.rows, record["row"] + 1)
         self.cols = max(self.cols, record["col"] + 1)
         if record["formula"] is not None or record["value"] not in (None, ""):
-            self.filled_cols = max(self.filled_cols, record["col"] + 1)
+            col = record["col"]
+            self.filled_cols = max(self.filled_cols, col + 1)
+            self.columns[col] = self.columns.get(col, 0) + 1
+            if record["row"] != self.last_filled_row:
+                self.filled_rows, self.last_filled_row = self.filled_rows + 1, record["row"]
+            if (col not in self.headers and record["formula"] is None and isinstance(record["value"], str)
+                    and record["row"] < HEADER_ROWS):
+                self.headers[col] = record["value"][:60]
         if record["formula"] is not None:
             row = record["row"]
             self.formula_rows[row] = (self.formula_rows.get(row, 0) + formula_column_hash(record["col"])) & MASK
@@ -379,6 +396,7 @@ class UploadService:
             ))
             if identification == "structure":
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
+            structure = _structure_report(model, self._template_model(snapshot))
         stored = {
             **details,
             "user_id": request.user_id,
@@ -398,6 +416,7 @@ class UploadService:
             "changes": [_public_change(item) for item in details["changes"]],
             "conflicts": details["conflicts"],
             "ignored": details["ignored"],
+            "structure": structure,
         }
 
     def close(self):
@@ -877,7 +896,10 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
     digests = ({name: result.digest.hex() for name, result in results.items() if result.digest is not None}
                if fingerprint else {})
     return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced, extents,
-                         formula_rows, parts, strings_part, filled_cols, suspect, digests)
+                         formula_rows, parts, strings_part, filled_cols, suspect, digests,
+                         {name: results[name].data.columns for name in names},
+                         {name: results[name].data.headers for name in names},
+                         {name: results[name].data.filled_rows for name in names})
 
 
 @dataclass(frozen=True)
@@ -1200,7 +1222,8 @@ def _sheet_cells(request, stream_cells):
                 detector.locked_value_changed(record, expected)
     return SheetData(cells, formulas, ignored, detector.detected(), (detector.rows, detector.cols),
                      detector.formula_rows, detector.filled_cols,
-                     detector.snapshot is not None and detector.sheet is not None and detector.locked_filled)
+                     detector.snapshot is not None and detector.sheet is not None and detector.locked_filled,
+                     detector.columns, detector.headers, detector.filled_rows)
 
 
 def _locked_cell_changed(uploaded, expected):
@@ -1301,7 +1324,7 @@ def _normalize_formula(formula):
 
 
 # Bump when the fingerprint or structure records change shape, so a stale saved identity is rebuilt.
-TEMPLATE_IDENTITY_VERSION = 5
+TEMPLATE_IDENTITY_VERSION = 6
 TEMPLATE_IDENTITY_FILE = "upload_identity.json"
 
 
@@ -1318,7 +1341,12 @@ def _load_template_identity(snapshot):
     formula_rows = {name: {int(row): value for row, value in rows.items()}
                     for name, rows in saved["formula_rows"].items()}
     return WorkbookModel(tuple(saved["sheets"]), {}, structures, saved["fingerprint"], None, (), frozenset(),
-                         extents, formula_rows, filled_cols=saved["filled_cols"], digests=saved["digests"])
+                         extents, formula_rows, filled_cols=saved["filled_cols"], digests=saved["digests"],
+                         columns={name: {int(col): count for col, count in value.items()}
+                                  for name, value in saved["columns"].items()},
+                         headers={name: {int(col): text for col, text in value.items()}
+                                  for name, value in saved["headers"].items()},
+                         filled_rows=saved["filled_rows"])
 
 
 def _save_template_identity(snapshot, model):
@@ -1326,7 +1354,8 @@ def _save_template_identity(snapshot, model):
     body = {"version": TEMPLATE_IDENTITY_VERSION, "sheets": list(model.sheets),
             "fingerprint": model.fingerprint, "structures": model.structures, "extents": model.extents,
             "formula_rows": model.formula_rows, "filled_cols": model.filled_cols,
-            "digests": model.digests}
+            "digests": model.digests, "columns": model.columns, "headers": model.headers,
+            "filled_rows": model.filled_rows}
     temporary = path.with_suffix(".tmp")
     try:
         temporary.write_text(json.dumps(body), encoding="utf-8")
@@ -1442,6 +1471,36 @@ def _preview_details(context):
 
 
 MAX_ROW_NOTES = 20
+HEADER_ROWS = 30  # a column's name is the first text in its top rows
+MAX_LISTED_COLUMNS = 40
+
+
+def _structure_report(model, template):
+    """Per sheet: what the file has and the template does not, and the reverse. Columns count as present
+    when they hold any value or formula; each is named by its letter and the text at its top."""
+    found = {name.casefold(): name for name in model.sheets}
+    known = {name.casefold() for name in template.sheets}
+    report = []
+    for name in template.sheets:
+        upload = found.get(name.casefold())
+        if upload is None:
+            report.append({"sheet": name, "status": "missing"})
+            continue
+        t_cols, u_cols = template.columns.get(name, {}), model.columns.get(upload, {})
+        missing = [_named_column(col, template.headers.get(name, {})) for col in sorted(t_cols) if col not in u_cols]
+        extra = [_named_column(col, model.headers.get(upload, {})) for col in sorted(u_cols) if col not in t_cols]
+        rows = {"template": template.filled_rows.get(name, 0), "file": model.filled_rows.get(upload, 0)}
+        same = not missing and not extra and rows["template"] == rows["file"]
+        report.append({"sheet": upload, "status": "same" if same else "different", "rows": rows,
+                       "columns": {"template": len(t_cols), "file": len(u_cols)},
+                       "missing_columns": missing[:MAX_LISTED_COLUMNS], "missing_count": len(missing),
+                       "extra_columns": extra[:MAX_LISTED_COLUMNS], "extra_count": len(extra)})
+    report += [{"sheet": name, "status": "extra"} for name in model.sheets if name.casefold() not in known]
+    return report
+
+
+def _named_column(col, headers):
+    return {"column": _cell_name(0, col)[:-1], "header": headers.get(col)}
 
 
 def _matched_sheet(context, name, index, overrides, ignored):

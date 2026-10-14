@@ -6,6 +6,7 @@ import {
   workspaceView,
   escapeHTML,
   uploadPreviewView,
+  uploadStructureView,
 } from "../src/views.mjs";
 test("formula display preserves locked formula text and renders error values", async () => {
   const { formulaDisplay } = await import("../src/views.mjs");
@@ -333,4 +334,23 @@ test("refresh data button is hidden until the workbook reports connections, and 
   assert.match(editor, /<button id="refresh-button" hidden>Refresh data<\/button>/);
   const viewer = workspaceView({ id: "c", name: "Test", my_role: "viewer" });
   assert.match(viewer, /<button id="refresh-button" hidden disabled>Refresh data<\/button>/);
+});
+
+test("upload structure lists what the file and the template each have", () => {
+  const html = uploadStructureView([
+    { sheet: "Plan", status: "different", rows: { template: 10, file: 12 }, columns: { template: 4, file: 4 },
+      missing_columns: [{ column: "C", header: "Price" }], missing_count: 1,
+      extra_columns: [{ column: "H", header: "<Notes>" }], extra_count: 1 },
+    { sheet: "Data", status: "same", rows: { template: 5, file: 5 }, columns: { template: 3, file: 3 },
+      missing_columns: [], missing_count: 0, extra_columns: [], extra_count: 0 },
+    { sheet: "Old", status: "missing" },
+    { sheet: "Mine", status: "extra" },
+  ]);
+  assert.match(html, /rows with data: 12 in your file, 10 in the template/);
+  assert.match(html, /columns empty in your file: C \(Price\)/);
+  assert.match(html, /columns only in your file: H \(&lt;Notes&gt;\)/);
+  assert.match(html, /<b>Old<\/b>: not in your file/);
+  assert.match(html, /<b>Mine<\/b>: not in the template, ignored/);
+  assert.match(html, /1 sheet matches the template/);
+  assert.equal(uploadStructureView([]), "");
 });

@@ -171,6 +171,51 @@ const uploadValue = (value) =>
       : String(value ?? "(blank)"),
   );
 
+const columnList = (columns, count) =>
+  columns
+    .map((item) =>
+      item.header ? `${e(item.column)} (${e(item.header)})` : e(item.column),
+    )
+    .join(", ") +
+  (count > columns.length ? ` and ${count - columns.length} more` : "");
+
+export function uploadStructureView(structure = []) {
+  if (!structure.length) return "";
+  const same = structure.filter((item) => item.status === "same");
+  const lines = structure
+    .filter((item) => item.status !== "same")
+    .map((item) => {
+      if (item.status === "missing")
+        return `<li><b>${e(item.sheet)}</b>: not in your file</li>`;
+      if (item.status === "extra")
+        return `<li><b>${e(item.sheet)}</b>: not in the template, ignored</li>`;
+      const parts = [];
+      if (item.rows.template !== item.rows.file)
+        parts.push(
+          `rows with data: ${item.rows.file} in your file, ${item.rows.template} in the template`,
+        );
+      if (item.missing_count)
+        parts.push(
+          `columns empty in your file: ${columnList(item.missing_columns, item.missing_count)}`,
+        );
+      if (item.extra_count)
+        parts.push(
+          `columns only in your file: ${columnList(item.extra_columns, item.extra_count)}`,
+        );
+      return `<li><b>${e(item.sheet)}</b>: ${parts.join("; ")}</li>`;
+    })
+    .join("");
+  const matching = same.length
+    ? `<details><summary>${same.length} sheet${same.length === 1 ? " matches" : "s match"} the template (same columns and rows)</summary><ul>${same
+        .map(
+          (item) =>
+            `<li>${e(item.sheet)}: ${item.columns.file} columns, ${item.rows.file} rows</li>`,
+        )
+        .join("")}</ul></details>`
+    : "";
+  return `<h3>Your file compared with the template</h3>${lines ? `<ul>${lines}</ul>` : ""}${matching}`;
+}
+
 export function uploadPreviewView(preview, categories, categoryId, name) {
   const conflicts = new Set(preview.conflicts.map((item) => item.key));
   const rows = preview.changes
@@ -202,5 +247,5 @@ export function uploadPreviewView(preview, categories, categoryId, name) {
   const update = preview.can_update
     ? '<label><input type="radio" name="mode" value="update" checked>Update this copy</label>'
     : "";
-  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
+  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${uploadStructureView(preview.structure)}${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
 }
