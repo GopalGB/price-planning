@@ -1102,6 +1102,12 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual((result["Plan"]["B2"].value, result["Plan"]["D2"].value, result["Plan"]["E2"].value),
                          (11, "=B2*0.4", "kept"))
 
+        fork = client.post(f"/api/copies/{copy['id']}/fork", {"name": "Fork"}, {"x-csrf-token": csrf})
+        self.assertEqual(fork.status_code, 201, fork.body)
+        fork_id = fork.json()["copy"]["id"]
+        self.assertIn("My calc", [sheet["name"] for sheet in client.get(f"/api/copies/{fork_id}/workbook").json()["sheets"]])
+        self.assertEqual(client.get(f"/api/copies/{fork_id}/export.xlsx").status_code, 200)
+
         again = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", saved.read_bytes(), headers)
         self.assertEqual(again.status_code, 200, again.body)
         self.assertEqual((again.json()["changes"], again.json()["extras"]["sheets"]), ([], ["My calc"]))
@@ -1114,6 +1120,8 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(removed.status_code, 200, removed.body)
         meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
         self.assertEqual([sheet["name"] for sheet in meta["sheets"]], ["Plan"])
+        # the fork shares the folder, so removing the parent's extras leaves the fork's in place
+        self.assertIn("My calc", [sheet["name"] for sheet in client.get(f"/api/copies/{fork_id}/workbook").json()["sheets"]])
 
     def test_preview_compares_the_file_with_the_template_by_sheet_column_and_row(self):
         fixture = APIFixture(_open_table_fixture)

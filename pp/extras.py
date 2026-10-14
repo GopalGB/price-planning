@@ -47,6 +47,7 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
     target.mkdir(parents=True)
     try:
         imported = import_template(upload_path, target, "cached")
+        _prune(imported, plan)
         graft_extras(template.source_path, upload_path, GraftPlan(plan.sheets, dict(plan.columns)),
                      target / GRAFTED)
         (target / EXTRAS_FILE).write_text(json.dumps({
@@ -59,6 +60,27 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
     except BaseException:
         shutil.rmtree(target, ignore_errors=True)
         raise
+
+
+def _prune(snapshot: Path, plan: ExtrasPlan) -> None:
+    """Keep only what the copy shows: its own tabs, and its own columns of template sheets."""
+    meta = _read_json(snapshot / "meta.json")
+    tabs = {name.casefold() for name in plan.sheets}
+    firsts = {name.casefold(): first for name, first in plan.columns.items()}
+    for sheet in meta["sheets"]:
+        name, index = sheet["name"].casefold(), str(sheet["index"])
+        if name in tabs:
+            continue
+        for folder in ("sheets", "notes"):
+            directory = snapshot / folder / index
+            if name in firsts and folder == "sheets" and directory.is_dir():
+                for path in directory.glob("*.json"):
+                    rows = {row: kept for row, cells in _read_json(path).items()
+                            if (kept := {col: cell for col, cell in cells.items() if int(col) >= firsts[name]})}
+                    path.write_text(json.dumps(rows, separators=(",", ":")), encoding="utf-8")
+            else:
+                shutil.rmtree(directory, ignore_errors=True)
+    (snapshot / "input_mask.json").write_text("[]", encoding="utf-8")  # inputs come from the template
 
 
 def _sheet_index(template, name):
@@ -89,7 +111,11 @@ def attach(connection, copy_id, built: Path | None, data_dir) -> Path | None:
             for sheet, first in columns.items():
                 connection.execute(f"DELETE FROM {table} WHERE copy_id=? AND sheet=? AND col>=?",  # nosec B608
                                    (copy_id, sheet, first))
-    return Path(old["path"]) if old else None
+    if old is None:
+        return None
+    shared = connection.execute("SELECT 1 FROM pp_copy_extras WHERE path=? AND copy_id<>?",
+                                (old["path"], copy_id)).fetchone()
+    return None if shared else Path(old["path"])  # a fork still reads the folder: keep it
 
 
 def current_plan(connection, copy_id) -> dict | None:
@@ -280,5 +306,8 @@ def _reimport(directory: Path) -> Path:
     finally:
         staged.unlink(missing_ok=True)
     info["snapshot"] = str(imported.relative_to(directory))
-    (directory / EXTRAS_FILE).write_text(json.dumps(info), encoding="utf-8")
+    _prune(imported, ExtrasPlan(tuple(info["sheets"]), info["columns"], tuple(info["order"])))
+    staged = directory / f"{EXTRAS_FILE}.tmp"
+    staged.write_text(json.dumps(info), encoding="utf-8")
+    staged.replace(directory / EXTRAS_FILE)
     return directory

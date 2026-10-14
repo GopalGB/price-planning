@@ -1,5 +1,30 @@
 # STATE
 
+## 2026-10-14 (Claude, own tabs and columns, validation, Excel mode)
+
+feat/v2-integration. Sir: "Validation formula is not supported" when typing; let users upload their
+version with extra tabs or calculation columns and show what exists and what is new; macros say they
+run on the office server; BU recap values do not flow to other tabs. Grill: keep extras in the copy,
+show them in the app, editable like inputs.
+- abd0366: rules the app cannot evaluate (custom formulas, lists from a range, formula bounds) accept
+  the value instead of blocking the cell. The real template's custom rules on 2 sheets blocked entry.
+- 6131814 (plan .planning/excel-grid/PLAN-extras.md): extra tabs and columns at or right of a template
+  sheet's first empty column are imported once (template importer, Excel's saved values) and grafted
+  into the template package (pp/export/extras_graft.py, written by a Haiku executor, reviewed).
+  pp/extras.py CopySnapshot serves them via TemplateCatalog.for_copy: tabs at their file position with
+  indexes after the template's, formulas show saved values, other cells open for typing, no validation.
+  Downloads keep them in the user's tab order with fullCalcOnLoad. Preview lists "Kept in your copy" and
+  "Removed from your copy"; a second upload replaces extras and their values. Columns inserted in the
+  middle are refused (a template column emptied, or a heading found in another column).
+- Real template (Mac, lan-check): own tab + 59-formula column: preview 87 s (import + graft), confirm
+  instant, rows render, export 13 s with VBA and formulas, peak 1.46 GB.
+- ac5129d: office_run.bat forces PP_ENGINE=excel when Excel is registered (an older settings.json could
+  keep values mode) and prints EXCEL MODE or VALUES MODE. Macro and slicer messages now say the server
+  runs without Excel. Cross-tab recalculation and macros need the Excel engine; values mode never
+  recalculates. Still unverified on the office server.
+- Open: extras in Excel-engine calculation need the engine's caches per grafted package (untested);
+  forks do not inherit extras; extras folders are not in backups.
+
 ## 2026-10-14 (Claude, upload adapts to moved rows, .xlsb)
 
 feat/v2-integration. Sir: edited downloads with more rows were rejected as moved, and "File is not a

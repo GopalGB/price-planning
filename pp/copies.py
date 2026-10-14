@@ -81,6 +81,10 @@ class CopyService:
                 "SELECT ?,state_json,? FROM pp_pivot_state WHERE copy_id=?",
                 (fork_id, parent["input_revision"], copy_id),
             )
+            connection.execute(  # the parent's own tabs and columns; the folder is shared, never edited
+                "INSERT INTO pp_copy_extras(copy_id,path,created_at) SELECT ?,path,? FROM pp_copy_extras WHERE copy_id=?",
+                (fork_id, now, copy_id),
+            )
             _queue_baseline(connection, fork_id, now)
             row = connection.execute("SELECT * FROM pp_copies WHERE id=?", (fork_id,)).fetchone()
             return _copy(connection, row, "owner")
