@@ -7,6 +7,7 @@ import {
   escapeHTML,
   uploadPreviewView,
   uploadStructureView,
+  uploadSummaryView,
 } from "../src/views.mjs";
 test("formula display preserves locked formula text and renders error values", async () => {
   const { formulaDisplay } = await import("../src/views.mjs");
@@ -336,7 +337,7 @@ test("refresh data button is hidden until the workbook reports connections, and 
   assert.match(viewer, /<button id="refresh-button" hidden disabled>Refresh data<\/button>/);
 });
 
-test("upload structure lists what the file and the template each have", () => {
+test("upload structure lists the tabs the file has, compared with the template", () => {
   const html = uploadStructureView([
     { sheet: "Plan", status: "different", rows: { template: 10, file: 12 }, columns: { template: 4, file: 4 },
       missing_columns: [{ column: "C", header: "Price" }], missing_count: 1,
@@ -347,31 +348,51 @@ test("upload structure lists what the file and the template each have", () => {
       missing_columns: [], missing_count: 0, extra_columns: [{ column: "D", header: null }], extra_count: 1 },
     { sheet: "Old", status: "missing" },
     { sheet: "Mine", status: "extra" },
-  ]);
+  ], { sheets: ["Mine"], columns: [], removed_sheets: [], removed_columns: [] });
+  assert.match(html, /<summary>Tabs in your file \(4\)<\/summary>/);
   assert.match(html, /rows with data: 12 in your file, 10 in the template/);
   assert.match(html, /columns empty in your file: C \(Price\)/);
   assert.match(html, /columns only in your file: H \(&lt;Notes&gt;\)/);
   assert.match(html, /<b>Wide<\/b>: rows with data: 7, same as the template; columns only in your file: D</);
-  assert.match(html, /<b>Old<\/b>: not in your file, kept as it is in the copy/);
-  assert.match(html, /<b>Mine<\/b>: not in the template, ignored/);
-  assert.match(html, /1 sheet matches the template/);
+  assert.doesNotMatch(html, /Old/); // missing tabs are counted in the summary instead
+  assert.match(html, /<b>Mine<\/b>: your own tab, kept in your copy/);
+  assert.match(html, /1 tab matches the template: <b>Data<\/b>/);
   assert.equal(uploadStructureView([]), "");
+  assert.equal(uploadStructureView([{ sheet: "Old", status: "missing" }]), "");
 });
 
-test("upload structure says which of the file's own tabs and columns the copy keeps", () => {
-  const html = uploadStructureView(
-    [
-      { sheet: "Plan", status: "different", rows: { template: 3, file: 3 }, columns: { template: 3, file: 5 },
-        missing_columns: [], missing_count: 0,
-        extra_columns: [{ column: "D", header: "Margin" }, { column: "E", header: null }], extra_count: 2 },
-      { sheet: "My calc", status: "extra" },
+test("upload summary says what a file of only its own tabs does to the copy", () => {
+  const html = uploadSummaryView({
+    changes: [], conflicts: [], ignored: [],
+    structure: [
+      { sheet: "Config", status: "missing" }, { sheet: "BU RECAP", status: "missing" },
+      { sheet: "Scorecard", status: "extra" }, { sheet: "<Data>", status: "extra" },
     ],
-    { sheets: ["My calc"], columns: [{ sheet: "Plan", count: 2,
+    extras: { sheets: ["Scorecard", "<Data>"], columns: [], adding: true, replaced_sheets: ["<Data>"],
+      other_sheets: ["Notes"], removed_sheets: [], removed_columns: [], overwrites_app_edits: true },
+  });
+  assert.match(html, /<li class="same">No input cells change<\/li>/);
+  assert.match(html, /<li class="add">Adds tab <b>Scorecard<\/b> to the copy<\/li>/);
+  assert.match(html, /<li class="warn">Replaces your tab <b>&lt;Data&gt;<\/b> with the one in this file\. Edits made in the app/);
+  assert.match(html, /Your other own tab <b>Notes<\/b> stays as it is/);
+  assert.match(html, /<summary>2 template tabs are not in your file and stay as they are<\/summary><b>Config<\/b>, <b>BU RECAP<\/b>/);
+  assert.doesNotMatch(html, /Removes/);
+});
+
+test("upload summary lists changes, own columns, removals and notes", () => {
+  const html = uploadSummaryView({
+    changes: [{ key: "a" }, { key: "b" }], conflicts: [{ key: "a" }], ignored: [{ reason: "x" }],
+    structure: [],
+    extras: { sheets: ["My calc"], columns: [{ sheet: "Plan", count: 2,
       columns: [{ column: "D", header: "Margin" }, { column: "E", header: null }] }],
       removed_sheets: ["Old notes"], removed_columns: ["Data"] },
-  );
-  assert.match(html, /<b>My calc<\/b>: new tab, kept in your copy/);
-  assert.match(html, /<h3>Kept in your copy<\/h3>/);
-  assert.match(html, /<b>Plan<\/b>: new columns D \(Margin\), E/);
-  assert.match(html, /<h3>Removed from your copy<\/h3>.*Tab <b>Old notes<\/b>.*New columns on <b>Data<\/b>/);
+  });
+  assert.match(html, /<li class="change">Changes 2 input cells<\/li>/);
+  assert.match(html, /Adds tab <b>My calc<\/b>/);
+  assert.match(html, /Adds columns D \(Margin\), E on <b>Plan<\/b>/);
+  assert.match(html, /<li class="remove">Removes your tab <b>Old notes<\/b>: this file no longer has it<\/li>/);
+  assert.match(html, /Removes your own columns on <b>Data<\/b>/);
+  assert.match(html, /1 cell also changed in the app/);
+  assert.match(html, /1 note about what is not applied/);
 });
+

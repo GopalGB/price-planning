@@ -62,6 +62,52 @@ def build_extras(upload_path, plan: ExtrasPlan, template: TemplateSnapshot, work
         raise
 
 
+def merged_plan(kept: dict, plan: ExtrasPlan, template: TemplateSnapshot):
+    """Add a file's own tabs and columns to the copy's: a tab or sheet's columns with the same name are
+    replaced in place, so the copy's other tabs keep their indexes (and app edits). Returns (plan, regions
+    left as they were)."""
+    tabs = {name.casefold(): name for name in plan.sheets}
+    replaced = {name.casefold() for name in plan.columns}
+    sheets = [tabs.pop(name.casefold(), name) for name in kept["sheets"]] + list(tabs.values())
+    columns = {**{name: first for name, first in kept["columns"].items() if name.casefold() not in replaced},
+               **plan.columns}
+    known = {name.casefold() for name in kept["order"]}
+    order = tuple(kept["order"]) + tuple(name for name in plan.sheets if name.casefold() not in known)
+    count, new = len(template.sheets), {name.casefold() for name in plan.sheets}
+    unchanged = [(count + number, 0) for number, name in enumerate(kept["sheets"]) if name.casefold() not in new]
+    unchanged += [(sheet_index(template, name), first) for name, first in kept["columns"].items()
+                  if name.casefold() not in replaced]
+    return ExtrasPlan(tuple(sheets), columns, order), unchanged
+
+
+def build_merged(upload_path, plan: ExtrasPlan, kept_dir: Path, kept: dict, template: TemplateSnapshot,
+                 work_dir) -> tuple[Path, list]:
+    """The copy's extras with a file's own tabs and columns added (see ``merged_plan``). Returns the extras
+    directory and the regions left as they were."""
+    from .export.extras_graft import GraftPlan, graft_extras, reorder_sheets
+
+    merged, unchanged = merged_plan(kept, plan, template)
+    tabs, columns = {name.casefold() for name in plan.sheets}, {name.casefold() for name in plan.columns}
+    staging = Path(work_dir) / f"merge-{secrets.token_hex(8)}"
+    staging.mkdir(parents=True)
+    try:
+        # The copy's kept extras on the template, then the file's on top: one package to import
+        graft_extras(template.source_path, kept_dir / GRAFTED, GraftPlan(
+            tuple(name for name in kept["sheets"] if name.casefold() not in tabs),
+            {name: first for name, first in kept["columns"].items() if name.casefold() not in columns},
+        ), staging / "kept.xlsm")
+        counts = graft_extras(staging / "kept.xlsm", upload_path, GraftPlan(plan.sheets, dict(plan.columns)),
+                              staging / "merged.xlsm")
+        reorder_sheets(staging / "merged.xlsm", [item["name"] for item in template.sheets] + list(merged.sheets))
+        built = build_extras(staging / "merged.xlsm", merged, template, work_dir)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    info = _read_json(built / EXTRAS_FILE)
+    info["counts"]["dropped_objects"] = counts["dropped_objects"]  # lost in the file's tabs, not the re-graft
+    (built / EXTRAS_FILE).write_text(json.dumps(info), encoding="utf-8")
+    return built, unchanged
+
+
 def _prune(snapshot: Path, plan: ExtrasPlan) -> None:
     """Keep only what the copy shows: its own tabs, and its own columns of template sheets."""
     meta = _read_json(snapshot / "meta.json")
@@ -87,17 +133,18 @@ def sheet_index(template, name):
     return next(item["index"] for item in template.sheets if item["name"].casefold() == name.casefold())
 
 
-def attach(connection, copy_id, built: Path | None, data_dir):
+def attach(connection, copy_id, built: Path | None, data_dir, keep=()):
     """Make ``built`` the copy's extras (None removes them). Returns (the replaced folder to delete after the
-    commit, the folder ``built`` moved to). Values the copy held inside old or new extras give way to the file's."""
+    commit, the folder ``built`` moved to). Values the copy held inside old or new extras give way to the file's,
+    except in ``keep`` ((sheet, first column) regions an added file left as they were)."""
     old = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
-    regions = [_regions(Path(old["path"]))] if old else []
+    regions = _regions(Path(old["path"])) if old else []
     final = None
     if built is not None:
         final = Path(data_dir) / "extras" / copy_id / built.name
         final.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(built), final)
-        regions.append(_regions(final))
+        regions += _regions(final)
         connection.execute(
             "INSERT INTO pp_copy_extras(copy_id, path, created_at) VALUES(?,?,?) "
             "ON CONFLICT(copy_id) DO UPDATE SET path=excluded.path, created_at=excluded.created_at",
@@ -105,13 +152,10 @@ def attach(connection, copy_id, built: Path | None, data_dir):
         )
     elif old:
         connection.execute("DELETE FROM pp_copy_extras WHERE copy_id=?", (copy_id,))
-    for first_sheet, columns in regions:
+    for sheet, first in dict.fromkeys(region for region in regions if region not in set(keep)):
         for table in ("pp_overrides", "pp_results", "pp_copy_baselines"):
-            connection.execute(f"DELETE FROM {table} WHERE copy_id=? AND sheet>=?",  # nosec B608 # fixed names
-                               (copy_id, first_sheet))
-            for sheet, first in columns.items():
-                connection.execute(f"DELETE FROM {table} WHERE copy_id=? AND sheet=? AND col>=?",  # nosec B608
-                                   (copy_id, sheet, first))
+            connection.execute(f"DELETE FROM {table} WHERE copy_id=? AND sheet=? AND col>=?",  # nosec B608
+                               (copy_id, sheet, first))
     if old is None:
         return None, final
     shared = connection.execute("SELECT 1 FROM pp_copy_extras WHERE path=? AND copy_id<>?",
@@ -123,27 +167,33 @@ def edited_since(connection, copy_id, revision, new_columns=None) -> bool:
     """Whether the copy's own tabs or columns, or the cells ``new_columns`` ({template sheet index: first
     column}) would take over, were edited in the app after ``revision`` (None: ever)."""
     row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
-    first_sheet, columns = _regions(Path(row["path"])) if row else (None, {})
-    regions = list(columns.items()) + list((new_columns or {}).items())
-    if first_sheet is None and not regions:
+    regions = (_regions(Path(row["path"])) if row else []) + list((new_columns or {}).items())
+    return edited_in(connection, copy_id, revision, regions)
+
+
+def edited_in(connection, copy_id, revision, regions) -> bool:
+    """Whether cells in ``regions`` ((sheet, first column) pairs) were edited in the app after ``revision``."""
+    if not regions:
         return False
-    clause = " OR ".join((["sheet>=?"] if first_sheet is not None else []) + ["(sheet=? AND col>=?)"] * len(regions))
-    values = ([first_sheet] if first_sheet is not None else []) + [value for item in regions for value in item]
+    clause = " OR ".join(["(sheet=? AND col>=?)"] * len(regions))
     return connection.execute(
         f"SELECT 1 FROM pp_history WHERE copy_id=? AND revision>? AND ({clause}) LIMIT 1",  # nosec B608
-        (copy_id, -1 if revision is None else revision, *values),
+        (copy_id, -1 if revision is None else revision, *[value for item in regions for value in item]),
     ).fetchone() is not None
 
 
 def current_plan(connection, copy_id) -> dict | None:
     row = connection.execute("SELECT path FROM pp_copy_extras WHERE copy_id=?", (copy_id,)).fetchone()
-    return {**_read_json(Path(row["path"]) / EXTRAS_FILE), "id": Path(row["path"]).name} if row else None
+    return ({**_read_json(Path(row["path"]) / EXTRAS_FILE), "id": Path(row["path"]).name, "path": row["path"]}
+            if row else None)
 
 
 def _regions(directory: Path):
-    """(first extra sheet index, {template sheet index: first extra column}) of stored extras."""
+    """(sheet, first column) of each region stored extras cover: whole own tabs, then own columns."""
     info = _read_json(directory / EXTRAS_FILE)
-    return info["template_sheets"], {int(key): value for key, value in info["column_indexes"].items()}
+    count = info["template_sheets"]
+    return ([(count + number, 0) for number in range(len(info["sheets"]))]
+            + [(int(key), value) for key, value in info["column_indexes"].items()])
 
 
 class CopySnapshot(TemplateSnapshot):

@@ -179,19 +179,109 @@ const columnList = (columns, count) =>
     .join(", ") +
   (count > columns.length ? ` and ${count - columns.length} more` : "");
 
+const names = (list, limit = 6) =>
+  list
+    .slice(0, limit)
+    .map((name) => `<b>${e(name)}</b>`)
+    .join(", ") +
+  (list.length > limit ? ` and ${list.length - limit} more` : "");
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+// One line per thing the upload does to the copy, so a long comparison never hides the outcome
+export function uploadSummaryView(preview) {
+  const extras = preview.extras ?? {
+    sheets: [],
+    columns: [],
+    removed_sheets: [],
+    removed_columns: [],
+  };
+  const replaced = new Set(
+    (extras.replaced_sheets ?? []).map((name) => name.toLowerCase()),
+  );
+  const added = extras.sheets.filter(
+    (name) => !replaced.has(name.toLowerCase()),
+  );
+  const missing = (preview.structure ?? [])
+    .filter((item) => item.status === "missing")
+    .map((item) => item.sheet);
+  const item = (kind, html) => `<li class="${kind}">${html}</li>`;
+  const changes = preview.changes.length;
+  const lines = [
+    changes
+      ? item("change", `Changes ${plural(changes, "input cell")}`)
+      : item("same", "No input cells change"),
+    added.length
+      ? item(
+          "add",
+          `Adds ${added.length === 1 ? "tab" : "tabs"} ${names(added)} to the copy`,
+        )
+      : "",
+    replaced.size
+      ? item(
+          extras.overwrites_app_edits ? "warn" : "replace",
+          `Replaces your ${replaced.size === 1 ? "tab" : "tabs"} ${names(extras.replaced_sheets)} with the one${replaced.size === 1 ? "" : "s"} in this file${extras.overwrites_app_edits ? ". Edits made in the app on it are replaced too" : ""}`,
+        )
+      : "",
+    ...extras.columns.map((col) =>
+      item(
+        "add",
+        `Adds ${col.count === 1 ? "column" : "columns"} ${columnList(col.columns, col.count)} on <b>${e(col.sheet)}</b>`,
+      ),
+    ),
+    (extras.other_sheets ?? []).length
+      ? item(
+          "same",
+          `Your other own ${extras.other_sheets.length === 1 ? "tab" : "tabs"} ${names(extras.other_sheets)} ${extras.other_sheets.length === 1 ? "stays as it is" : "stay as they are"}`,
+        )
+      : "",
+    extras.removed_sheets.length
+      ? item(
+          "remove",
+          `Removes your ${extras.removed_sheets.length === 1 ? "tab" : "tabs"} ${names(extras.removed_sheets)}: this file no longer has ${extras.removed_sheets.length === 1 ? "it" : "them"}`,
+        )
+      : "",
+    extras.removed_columns.length
+      ? item(
+          "remove",
+          `Removes your own columns on ${names(extras.removed_columns)}: this file no longer has them`,
+        )
+      : "",
+    missing.length
+      ? item(
+          "same",
+          `<details><summary>${plural(missing.length, "template tab")} ${missing.length === 1 ? "is" : "are"} not in your file and ${missing.length === 1 ? "stays" : "stay"} as ${missing.length === 1 ? "it is" : "they are"}</summary>${names(missing, missing.length)}</details>`,
+        )
+      : "",
+    preview.conflicts.length
+      ? item(
+          "warn",
+          `${plural(preview.conflicts.length, "cell")} also changed in the app since your download: choose below`,
+        )
+      : "",
+    preview.ignored.length
+      ? item(
+          "warn",
+          `${plural(preview.ignored.length, "note")} about what is not applied, listed below`,
+        )
+      : "",
+  ].join("");
+  return `<h3>What this upload does</h3><ul class="upload-summary">${lines}</ul>`;
+}
+
 export function uploadStructureView(structure = [], extras = null) {
-  if (!structure.length) return "";
-  const kept = new Set((extras?.sheets ?? []).map((name) => name.toLowerCase()));
-  const same = structure.filter((item) => item.status === "same");
-  const lines = structure
+  const present = structure.filter((item) => item.status !== "missing");
+  if (!present.length) return "";
+  const kept = new Set(
+    (extras?.sheets ?? []).map((name) => name.toLowerCase()),
+  );
+  const same = present.filter((item) => item.status === "same");
+  const lines = present
     .filter((item) => item.status !== "same")
     .map((item) => {
-      if (item.status === "missing")
-        return `<li><b>${e(item.sheet)}</b>: not in your file, kept as it is in the copy</li>`;
       if (item.status === "extra")
         return kept.has(item.sheet.toLowerCase())
-          ? `<li><b>${e(item.sheet)}</b>: new tab, kept in your copy</li>`
-          : `<li><b>${e(item.sheet)}</b>: not in the template, ignored</li>`;
+          ? `<li><b>${e(item.sheet)}</b>: your own tab, kept in your copy</li>`
+          : `<li><b>${e(item.sheet)}</b>: not in the template, not kept</li>`;
       const parts = [
         item.rows.template === item.rows.file
           ? `rows with data: ${item.rows.file}, same as the template`
@@ -209,35 +299,12 @@ export function uploadStructureView(structure = [], extras = null) {
     })
     .join("");
   const matching = same.length
-    ? `<details><summary>${same.length} sheet${same.length === 1 ? " matches" : "s match"} the template (same columns and rows)</summary><ul>${same
-        .map(
-          (item) =>
-            `<li>${e(item.sheet)}: ${item.columns.file} columns, ${item.rows.file} rows</li>`,
-        )
-        .join("")}</ul></details>`
+    ? `<li>${plural(same.length, "tab")} ${same.length === 1 ? "matches" : "match"} the template: ${names(
+        same.map((item) => item.sheet),
+        same.length,
+      )}</li>`
     : "";
-  return `<h3>Your file compared with the template</h3>${lines ? `<ul>${lines}</ul>` : ""}${matching}${uploadExtrasView(extras)}`;
-}
-
-export function uploadExtrasView(extras) {
-  if (!extras) return "";
-  const keep = [
-    ...extras.sheets.map((name) => `<li>Tab <b>${e(name)}</b></li>`),
-    ...extras.columns.map(
-      (item) =>
-        `<li><b>${e(item.sheet)}</b>: ${item.count === 1 ? "new column" : "new columns"} ${columnList(item.columns, item.count)}</li>`,
-    ),
-  ].join("");
-  const gone = [
-    ...extras.removed_sheets.map((name) => `<li>Tab <b>${e(name)}</b></li>`),
-    ...extras.removed_columns.map((name) => `<li>New columns on <b>${e(name)}</b></li>`),
-  ].join("");
-  return (
-    (keep
-      ? `<h3>Kept in your copy</h3><p>Your own tabs and columns are saved with this copy and come back in downloads. Their formulas show the values Excel saved.</p><ul>${keep}</ul>`
-      : "") +
-    (gone ? `<h3>Removed from your copy</h3><p>Your file no longer has these, so they are removed.</p><ul>${gone}</ul>` : "")
-  );
+  return `<details class="upload-section"><summary>Tabs in your file (${present.length})</summary><ul>${lines}${matching}</ul></details>`;
 }
 
 export function uploadPreviewView(preview, categories, categoryId, name) {
@@ -271,5 +338,8 @@ export function uploadPreviewView(preview, categories, categoryId, name) {
   const update = preview.can_update
     ? '<label><input type="radio" name="mode" value="update" checked>Update this copy</label>'
     : "";
-  return `<p><b>${e(preview.filename)}</b></p><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows || '<tr><td colspan="3">No input changes</td></tr>'}</tbody></table>${uploadStructureView(preview.structure, preview.extras)}${warnings ? `<h3>Conflicts</h3><ul>${warnings}</ul>` : ""}${ignored ? `<h3>Ignored</h3><ul>${ignored}</ul>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
+  const table = rows
+    ? `<details class="upload-section"${preview.changes.length <= 15 || warnings ? " open" : ""}><summary>Input changes (${preview.changes.length})</summary><div class="upload-table"><table><thead><tr><th>Cell</th><th>Current</th><th>Uploaded</th></tr></thead><tbody>${rows}</tbody></table></div></details>`
+    : "";
+  return `<p class="upload-file">File <b>${e(preview.filename)}</b></p>${uploadSummaryView(preview)}${warnings ? `<h3>Conflicts</h3><p>Ticked changes replace the app's value.</p><ul>${warnings}</ul>` : ""}${table}${uploadStructureView(preview.structure, preview.extras)}${ignored ? `<details class="upload-section" open><summary>Not applied (${preview.ignored.length})</summary><ul>${ignored}</ul></details>` : ""}<fieldset><legend>Apply upload</legend>${update}<label><input type="radio" name="mode" value="new_copy" ${preview.can_update ? "" : "checked"}>Create new copy</label></fieldset><label>Category<select name="category_id">${options}</select></label><label>Copy name<input name="name" maxlength="100" value="${e(name || fileTitle(preview.filename))}"></label>`;
 }

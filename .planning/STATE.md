@@ -1,5 +1,19 @@
 # STATE
 
+## 2026-10-14 (Claude, files of own tabs add to the copy, clearer upload preview)
+- Sir uploaded a workbook whose tabs are all his own (none of the template's) and it was refused; he wants
+  such files accepted. Now any file without all of the template's tabs ADDS its own tabs and columns to the
+  copy (`pp/extras.py` `merged_plan`, `build_merged`): a tab with the same name as one of the copy's own tabs
+  is replaced in place, the rest keep their sheet indexes and app edits (`attach(keep=...)`). Nothing is
+  removed by such a file. A file with every template tab still replaces the full set, as before.
+- Replacing an own tab edited in the app is allowed; the preview warns (`extras.overwrites_app_edits`).
+- Upload preview UI: "What this upload does" summary (adds/replaces/changes/stays/removes/notes), long
+  sections collapsed, missing template tabs counted in one collapsible line, wider dialog.
+- Tests: 866 Python OK, 201 web OK, content guard 0. Visual check NOT done: Ego Lite screenshots, headless
+  Chrome and Playwright Chrome all timed out on the Mac.
+- Shortcut: a new copy made from an added file also gets the source copy's own tabs (without app edits).
+- Merging into a copy that already has own tabs re-imports the whole package (slow on the real file).
+
 ## 2026-10-14 (Claude, partial uploads)
 
 Sir: "This file does not match the template: it has no sheet named Config and Lookup, ... and 14 more"
