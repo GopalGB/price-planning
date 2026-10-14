@@ -424,7 +424,15 @@ class UploadService:
                                    for name, first in details["extras"]["columns"].items()})
         plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
         built, replace_extras = None, kept is not None
-        if stale:
+        present = {name.casefold() for name in model.sheets}
+        if not stale and not all(name.casefold() in present for name in template_model.sheets) \
+                and (kept is not None or not plan.empty()):
+            # Part of the workbook: the tabs it lacks stay, so its own tabs and columns cannot be the full set
+            details["ignored"].append({"sheet": None, "cell": None, "reason":
+                                       "Your own tabs and columns are only updated from a file with all of the "
+                                       "template's tabs, so the copy keeps the ones it has"})
+            plan, replace_extras, kept = ExtrasPlan((), {}, model.sheets), False, None
+        elif stale:
             # The file would undo what the app holds now: keep the app's version
             details["ignored"].append({"sheet": None, "cell": None, "reason":
                                        "Your own tabs and columns are kept as they are in the app, because they "
@@ -537,12 +545,14 @@ class UploadService:
         if (model.sheets, model.fingerprint) == (expected.sheets, expected.fingerprint):
             return "structure", None
         names = {name.casefold() for name in model.sheets}
-        missing = [name for name in expected.sheets if name.casefold() not in names]
-        if missing:
-            shown = ", ".join(missing[:8]) + (f" and {len(missing) - 8} more" if len(missing) > 8 else "")
+        if not any(name.casefold() in names for name in expected.sheets):
+            # Sheets it lacks stay as they are in the copy; a file with none of them is another workbook
             raise AppError(422, "different_template",
-                           f"This file does not match the template: it has no sheet named {shown}")
-        return "structure", None  # same sheets, some formulas differ: _formula_note says where
+                           f"This file is not a version of the price-plan template: its sheets are "
+                           f"{_listed(model.sheets) or 'none'}, and none of them is a template sheet such as "
+                           f"{_listed(expected.sheets, 3)}. Upload a file downloaded from the app, or the "
+                           "template with your changes")
+        return "structure", None  # some sheets or formulas differ: the comparison and _formula_note say where
 
     def _template_model(self, snapshot):
         model = self._template_models.get(snapshot.hash)
@@ -679,6 +689,11 @@ def _extras_stale(connection, model, copy, kept, revision, new_columns):
             provenance["copy_id"] != copy["id"] or provenance.get("extras_id") != kept["id"]):
         return True  # downloaded before the current extras (or from another copy): it cannot replace them
     return edited_since(connection, copy["id"], revision, new_columns)
+
+
+def _listed(names, limit=8):
+    shown = ", ".join(f'"{name}"' for name in names[:limit])
+    return shown + (f" and {len(names) - limit} more" if len(names) > limit else "")
 
 
 def _drop(folder):

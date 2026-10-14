@@ -187,7 +187,7 @@ export function uploadStructureView(structure = [], extras = null) {
     .filter((item) => item.status !== "same")
     .map((item) => {
       if (item.status === "missing")
-        return `<li><b>${e(item.sheet)}</b>: not in your file</li>`;
+        return `<li><b>${e(item.sheet)}</b>: not in your file, kept as it is in the copy</li>`;
       if (item.status === "extra")
         return kept.has(item.sheet.toLowerCase())
           ? `<li><b>${e(item.sheet)}</b>: new tab, kept in your copy</li>`
