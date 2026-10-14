@@ -332,19 +332,17 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(renamed.status_code, 200, renamed.body)  # a missing tab stays as it is in the copy
         statuses = {item["sheet"]: item["status"] for item in renamed.json()["structure"]}
         self.assertEqual((statuses["Lookup"], statuses["Prices"]), ("missing", "extra"))
-        self.assertEqual(renamed.json()["extras"]["sheets"], [])  # own tabs need a file with every template tab
-        self.assertTrue(any("only updated from a file with all" in item["reason"]
-                            for item in renamed.json()["ignored"]))
+        self.assertEqual(renamed.json()["extras"]["sheets"], ["Prices"])  # added to the copy's own tabs
+        self.assertTrue(renamed.json()["extras"]["adding"])
 
         other = Workbook()
         other.active.title = "BU data"
         other.active["A1"] = 1
         foreign = self.fixture.root / "foreign.xlsx"
         other.save(foreign)
-        refused = self.preview(self.owner, self.owner_csrf, foreign.read_bytes())
-        self.assertEqual(refused.status_code, 422, refused.body)
-        self.assertEqual(refused.json()["error"], "different_template")
-        self.assertIn('its sheets are "BU data"', refused.json()["message"])
+        added = self.preview(self.owner, self.owner_csrf, foreign.read_bytes())
+        self.assertEqual(added.status_code, 200, added.body)  # a workbook of only its own tabs adds them
+        self.assertEqual((added.json()["extras"]["sheets"], added.json()["changes"]), (["BU data"], []))
 
     def test_tampered_or_incomplete_provenance_is_rejected(self):
         def rewrite_property(data, name, value):
@@ -1049,6 +1047,61 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(body["changes"], [])
         self.assertTrue(any("columns may have moved" in item["reason"] for item in body["ignored"]))
         self.assertEqual(body["extras"]["columns"], [])  # an inserted column is not kept as the user's own
+
+    def test_a_workbook_of_only_its_own_tabs_adds_them_and_later_ones_replace_by_name(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("addtabs@example.test", "Add tabs")
+        _, copy = fixture.make_copy(client, csrf)
+        headers = {"x-csrf-token": csrf, "x-upload-filename": "scorecard.xlsx",
+                   "content-type": "application/octet-stream"}
+
+        def upload(tabs):
+            book = Workbook()
+            for number, (name, value) in enumerate(tabs):
+                sheet = book.active if number == 0 else book.create_sheet()
+                sheet.title, sheet["A1"], sheet["B1"] = name, value, "=A1*2"
+            path = fixture.root / f"own-{len(tabs)}-{tabs[0][1]}.xlsx"
+            book.save(path)
+            preview = client.raw("POST", f"/api/copies/{copy['id']}/uploads/preview", path.read_bytes(), headers)
+            self.assertEqual(preview.status_code, 200, preview.body)
+            return preview.json()
+
+        first = upload([("Definition & Calculations", 1), ("Data", 2)])
+        self.assertEqual((first["extras"]["sheets"], first["extras"]["adding"], first["changes"]),
+                         (["Definition & Calculations", "Data"], True, []))
+        self.assertEqual({item["sheet"]: item["status"] for item in first["structure"]}["Plan"], "missing")
+        confirmed = client.post(f"/api/uploads/{first['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+        edit = client.post(f"/api/copies/{copy['id']}/ops", {
+            "op_id": "data-edit", "action": "edit",
+            "cells": [{"sheet": 2, "r": 0, "c": 0, "v": 9, "expected_version": 0}],
+        }, {"x-csrf-token": csrf})
+        self.assertEqual(edit.status_code, 200, edit.body)
+
+        second = upload([("Definition & Calculations", 100), ("Scorecard", 3)])
+        extras = second["extras"]
+        self.assertEqual((extras["sheets"], extras["replaced_sheets"], extras["other_sheets"], extras["removed_sheets"]),
+                         (["Definition & Calculations", "Scorecard"], ["Definition & Calculations"], ["Data"], []))
+        confirmed = client.post(f"/api/uploads/{second['token']}/confirm", {"mode": "update"}, {"x-csrf-token": csrf})
+        self.assertEqual(confirmed.status_code, 200, confirmed.body)
+
+        meta = client.get(f"/api/copies/{copy['id']}/workbook").json()
+        self.assertEqual([(sheet["name"], sheet["index"]) for sheet in meta["sheets"]],
+                         [("Plan", 0), ("Definition & Calculations", 1), ("Data", 2), ("Scorecard", 3)])
+        value = lambda sheet: client.get(f"/api/copies/{copy['id']}/sheets/{sheet}/rows?start=0&count=1").json()["rows"]["0"]["0"]["v"]
+        self.assertEqual((value(1), value(2), value(3)), (100, 9, 3))  # replaced, app edit kept, added
+        download = client.get(f"/api/copies/{copy['id']}/export.xlsx")
+        self.assertEqual(download.status_code, 200, download.body)
+        saved = fixture.root / "added-download.xlsx"
+        saved.write_bytes(download.body)
+        result = load_workbook(saved)
+        self.assertEqual(result.sheetnames, ["Plan", "Definition & Calculations", "Data", "Scorecard"])
+        self.assertEqual((result["Data"]["A1"].value, result["Scorecard"]["B1"].value), (9, "=A1*2"))
+
+        third = upload([("Data", 5)])
+        self.assertEqual((third["extras"]["replaced_sheets"], third["extras"]["overwrites_app_edits"]), (["Data"], True))
+        self.assertFalse(second["extras"]["overwrites_app_edits"])
 
     def test_own_tabs_and_calculation_columns_are_kept_shown_editable_and_downloaded(self):
         fixture = APIFixture(_open_table_fixture)

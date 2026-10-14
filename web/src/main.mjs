@@ -215,6 +215,7 @@ function safe(promise) {
   });
 }
 function modal(title, body, submit, label = "Save") {
+  $("modal").classList.remove("wide");
   $("modal-title").textContent = title;
   $("modal-body").innerHTML = body;
   $("modal-error").textContent = "";
@@ -327,6 +328,8 @@ function showUploadPreview(preview, currentCategory, copy, name) {
     currentCategory,
     name,
   );
+  $("modal-title").textContent = "Check your upload";
+  $("modal").classList.add("wide");
   $("modal-submit").textContent = "Apply upload";
   $("modal-form").onsubmit = async (event) => {
     event.preventDefault();

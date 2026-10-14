@@ -29,7 +29,8 @@ from openpyxl.utils.escape import unescape as unescape_ooxml
 
 from .authorization import effective_role
 from .errors import AppError
-from .extras import ExtrasPlan, attach, build_extras, current_plan, edited_since, sheet_index
+from .extras import (ExtrasPlan, attach, build_extras, build_merged, current_plan, edited_in, edited_since,
+                     sheet_index)
 from .export.transfer import (
     REL_ATTRIBUTE_NAMESPACES,
     LinkScan,
@@ -419,20 +420,27 @@ class UploadService:
                 details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
             structure = _structure_report(model, self._template_model(snapshot))
             kept = current_plan(connection, copy["id"]) if copy is not None else None
-            stale = _extras_stale(connection, model, copy, kept, revision,
-                                  {sheet_index(snapshot, name): first
-                                   for name, first in details["extras"]["columns"].items()})
-        plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
-        built, replace_extras = None, kept is not None
-        present = {name.casefold() for name in model.sheets}
-        if not stale and not all(name.casefold() in present for name in template_model.sheets) \
-                and (kept is not None or not plan.empty()):
-            # Part of the workbook: the tabs it lacks stay, so its own tabs and columns cannot be the full set
-            details["ignored"].append({"sheet": None, "cell": None, "reason":
-                                       "Your own tabs and columns are only updated from a file with all of the "
-                                       "template's tabs, so the copy keeps the ones it has"})
-            plan, replace_extras, kept = ExtrasPlan((), {}, model.sheets), False, None
-        elif stale:
+            plan = ExtrasPlan(tuple(details["extras"]["sheets"]), details["extras"]["columns"], model.sheets)
+            present = {name.casefold() for name in model.sheets}
+            # A file without all of the template's tabs adds its own tabs and columns to the copy's: it cannot
+            # say which of the copy's own ones it no longer wants
+            adding = not all(name.casefold() in present for name in template_model.sheets)
+            if adding:
+                # The template's tabs keep their order; the file's own ones follow
+                plan = ExtrasPlan(plan.sheets, plan.columns, tuple(template_model.sheets) + plan.sheets)
+                regions = ([(sheet_index(snapshot, name), first) for name, first in plan.columns.items()]
+                           + _replaced_tabs(kept, plan, snapshot))
+                # The preview warns; the user chose this file over the app's edits there
+                overwrites = copy is not None and edited_in(connection, copy["id"], revision, regions)
+                stale = False
+            else:
+                overwrites = False
+                stale = _extras_stale(connection, model, copy, kept, revision,
+                                      {sheet_index(snapshot, name): first
+                                       for name, first in details["extras"]["columns"].items()})
+        built, unchanged = None, ()
+        replace_extras = kept is not None and not adding
+        if stale:
             # The file would undo what the app holds now: keep the app's version
             details["ignored"].append({"sheet": None, "cell": None, "reason":
                                        "Your own tabs and columns are kept as they are in the app, because they "
@@ -442,7 +450,12 @@ class UploadService:
         if not plan.empty():
             progress("Reading your own tabs and columns")
             try:
-                built, replace_extras = build_extras(request.path, plan, snapshot, self.previews.directory), True
+                if adding and kept is not None:
+                    built, unchanged = build_merged(request.path, plan, Path(kept["path"]), kept, snapshot,
+                                                    self.previews.directory)
+                else:
+                    built = build_extras(request.path, plan, snapshot, self.previews.directory)
+                replace_extras = True
                 lost = json.loads((built / "extras.json").read_text(encoding="utf-8"))["counts"]["dropped_objects"]
                 if lost:
                     details["ignored"].append({"sheet": None, "cell": None, "reason":
@@ -453,9 +466,9 @@ class UploadService:
                 details["ignored"].append({"sheet": None, "cell": None, "reason":
                                            "Your own tabs and columns could not be read, so this copy keeps "
                                            f"the ones it had ({type(exc).__name__})"})
-                plan, replace_extras = ExtrasPlan((), {}, model.sheets), False
+                plan, replace_extras, built = ExtrasPlan((), {}, model.sheets), False, None
                 kept = None
-        extras = _extras_summary(plan, kept, model)
+        extras = {**_extras_summary(plan, kept, model, adding), "overwrites_app_edits": overwrites and not plan.empty()}
         stored = {
             **details,
             "user_id": request.user_id,
@@ -465,6 +478,7 @@ class UploadService:
             "filename": filename,
             "extras_dir": str(built) if built is not None else None,
             "replace_extras": replace_extras,
+            "keep_regions": [list(region) for region in unchanged],
         }
         try:
             token = self.previews.put(stored)
@@ -544,14 +558,6 @@ class UploadService:
         expected = self._template_model(snapshot)
         if (model.sheets, model.fingerprint) == (expected.sheets, expected.fingerprint):
             return "structure", None
-        names = {name.casefold() for name in model.sheets}
-        if not any(name.casefold() in names for name in expected.sheets):
-            # Sheets it lacks stay as they are in the copy; a file with none of them is another workbook
-            raise AppError(422, "different_template",
-                           f"This file is not a version of the price-plan template: its sheets are "
-                           f"{_listed(model.sheets) or 'none'}, and none of them is a template sheet such as "
-                           f"{_listed(expected.sheets, 3)}. Upload a file downloaded from the app, or the "
-                           "template with your changes")
         return "structure", None  # some sheets or formulas differ: the comparison and _formula_note say where
 
     def _template_model(self, snapshot):
@@ -615,7 +621,9 @@ class UploadService:
         if not preview.get("replace_extras"):
             return None
         built = Path(preview["extras_dir"]) if preview.get("extras_dir") else None
-        replaced, final = attach(connection, copy_id, built, self.data_dir)
+        # shortcut: a new copy made from an added file also gets the source copy's own tabs, without its app edits
+        keep = [tuple(region) for region in preview.get("keep_regions", [])]
+        replaced, final = attach(connection, copy_id, built, self.data_dir, keep)
         preview["extras_dir"] = None  # moved into the copy's folder: no longer the preview's to delete
         if final is not None:
             moved.append(final)
@@ -691,18 +699,23 @@ def _extras_stale(connection, model, copy, kept, revision, new_columns):
     return edited_since(connection, copy["id"], revision, new_columns)
 
 
-def _listed(names, limit=8):
-    shown = ", ".join(f'"{name}"' for name in names[:limit])
-    return shown + (f" and {len(names) - limit} more" if len(names) > limit else "")
-
-
 def _drop(folder):
     if folder is not None:
         shutil.rmtree(folder, ignore_errors=True)
 
 
-def _extras_summary(plan, kept, model):
-    """What the copy keeps from the file, and its earlier own tabs and columns the file no longer has."""
+def _replaced_tabs(kept, plan, snapshot):
+    """Regions of the copy's own tabs an added file replaces (same name)."""
+    if kept is None:
+        return []
+    names = {name.casefold() for name in plan.sheets}
+    count = len(snapshot.sheets)
+    return [(count + number, 0) for number, name in enumerate(kept["sheets"]) if name.casefold() in names]
+
+
+def _extras_summary(plan, kept, model, adding=False):
+    """What the copy keeps from the file, its earlier own tabs and columns the file replaces, and (for a full
+    workbook) the ones the file no longer has."""
     names = {name.casefold(): name for name in model.sheets}
     columns = []
     for sheet, first in plan.columns.items():
@@ -711,13 +724,17 @@ def _extras_summary(plan, kept, model):
         columns.append({"sheet": upload, "count": len(found),
                         "columns": [_named_column(col, model.headers.get(upload, {}))
                                     for col in found[:MAX_LISTED_COLUMNS]]})
-    removed_sheets, removed_columns = [], []
+    removed_sheets, removed_columns, replaced, others = [], [], [], []
     if kept:
         now = {name.casefold() for name in plan.sheets}
-        removed_sheets = [name for name in kept["sheets"] if name.casefold() not in now]
-        now = {name.casefold() for name in plan.columns}
-        removed_columns = [name for name in kept["columns"] if name.casefold() not in now]
-    return {"sheets": list(plan.sheets), "columns": columns,
+        replaced = [name for name in kept["sheets"] if name.casefold() in now]
+        others = [name for name in kept["sheets"] if name.casefold() not in now]
+        if not adding:
+            removed_sheets, others = others, []
+            now = {name.casefold() for name in plan.columns}
+            removed_columns = [name for name in kept["columns"] if name.casefold() not in now]
+    return {"sheets": list(plan.sheets), "columns": columns, "adding": adding,
+            "replaced_sheets": replaced, "other_sheets": others,
             "removed_sheets": removed_sheets, "removed_columns": removed_columns}
 
 
