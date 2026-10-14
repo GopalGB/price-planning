@@ -109,6 +109,38 @@ def _new_excel(client):
         return client.DispatchEx(EXCEL_CLSID)
 
 
+
+def convert_to_xlsm(source: Path, target: Path) -> None:
+    """Excel's own Save As .xlsm, for .xlsb and .xls uploads. Macros, events and links stay off, and an
+    empty password makes a protected file fail at once instead of waiting for someone to type one."""
+    import pythoncom
+    import win32com.client
+    import win32process
+
+    pythoncom.CoInitialize()
+    app, pid = None, None
+    try:
+        app = _new_excel(win32com.client)
+        pid = win32process.GetWindowThreadProcessId(app.Hwnd)[1]
+        for name, value in (("Visible", False), ("DisplayAlerts", False), ("EnableEvents", False),
+                            ("AskToUpdateLinks", False),
+                            ("AutomationSecurity", 3)):  # 3 = msoAutomationSecurityForceDisable
+            setattr(app, name, value)
+        book = app.Workbooks.Open(str(source), UpdateLinks=0, ReadOnly=True, Password="",
+                                  AddToMru=False, Notify=False)
+        try:
+            book.SaveAs(str(target), FileFormat=52)  # 52 = xlOpenXMLWorkbookMacroEnabled
+        finally:
+            book.Close(SaveChanges=False)
+    finally:
+        try:
+            if app is not None:
+                app.Quit()
+        except Exception:
+            pass
+        _kill(pid)
+        pythoncom.CoUninitialize()
+
 class ComExcelHost(ExcelHost):
     """A private hidden Excel with macros and events off, on its own file copy."""
 

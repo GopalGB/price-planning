@@ -31,7 +31,7 @@ from .calc_service import (
 )
 from .copies import CopyService, ShareChange
 from .db import token_hash
-from .engine.excel import REFRESH_ALL
+from .engine.excel import REFRESH_ALL, convert_to_xlsm
 from .engine.formualizer import EngineError, MacroTimeout
 from .engine.pool import CalculationRequest, MacroRequest, SlicerRequest
 from .pivot_state import with_refreshed, with_selection
@@ -103,6 +103,7 @@ class Services:
         self.uploads = UploadService(UploadDependencies(
             context.database, templates, self.copies, self.operations,
             Path(context.config.data_dir) / "uploads" / "previews",
+            convert_to_xlsm if getattr(context.config, "engine", None) == "excel" else None,
         ))
         self.calculations = CalculationService(context.database, templates)
         self.engine_pool = context.engine_pool

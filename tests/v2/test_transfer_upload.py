@@ -7,6 +7,7 @@ import json
 import os
 import re
 from base64 import b64encode
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -79,6 +80,16 @@ def _input_only_fixture(path):
     for reference, value in (("B2", 10), ("B5", 20)):
         sheet[reference] = value
         sheet[reference].protection = Protection(locked=False)
+    workbook.save(path)
+
+
+def _open_table_fixture(path):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Plan"
+    sheet.append(["Item", "Price", "Double"])
+    for row, (item, price) in enumerate((("S-1", 10), ("S-2", 20), ("S-3", 30)), start=2):
+        sheet.append([item, price, f"=B{row}*2"])
     workbook.save(path)
 
 
@@ -307,9 +318,21 @@ class UploadAPITests(unittest.TestCase):
         ))
 
         changed = _workbook_bytes(upload, self.fixture.root, (("Calc", "B3", "=1+1"),))
-        refused = self.preview(self.owner, self.owner_csrf, changed)
+        noted = self.preview(self.owner, self.owner_csrf, changed)
+        self.assertEqual(noted.status_code, 200, noted.body)
+        self.assertEqual([(item["cell"], item["new"]) for item in noted.json()["changes"]], [("B2", 13)])
+        self.assertTrue(any("formulas differ from the template on: Calc" in item["reason"]
+                            for item in noted.json()["ignored"]))
+
+        source, output = self.fixture.root / "renamed-source.xlsx", self.fixture.root / "renamed.xlsx"
+        source.write_bytes(upload)
+        workbook = load_workbook(source)
+        workbook["Lookup"].title = "Prices"
+        workbook.save(output)
+        refused = self.preview(self.owner, self.owner_csrf, output.read_bytes())
         self.assertEqual(refused.status_code, 422, refused.body)
         self.assertEqual(refused.json()["error"], "different_template")
+        self.assertIn("no sheet named Lookup", refused.json()["message"])
 
     def test_tampered_or_incomplete_provenance_is_rejected(self):
         def rewrite_property(data, name, value):
@@ -389,7 +412,8 @@ class UploadAPITests(unittest.TestCase):
             with self.subTest(name=name):
                 response = self.preview(self.owner, self.owner_csrf, data)
                 self.assertIn(response.status_code, {400, 413, 422}, response.body)
-                self.assertIn(response.json()["error"], {"invalid_workbook", "unsafe_xml", "archive_bomb"})
+                self.assertIn(response.json()["error"],
+                              {"invalid_workbook", "unsafe_xml", "archive_bomb", "unsupported_workbook"})
 
     def test_duplicate_encrypted_and_excessive_members_are_rejected(self):
         from pp.upload import _safe_member
@@ -905,21 +929,140 @@ class UploadAPITests(unittest.TestCase):
         self.assertTrue(any(item["cell"] == "B2" and "formula" in item["reason"]
                             for item in response.json()["ignored"]))
 
-    def test_inserted_or_deleted_rows_skip_affected_sheet_inputs(self):
-        for operation in ("insert", "delete", "same_extent"):
+    def test_inserted_or_deleted_rows_are_matched_back_to_template_rows(self):
+        # The user typed 12 next to "Cost" after inserting a row above it: it lands on the Cost row
+        expected = {"insert": ([("B2", 10, 12)], None), "delete": ([], "Row 2 of the template"),
+                    "same_extent": ([("B2", 10, 12)], "Row 6 of the template")}
+        for operation, (changes, missing) in expected.items():
             with self.subTest(operation=operation):
                 upload = _shifted_rows(self.exported, self.fixture.root, operation)
 
                 response = self.preview(self.owner, self.owner_csrf, upload)
 
                 self.assertEqual(response.status_code, 200, response.body)
-                self.assertFalse(any(
-                    item["sheet"] == "Inputs" for item in response.json()["changes"]
-                ))
-                self.assertTrue(any(
-                    item["sheet"] == "Inputs" and "may have moved"
-                    in item["reason"] for item in response.json()["ignored"]
-                ))
+                body = response.json()
+                self.assertEqual([(item["cell"], item["old"], item["new"]) for item in body["changes"]
+                                  if item["sheet"] == "Inputs"], changes)
+                reasons = [item["reason"] for item in body["ignored"] if item["sheet"] == "Inputs"]
+                self.assertTrue(any("matched back to their template rows" in reason for reason in reasons))
+                self.assertEqual(any(missing in reason for reason in reasons) if missing else False,
+                                 bool(missing))
+
+    def test_binary_old_and_foreign_files_say_what_they_are(self):
+        xlsb = self.fixture.root / "book.xlsb"
+        with zipfile.ZipFile(xlsb, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("xl/workbook.bin", b"\x83\x01\x00")
+        cases = {
+            "xlsb": (xlsb.read_bytes(), ".xlsb"),
+            "xls": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 512, "old .xls"),
+            "other": (b"not a workbook at all", "not an Excel workbook"),
+        }
+        for kind, (data, phrase) in cases.items():
+            with self.subTest(kind=kind):
+                response = self.preview(self.owner, self.owner_csrf, data)
+
+                self.assertEqual(response.status_code, 422, response.body)
+                self.assertEqual(response.json()["error"], "unsupported_workbook")
+                self.assertIn(phrase, response.json()["message"])
+
+    def test_xlsb_is_saved_as_xlsm_by_excel_when_the_app_runs_on_excel(self):
+        edited = _workbook_bytes(self.exported, self.fixture.root, (("Inputs", "B2", 12),))
+        seen = []
+
+        def excel_save_as(source, target):
+            seen.append((source.suffix, source.read_bytes()[:2], target.suffix))
+            target.write_bytes(edited)
+
+        xlsb = self.fixture.root / "plan.xlsb"
+        with zipfile.ZipFile(xlsb, "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("xl/workbook.bin", b"\x83\x01\x00")
+        uploads = self.fixture.app.state.services.uploads
+        with mock.patch.object(uploads, "converter", excel_save_as):
+            response = self.preview(self.owner, self.owner_csrf, xlsb.read_bytes())
+
+        self.assertEqual(response.status_code, 200, response.body)
+        self.assertEqual([(item["cell"], item["new"]) for item in response.json()["changes"]], [("B2", 12)])
+        self.assertEqual(seen, [(".xlsb", b"PK", ".xlsm")])
+        previews = Path(self.fixture.config.data_dir) / "uploads"
+        self.assertFalse([path for path in previews.rglob("*") if path.suffix in {".xlsb", ".xls"}
+                          or path.name.endswith("-converted.xlsm")])
+
+    def test_rows_filled_below_the_table_are_new_values_not_moved_rows(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("grow@example.test", "Grown Table")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        # Sir's case: prices filled in, more rows added at the end, the formula copied down to them
+        upload = _workbook_bytes(exported, fixture.root, (
+            ("Plan", "B2", 11), ("Plan", "A5", "S-4"), ("Plan", "B5", 40), ("Plan", "C5", "=B5*2"),
+            ("Plan", "A6", "S-5"), ("Plan", "B6", 50),
+        ))
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", upload,
+            {"x-csrf-token": csrf, "x-upload-filename": "grown.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        body = response.json()
+        self.assertEqual(sorted((item["cell"], item["new"]) for item in body["changes"]),
+                         [("A5", "S-4"), ("A6", "S-5"), ("B2", 11), ("B5", 40), ("B6", 50)])
+        self.assertFalse(any("moved" in item["reason"] for item in body["ignored"]))
+
+    def test_column_inserted_in_an_open_table_is_reported_not_applied(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("column-table@example.test", "Inserted Column")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        source, output = fixture.root / "column-table-source.xlsx", fixture.root / "column-table.xlsx"
+        source.write_bytes(exported)
+        workbook = load_workbook(source)
+        workbook["Plan"].insert_cols(2)
+        workbook["Plan"]["C2"] = 15
+        workbook.save(output)
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", output.read_bytes(),
+            {"x-csrf-token": csrf, "x-upload-filename": "column.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        body = response.json()
+        self.assertEqual(body["changes"], [])
+        self.assertTrue(any("columns look inserted" in item["reason"] for item in body["ignored"]))
+
+    def test_row_inserted_inside_a_formula_table_keeps_values_on_their_items(self):
+        fixture = APIFixture(_open_table_fixture)
+        self.addCleanup(fixture.close)
+        client, csrf, _ = fixture.signup("insert-table@example.test", "Inserted Row")
+        _, copy = fixture.make_copy(client, csrf)
+        exported = client.get(f"/api/copies/{copy['id']}/export.xlsx").body
+        source, output = fixture.root / "table-source.xlsx", fixture.root / "table-upload.xlsx"
+        source.write_bytes(exported)
+        workbook = load_workbook(source)
+        sheet = workbook["Plan"]
+        sheet.insert_rows(3)  # a new item between S-1 and S-2, formula copied in by hand
+        sheet["A3"], sheet["B3"], sheet["C3"] = "NEW", 99, "=B3*2"
+        sheet["B4"] = 21  # S-2's price, now on row 4
+        workbook.save(output)
+
+        response = client.raw(
+            "POST", f"/api/copies/{copy['id']}/uploads/preview", output.read_bytes(),
+            {"x-csrf-token": csrf, "x-upload-filename": "inserted.xlsx",
+             "content-type": "application/octet-stream"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.body)
+        body = response.json()
+        self.assertEqual([(item["cell"], item["old"], item["new"]) for item in body["changes"]],
+                         [("B3", 20, 21)])
+        self.assertTrue(any("Row 3 of your file is a new row" in item["reason"] for item in body["ignored"]))
 
     def test_inserted_or_deleted_columns_skip_affected_sheet_inputs(self):
         for operation in ("insert", "delete"):
@@ -1070,7 +1213,7 @@ class UploadAPITests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.body)
         reasons = [item["reason"] for item in response.json()["ignored"]]
         self.assertTrue(any("sheet order" in reason for reason in reasons))
-        self.assertTrue(any("row, column, merge" in reason for reason in reasons))
+        self.assertTrue(any("row heights, column widths, merged cells" in reason for reason in reasons))
 
     def test_missing_implicit_input_cell_clears_its_existing_override(self):
         fixture = APIFixture(default_style_fixture)

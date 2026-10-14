@@ -39,6 +39,7 @@ from .export.transfer import (
     validate_package,
 )
 from .ops import EDIT_ROLES, UploadOperationRequest
+from .upload_align import FORMULA, MASK, align_rows, formula_column_hash
 from .values import exactly_equal, validate_value
 
 LOGGER = logging.getLogger(__name__)
@@ -88,6 +89,14 @@ class WorkbookModel:
     displaced: frozenset[str]
     # Highest row and column holding a cell, per sheet, measured the same way for template and upload
     extents: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # Per sheet {row: sum of formula_column_hash over the row's formula cells}: equal maps mean no
+    # formula moved, so rows were only filled or added below
+    formula_rows: dict[str, dict[int, int]] = field(default_factory=dict)
+    parts: dict[str, str] = field(default_factory=dict)  # sheet name -> worksheet part, for row matching
+    strings_part: str | None = None
+    filled_cols: dict[str, int] = field(default_factory=dict)  # one past the last filled column
+    suspect: frozenset[str] = frozenset()  # sheets with values in locked empty cells
+    digests: dict[str, str] = field(default_factory=dict)  # per-sheet formula hash, when fingerprinted
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,7 @@ class UploadDependencies:
     copies: object
     operations: object
     preview_dir: Path
+    converter: object = None  # converter(source, target): Excel's Save As .xlsm, on the Excel engine only
 
 
 @dataclass(frozen=True)
@@ -128,6 +138,7 @@ class PreviewContext:
     copy: object
     user_id: str
     revision: int | None
+    path: Path | None = None  # the uploaded file, read again for sheets whose rows moved
 
 
 @dataclass(frozen=True)
@@ -179,6 +190,7 @@ class SheetScan:
     name: str
     all_formulas: bool
     keep: frozenset = frozenset()  # (row, col) of the copy's saved edits on this sheet
+    moved: bool = False  # rows were matched to template rows: shifted formulas are not differences
 
 
 @dataclass(frozen=True)
@@ -188,6 +200,9 @@ class SheetData:
     ignored_count: int
     displaced: bool
     extent: tuple[int, int] = (0, 0)
+    formula_rows: dict = field(default_factory=dict)
+    filled_cols: int = 0
+    suspect: bool = False  # a locked empty cell holds a value: rows or columns may have moved
 
 
 @dataclass
@@ -197,15 +212,28 @@ class DisplacementDetector:
     rows: int = 0
     cols: int = 0
     locked_layout_changed: bool = False
+    formula_rows: dict = field(default_factory=dict)
+    filled_cols: int = 0  # one past the last column holding a value or formula
+    locked_filled: bool = False
 
     def observe(self, record):
         self.rows = max(self.rows, record["row"] + 1)
         self.cols = max(self.cols, record["col"] + 1)
+        if record["formula"] is not None or record["value"] not in (None, ""):
+            self.filled_cols = max(self.filled_cols, record["col"] + 1)
+        if record["formula"] is not None:
+            row = record["row"]
+            self.formula_rows[row] = (self.formula_rows.get(row, 0) + formula_column_hash(record["col"])) & MASK
 
     def locked_value_changed(self, record, expected):
-        """A changed value in a locked, formula-free cell means rows or columns moved under it."""
+        """A changed value in a locked, formula-free cell means rows or columns moved under it. A value
+        in a cell the template leaves empty only may mean that (rows added below, or a column inserted),
+        so it sends the sheet to row matching instead."""
         if record["formula"] is None and expected.get("formula") is None:
-            self.locked_layout_changed = True
+            if expected.get("v") in (None, ""):
+                self.locked_filled = True
+            else:
+                self.locked_layout_changed = True
 
     def detected(self):
         # The extent is compared with the template's own cell extent in _preview_details: the
@@ -296,9 +324,39 @@ class UploadService:
         self.copies = dependencies.copies
         self.operations = dependencies.operations
         self.previews = PreviewStore(dependencies.preview_dir)
+        self.converter = dependencies.converter
         self._template_models = {}
 
     def preview(self, request):
+        path = self._readable(request)
+        try:
+            return self._preview(replace(request, path=path))
+        finally:
+            if path != request.path:
+                path.unlink(missing_ok=True)
+
+    def _readable(self, request):
+        """The upload as an .xlsx/.xlsm package: .xlsb and .xls go through Excel's Save As when the app
+        runs on Excel; otherwise the message says what the file is and how to save it."""
+        kind = _workbook_format(request.path)
+        if kind == "ooxml":
+            return request.path
+        if kind in {"xlsb", "ole"} and self.converter is not None:
+            (request.progress or _no_progress)("Converting the file with Excel")
+            source = request.path.with_name(request.path.stem + (".xlsb" if kind == "xlsb" else ".xls"))
+            target = request.path.with_name(request.path.stem + "-converted.xlsm")
+            try:
+                source.write_bytes(request.path.read_bytes())  # Excel trusts the extension
+                self.converter(source, target)
+                return target
+            except Exception as exc:
+                LOGGER.warning("Excel could not convert an uploaded %s file: %s", kind, type(exc).__name__)
+                target.unlink(missing_ok=True)
+            finally:
+                source.unlink(missing_ok=True)
+        raise AppError(422, "unsupported_workbook", UNSUPPORTED_MESSAGES[kind])
+
+    def _preview(self, request):
         progress = request.progress or _no_progress
         filename = _filename(request.filename)
         progress("Checking the file is safe")
@@ -317,8 +375,10 @@ class UploadService:
             identification, revision = self._identify(model, snapshot, copy)
             details = _preview_details(PreviewContext(
                 connection, model, self._template_model(snapshot), snapshot,
-                copy, request.user_id, revision,
+                copy, request.user_id, revision, request.path,
             ))
+            if identification == "structure":
+                details["ignored"].extend(_formula_note(model, self._template_model(snapshot)))
         stored = {
             **details,
             "user_id": request.user_id,
@@ -392,9 +452,15 @@ class UploadService:
                         if copy is not None and model.provenance["copy_id"] == copy["id"] else None)
             return "provenance", revision
         expected = self._template_model(snapshot)
-        if (model.sheets, model.fingerprint) != (expected.sheets, expected.fingerprint):
-            raise AppError(422, "different_template", "Workbook structure does not match this template")
-        return "structure", None
+        if (model.sheets, model.fingerprint) == (expected.sheets, expected.fingerprint):
+            return "structure", None
+        names = {name.casefold() for name in model.sheets}
+        missing = [name for name in expected.sheets if name.casefold() not in names]
+        if missing:
+            shown = ", ".join(missing[:8]) + (f" and {len(missing) - 8} more" if len(missing) > 8 else "")
+            raise AppError(422, "different_template",
+                           f"This file does not match the template: it has no sheet named {shown}")
+        return "structure", None  # same sheets, some formulas differ: _formula_note says where
 
     def _template_model(self, snapshot):
         model = self._template_models.get(snapshot.hash)
@@ -499,6 +565,39 @@ def _safe_member(info, stored=1):
         raise AppError(413, "archive_bomb", "Workbook compression ratio is unsafe")
 
 
+OLE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+UNSUPPORTED_MESSAGES = {
+    "xlsb": "This is an .xlsb (binary) workbook. In Excel choose File > Save As > Excel Macro-Enabled "
+            "Workbook (.xlsm), then upload that file.",
+    "ole": "This is an old .xls workbook, or it is protected with a password. Open it in Excel, remove any "
+           "password, save it as Excel Macro-Enabled Workbook (.xlsm), then upload that file.",
+    "unknown": "This file is not an Excel workbook. Upload the .xlsm or .xlsx file downloaded from the app.",
+}
+
+
+def _workbook_format(path):
+    """ooxml (.xlsx/.xlsm), xlsb, ole (.xls, or any password-protected workbook) or unknown."""
+    with open(path, "rb") as handle:
+        head = handle.read(len(OLE_MAGIC))
+    if head == OLE_MAGIC:
+        return "ole"
+    if not zipfile.is_zipfile(path):
+        return "unknown"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+    except (OSError, zipfile.BadZipFile):
+        return "unknown"
+    return "xlsb" if "xl/workbook.bin" in names else "ooxml"
+
+
+def _unreadable(where, exc):
+    """The rejection names the part and the kind of fault, so a file Excel saved oddly can be diagnosed."""
+    LOGGER.warning("Upload rejected while reading %s: %s: %s", where, type(exc).__name__, str(exc)[:200])
+    return AppError(422, "invalid_workbook",
+                    f"File is not a safe Excel workbook (could not read {where}: {type(exc).__name__})")
+
+
 def _validate_archive(path, deferred=frozenset()):
     """deferred: worksheet parts whose XML screening and link check run on the worker that reads them."""
     try:
@@ -521,7 +620,7 @@ def _validate_archive(path, deferred=frozenset()):
     except AppError:
         raise
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
-        raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
+        raise _unreadable("the workbook package", exc) from exc
 
 
 def _validate_xml_members(archive, stored, deferred=frozenset()):
@@ -753,7 +852,8 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
     for job in jobs:
         result = results[job.name]
         if job.screen and result.references - {item["id"] for item in graph.get(job.part, [])}:
-            raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook")
+            raise AppError(422, "invalid_workbook",
+                           f"File is not a safe Excel workbook (sheet {job.name} links to a missing part)")
     _screen_unread(path, deferred - {job.part for job in jobs})
     if deferred:
         _deferred_open_check(path)
@@ -770,7 +870,14 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
     )
     displaced = frozenset(name for name in names if results[name].data.displaced)
     extents = {name: results[name].data.extent for name in names}
-    return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced, extents)
+    formula_rows = {name: results[name].data.formula_rows for name in names}
+    parts = {job.name: job.part for job in jobs}
+    filled_cols = {name: results[name].data.filled_cols for name in names}
+    suspect = frozenset(name for name in names if results[name].data.suspect)
+    digests = ({name: result.digest.hex() for name, result in results.items() if result.digest is not None}
+               if fingerprint else {})
+    return WorkbookModel(names, cells, structures, fingerprint, props, ignored, displaced, extents,
+                         formula_rows, parts, strings_part, filled_cols, suspect, digests)
 
 
 @dataclass(frozen=True)
@@ -873,9 +980,9 @@ def _scan_part(job, snapshot=None, strings=None):
         return PartResult(job.name, data, digest, structure, references)
     except AppError as exc:
         return PartResult(job.name, None, None, None, frozenset(), (exc.status, exc.code, exc.message))
-    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError):
-        return PartResult(job.name, None, None, None, frozenset(),
-                          (422, "invalid_workbook", "File is not a safe Excel workbook"))
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
+        error = _unreadable(f"sheet {job.name}", exc)
+        return PartResult(job.name, None, None, None, frozenset(), (error.status, error.code, error.message))
 
 
 def _screen_part(archive, part):
@@ -894,6 +1001,7 @@ def _screen_unread(path, parts):
     """Deferred parts no sheet points at still get the screen and link check before anything trusts the file."""
     if not parts:
         return
+    part = "the workbook package"
     try:
         with zipfile.ZipFile(path) as archive:
             graph = _relationship_graph(archive)
@@ -902,11 +1010,12 @@ def _screen_unread(path, parts):
                 with archive.open(part) as stream:
                     references = _relationship_references(stream)
                 if references - {item["id"] for item in graph.get(part, [])}:
-                    raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook")
+                    raise AppError(422, "invalid_workbook",
+                                   f"File is not a safe Excel workbook ({part} links to a missing part)")
     except AppError:
         raise
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
-        raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
+        raise _unreadable(part, exc) from exc
 
 
 def _deferred_open_check(path):
@@ -914,7 +1023,7 @@ def _deferred_open_check(path):
     try:
         open_check(path)
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
-        raise AppError(422, "invalid_workbook", "File is not a safe Excel workbook") from exc
+        raise _unreadable("the workbook with openpyxl", exc) from exc
 
 
 def _bounded_structures(structures):
@@ -1084,11 +1193,14 @@ def _sheet_cells(request, stream_cells):
             if (template_input or formula is not None or (row, col) in request.keep
                     or not exactly_equal(record["value"], expected["v"])):
                 cells[reference] = record
-        elif _locked_cell_changed(record, expected):
+        elif _locked_cell_changed(record, expected) and not (
+                request.moved and record["formula"] is not None and expected.get("formula") is not None):
             ignored += 1
             if not editable:
                 detector.locked_value_changed(record, expected)
-    return SheetData(cells, formulas, ignored, detector.detected(), (detector.rows, detector.cols))
+    return SheetData(cells, formulas, ignored, detector.detected(), (detector.rows, detector.cols),
+                     detector.formula_rows, detector.filled_cols,
+                     detector.snapshot is not None and detector.sheet is not None and detector.locked_filled)
 
 
 def _locked_cell_changed(uploaded, expected):
@@ -1156,6 +1268,20 @@ def _sheet_digest(formulas):
     return digest.digest()
 
 
+def _formula_note(model, template):
+    """A file without download information whose formulas differ: say on which sheets, since the
+    template's formulas are what the copy keeps."""
+    by_name = {name.casefold(): digest for name, digest in template.digests.items()}
+    changed = [name for name, digest in model.digests.items()
+               if name.casefold() in by_name and by_name[name.casefold()] != digest]
+    if not changed:
+        return []
+    shown = ", ".join(changed[:8]) + (f" and {len(changed) - 8} more" if len(changed) > 8 else "")
+    return [{"sheet": None, "cell": None, "reason":
+             f"This file has no download information and its formulas differ from the template on: {shown}. "
+             "Values were matched by sheet and row; the template's formulas are kept"}]
+
+
 def _fingerprint(sheet_names, digests):
     """Each sheet is hashed where it is read, so only 32 bytes per sheet leave a worker."""
     digest = hashlib.sha256()
@@ -1175,7 +1301,7 @@ def _normalize_formula(formula):
 
 
 # Bump when the fingerprint or structure records change shape, so a stale saved identity is rebuilt.
-TEMPLATE_IDENTITY_VERSION = 3
+TEMPLATE_IDENTITY_VERSION = 5
 TEMPLATE_IDENTITY_FILE = "upload_identity.json"
 
 
@@ -1189,14 +1315,18 @@ def _load_template_identity(snapshot):
         return None
     structures = {name: _tupled(value) for name, value in saved["structures"].items()}
     extents = {name: tuple(value) for name, value in saved["extents"].items()}
+    formula_rows = {name: {int(row): value for row, value in rows.items()}
+                    for name, rows in saved["formula_rows"].items()}
     return WorkbookModel(tuple(saved["sheets"]), {}, structures, saved["fingerprint"], None, (), frozenset(),
-                         extents)
+                         extents, formula_rows, filled_cols=saved["filled_cols"], digests=saved["digests"])
 
 
 def _save_template_identity(snapshot, model):
     path = Path(snapshot.path) / TEMPLATE_IDENTITY_FILE
     body = {"version": TEMPLATE_IDENTITY_VERSION, "sheets": list(model.sheets),
-            "fingerprint": model.fingerprint, "structures": model.structures, "extents": model.extents}
+            "fingerprint": model.fingerprint, "structures": model.structures, "extents": model.extents,
+            "formula_rows": model.formula_rows, "filled_cols": model.filled_cols,
+            "digests": model.digests}
     temporary = path.with_suffix(".tmp")
     try:
         temporary.write_text(json.dumps(body), encoding="utf-8")
@@ -1267,18 +1397,38 @@ def _preview_details(context):
         if model.structures[sheet_name] != context.template_model.structures[expected_name]:
             ignored.append({
                 "sheet": sheet_name, "cell": None,
-                "reason": "row, column, merge, protection, or visibility changes are ignored",
+                "reason": "row heights, column widths, merged cells, protection and hidden rows stay as "
+                          "in the template",
             })
-        if (sheet_name in model.displaced
-                or model.extents.get(sheet_name) != context.template_model.extents.get(expected_name)):
-            ignored.append({
-                "sheet": sheet_name, "cell": None,
-                "reason": "Input changes are ignored because rows, columns, or locked cells may have moved",
-            })
+        sheet_cells, skipped_rows = model.cells[sheet_name], frozenset()
+        filled, expected_filled = (model.filled_cols.get(sheet_name, 0),
+                                   context.template_model.filled_cols.get(expected_name, 0))
+        if filled < expected_filled:
+            # The last filled column moved left: a deleted column would otherwise read as cleared inputs
+            ignored.append({"sheet": sheet_name, "cell": None, "reason":
+                            "Input changes are ignored because columns may have moved: the last filled "
+                            f"column is {_cell_name(0, filled - 1)[:-1] if filled else 'none'}, the "
+                            f"template's is {_cell_name(0, expected_filled - 1)[:-1]}"})
             continue
+        if sheet_name in model.suspect and filled > expected_filled:
+            # Values in locked cells past the template's last filled column: a column was inserted
+            ignored.append({"sheet": sheet_name, "cell": None, "reason":
+                            "Input changes are ignored because columns may have moved: values sit in "
+                            f"locked cells up to column {_cell_name(0, filled - 1)[:-1]}, past the "
+                            f"template's last filled column {_cell_name(0, expected_filled - 1)[:-1]}"})
+            continue
+        if (sheet_name in model.displaced or sheet_name in model.suspect
+                or model.formula_rows.get(sheet_name, {})
+                != context.template_model.formula_rows.get(expected_name, {})):
+            # Formulas or locked labels are not where the template has them: rows were inserted,
+            # deleted or the table was extended, so match the rows before reading any input
+            matched = _matched_sheet(context, sheet_name, index, overrides, ignored)
+            if matched is None:
+                continue
+            sheet_cells, skipped_rows = matched
         sheet_context = SheetContext(snapshot, index, sheet_name, overrides, ignored)
-        found, seen = _inspect_sheet(model.cells[sheet_name], sheet_context)
-        _add_missing_inputs(found, seen, sheet_context)
+        found, seen = _inspect_sheet(sheet_cells, sheet_context)
+        _add_missing_inputs(found, seen, sheet_context, skipped_rows)
         for item in sorted(found.values(), key=lambda value: (value["r"], value["c"])):
             if not exactly_equal(item["template"], item["new"]):
                 all_inputs.append(item)
@@ -1289,6 +1439,119 @@ def _preview_details(context):
                     conflicts.append(_public_change(change))
     return {"changes": changes, "conflicts": conflicts, "ignored": ignored, "all_inputs": all_inputs,
             "current_revision": copy["input_revision"] if copy is not None else None}
+
+
+MAX_ROW_NOTES = 20
+
+
+def _matched_sheet(context, name, index, overrides, ignored):
+    """Rows of this sheet moved: line them up with the template's, then read the inputs at the matched
+    rows. Returns (cells, template rows the file no longer has), or None when nothing can be applied."""
+    model = context.model
+    sheet_overrides = {(row, col): item["value"] for (sheet, row, col), item in overrides.items()
+                       if sheet == index}
+    alignment = align_rows(_template_rows(context.snapshot, index, sheet_overrides),
+                           _sheet_rows(context.path, model.parts[name], model.strings_part),
+                           model.extents.get(name, (None, None))[0])
+    if alignment.failure is not None:
+        ignored.append({"sheet": name, "cell": None, "reason":
+                        f"Input changes are ignored because rows or columns may have moved: {alignment.failure}"})
+        return None
+    if not alignment.moved:
+        if name in model.displaced:
+            ignored.append({"sheet": name, "cell": None, "reason":
+                            "Input changes are ignored because rows, columns, or locked cells may have moved"})
+            return None
+        if alignment.unsure:
+            ignored.append({"sheet": name, "cell": None, "reason":
+                            "New rows were read as added at the end of the table. No unchanged value (an item "
+                            "number or label) shows where they were added; if you inserted rows in the "
+                            "middle, cancel and add them at the end instead"})
+        return model.cells[name], frozenset()  # the table only grew: formulas copied into new rows
+    data = _remapped_sheet(context, name, index, frozenset(sheet_overrides), alignment)
+    if data.displaced:
+        ignored.append({"sheet": name, "cell": None, "reason":
+                        "Input changes are ignored because locked cells changed even after matching rows"})
+        return None
+    ignored[:] = [item for item in ignored if not (item["sheet"] == name and "count" in item)]
+    if data.ignored_count:
+        ignored.append({"sheet": name, "cell": None, "count": data.ignored_count,
+                        "reason": "formula or locked cells are ignored"})
+    _note_rows(ignored, name, alignment)
+    return data.cells, frozenset(alignment.deleted)
+
+
+def _note_rows(ignored, name, alignment):
+    shifted = sum(1 for upload_row, row in alignment.mapping.items() if upload_row != row)
+    if shifted:
+        ignored.append({"sheet": name, "cell": None, "reason":
+                        f"Rows were added or removed in your file; {shifted} rows were matched back to "
+                        "their template rows by their contents"})
+    notes = [f"Row {row + 1} of your file is a new row inside the table; the template's rows are fixed, "
+             "so its values were not added" for row in alignment.inserted]
+    notes += [f"Row {row + 1} of the template is missing from your file; its values were left unchanged"
+              for row in alignment.deleted]
+    for note in notes[:MAX_ROW_NOTES]:
+        ignored.append({"sheet": name, "cell": None, "reason": note})
+    if len(notes) > MAX_ROW_NOTES:
+        ignored.append({"sheet": name, "cell": None,
+                        "reason": f"{len(notes) - MAX_ROW_NOTES} more added or missing rows"})
+
+
+def _template_rows(snapshot, index, overrides):
+    """The copy as downloaded, by row: template values with the copy's edits, FORMULA for formulas."""
+    rows = {}
+    for block in range(-(-snapshot.sheets[index].get("rows", 0) // 256)):
+        for offset, cells in snapshot.block(index, block).items():
+            row = block * 256 + int(offset)
+            for col, cell in cells.items():
+                value = FORMULA if cell.get("k") == "f" else cell.get("v")
+                if value is not None and value != "":
+                    rows.setdefault(row, {})[int(col)] = value
+    for (row, col), value in overrides.items():
+        if value is None or value == "":
+            rows.get(row, {}).pop(col, None)
+        else:
+            rows.setdefault(row, {})[col] = value
+    return {row: cells for row, cells in rows.items() if cells}
+
+
+def _sheet_rows(path, part, strings_part):
+    """Every filled cell of one uploaded sheet by row: its value, or FORMULA."""
+    rows = {}
+    with zipfile.ZipFile(path) as archive:
+        strings = _shared_strings(archive, strings_part)
+        with archive.open(part) as stream:
+            for cell in _iter_sheet(stream, _empty_structure()):
+                row, col = _coordinate((cell.get("r") or "").replace("$", "").upper())
+                if any(_local(child.tag) == "f" for child in cell):
+                    rows.setdefault(row, {})[col] = FORMULA
+                    continue
+                value = _cell_value(cell, strings)
+                if value is not None and value != "":
+                    rows.setdefault(row, {})[col] = value
+    return rows
+
+
+def _remapped_sheet(context, name, index, keep, alignment):
+    """The sheet read again with each row placed at its matched template row; unmatched rows dropped."""
+    model = context.model
+    with zipfile.ZipFile(context.path) as archive:
+        strings = _shared_strings(archive, model.strings_part)
+        with archive.open(model.parts[name]) as stream:
+            scan = SheetScan(archive, model.parts[name], strings, context.snapshot, index, name, False, keep,
+                             moved=True)
+            return _sheet_cells(scan, _placed(_iter_sheet(stream, _empty_structure()), alignment))
+
+
+def _placed(cells, alignment):
+    for cell in cells:
+        row, col = _coordinate((cell.get("r") or "").replace("$", "").upper())
+        target = alignment.place(row)
+        if target is None:
+            continue  # a row the template has no place for
+        cell.set("r", _cell_name(target, col))
+        yield cell
 
 
 def _uploaded_change(item, history):
@@ -1333,7 +1596,8 @@ def _inspect_sheet(cells, context):
     return inputs, seen
 
 
-def _add_missing_inputs(inputs, seen, context):
+def _add_missing_inputs(inputs, seen, context, skipped_rows=frozenset()):
+    """skipped_rows: template rows the upload no longer has (deleted), whose inputs stay as they are."""
     explicit = {
         tuple(map(int, key.split(":"))) for key in context.snapshot.input_mask
         if key.startswith(f"{context.sheet}:")
@@ -1343,7 +1607,7 @@ def _add_missing_inputs(inputs, seen, context):
         if coordinate[0] == context.sheet and context.snapshot.is_input(*coordinate)
     }
     for coordinate in explicit | implicit_overrides:
-        if coordinate in seen:
+        if coordinate in seen or coordinate[1] in skipped_rows:
             continue
         reference = _cell_name(coordinate[1], coordinate[2])
         current = context.overrides.get(coordinate)

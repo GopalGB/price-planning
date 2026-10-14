@@ -1,5 +1,30 @@
 # STATE
 
+## 2026-10-14 (Claude, upload adapts to moved rows, .xlsb)
+
+feat/v2-integration. Sir: edited downloads with more rows were rejected as moved, and "File is not a
+safe Excel workbook".
+- Cause 1: any extra row grew the sheet extent, so the whole sheet counted as "moved" and every change on
+  it was ignored (reproduced on the real template: 3 appended rows lost all edits on 2 sheets).
+- Now (pp/upload_align.py): sheets whose formula layout or locked labels moved are matched row by row
+  against the copy (template plus saved edits) with an order-keeping alignment. A moved mapping is only
+  used when every run of rows is proven by an unedited value its neighbours do not share, every pair
+  shares a value or is boxed in by proven pairs, and breaking ties the other way gives the same answer;
+  otherwise the sheet is refused with the reason. Rows added at the end or into blank lines apply;
+  a row inserted inside the table is named and left out; deleted rows are named and left unchanged;
+  an emptied row is a clear. Columns that moved (occupancy and unchanged values) and values in locked
+  cells past the last filled column refuse the sheet. Template identity is version 5.
+- Adversarial review (Sonnet) found 2 HIGH and 4 MEDIUM before push (no-label tables shifting
+  silently, column insert clearing inputs, trailing delete clearing, identical rows, false column
+  shift, crossed pairs); all fixed and turned into tests/v2/test_upload_align.py (random test: 0 wrong
+  rows whenever a move is claimed).
+- Cause 2: .xlsb/.xls/password files hit the generic message. Now named, and on the Excel engine
+  converted with Excel Save As (pp/engine/excel.py convert_to_xlsm, untested on real Excel). Other
+  unreadable files name the part and the error type; the server log has the detail.
+- Files without download information are matched by sheet names; differing formulas are noted.
+- Real template (Mac): append preview 23 s; insert on 2 sheets 47 s. Tests: 847 Python OK, 198 web OK,
+  content guard 0.
+
 ## 2026-10-13 night (Claude, E2E readiness, logo, 10-user load)
 
 feat/v2-integration at bdbd9c2. CI green through 8a4771e; bdbd9c2 was running at handoff.

@@ -184,6 +184,31 @@ class FakeApp:
         self.quit = True
 
 
+class ConvertTests(unittest.TestCase):
+    def test_save_as_xlsm_with_macros_off_and_excel_always_closed(self):
+        calls, killed = [], []
+        book = types.SimpleNamespace(SaveAs=lambda path, FileFormat: calls.append(("save", FileFormat)),
+                                     Close=lambda SaveChanges: calls.append(("close", SaveChanges)))
+        app = types.SimpleNamespace(Hwnd=5, Quit=lambda: calls.append(("quit",)))
+        app.Workbooks = types.SimpleNamespace(
+            Open=lambda path, **options: calls.append(("open", options["ReadOnly"], options["Password"])) or book)
+        modules = {
+            "pythoncom": types.SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None),
+            "win32com.client": types.SimpleNamespace(DispatchEx=lambda name: app),
+            "win32process": types.SimpleNamespace(GetWindowThreadProcessId=lambda hwnd: (1, 99)),
+        }
+        modules["win32com"] = types.SimpleNamespace(client=modules["win32com.client"])
+        with mock.patch.dict(sys.modules, modules), \
+                mock.patch("pp.engine.excel._kill", side_effect=killed.append):
+            from pp.engine.excel import convert_to_xlsm
+
+            convert_to_xlsm(Path("in.xlsb"), Path("out.xlsm"))
+
+        self.assertEqual(calls, [("open", True, ""), ("save", 52), ("close", False), ("quit",)])
+        self.assertEqual((app.AutomationSecurity, app.EnableEvents, app.DisplayAlerts), (3, False, False))
+        self.assertEqual(killed, [99])
+
+
 class ComHostTests(unittest.TestCase):
     def test_unregistered_excel_name_falls_back_to_the_class_id(self):
         from pp.engine.excel import CO_E_CLASSSTRING, EXCEL_CLSID, _new_excel

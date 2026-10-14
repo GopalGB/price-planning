@@ -258,7 +258,7 @@ function uploadModal(copy = null) {
     : `<label>Existing copy (optional)<select name="copy_id"><option value="">Use workbook metadata</option>${copyOptions}</select></label>`;
   modal(
     "Upload Excel",
-    `${target}<label>Category<select name="category_id">${categoryOptions}</select></label><label>Workbook<input name="workbook" type="file" accept=".xlsx,.xlsm" required></label><label>Copy name (used if this becomes a new copy)<input name="copy_name" maxlength="100" placeholder="Name of the uploaded file"></label>${progressView()}`,
+    `${target}<label>Category<select name="category_id">${categoryOptions}</select></label><label>Workbook<input name="workbook" type="file" accept=".xlsx,.xlsm,.xlsb,.xls" required></label><label>Copy name (used if this becomes a new copy)<input name="copy_name" maxlength="100" placeholder="Name of the uploaded file"></label>${progressView()}`,
     async (body) => {
       const query = new URLSearchParams({
         category_id: body.category_id,
