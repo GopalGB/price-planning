@@ -1,6 +1,7 @@
 """Big uploads are read one sheet per worker process; results and safety checks must match the in-process read."""
 
 import unittest
+from dataclasses import replace
 from unittest import mock
 
 from openpyxl import load_workbook
@@ -44,6 +45,29 @@ class ParallelUploadTests(unittest.TestCase):
         self.assertTrue(pool.called, "the parallel read never started worker processes")
         return sequential, parallel
 
+    def test_sheets_split_into_row_ranges_read_the_same(self):
+        import pp.upload
+        sequential = self.preview(self.changed)
+        for data in (self.changed, _without_provenance(self.changed, self.fixture.root)):
+            sequential = self.preview(data)
+            with mock.patch("pp.upload.PARALLEL_MIN_BYTES", 0), mock.patch("pp.upload.CHUNK_BYTES", 64), \
+                    mock.patch("pp.upload._scan_workers", return_value=3):
+                split = self.preview(data)
+            self.assertEqual(split.status_code, 200, split.body)
+            keys = ("changes", "conflicts", "ignored", "identification", "structure", "extras")
+            self.assertEqual({key: split.json()[key] for key in keys}, {key: sequential.json()[key] for key in keys})
+
+    def test_a_split_sheet_screens_every_range(self):
+        def poison(name, content):
+            if name == "xl/worksheets/sheet1.xml":
+                return content.replace(b"<worksheet", b'<!DOCTYPE x [<!ENTITY e "boom">]><worksheet', 1)
+            return content
+
+        data = _rewrite_zip(self.changed, self.fixture.root, poison)
+        with mock.patch("pp.upload.PARALLEL_MIN_BYTES", 0), mock.patch("pp.upload.CHUNK_BYTES", 64), \
+                mock.patch("pp.upload._scan_workers", return_value=3):
+            self.assertEqual(self.preview(data).status_code, 422)
+
     def test_parallel_read_matches_the_in_process_read(self):
         for data in (self.changed, _without_provenance(self.changed, self.fixture.root)):
             sequential, parallel = self.both(data)
@@ -66,6 +90,14 @@ class ParallelUploadTests(unittest.TestCase):
     def test_an_unreferenced_sheet_part_is_still_screened(self):
         stray = ("xl/worksheets/sheet99.xml", b'<!DOCTYPE x [<!ENTITY e "boom">]><worksheet/>')
         sequential, parallel = self.both(_rewrite_zip(self.changed, self.fixture.root, additions=(stray,)))
+        self.assertEqual((sequential.status_code, parallel.status_code), (422, 422), parallel.body)
+
+    def test_big_pivot_records_are_screened_on_a_worker(self):
+        records = ("xl/pivotCache/pivotCacheRecords1.xml", b'<!DOCTYPE x [<!ENTITY e "boom">]><pivotCacheRecords/>')
+        data = _rewrite_zip(self.changed, self.fixture.root, additions=(records,))
+        # with the parent's own screen of unread parts switched off, only the worker can reject the file
+        with mock.patch("pp.upload.OFFLOAD_BYTES", 0), mock.patch("pp.upload._screen_unread"):
+            sequential, parallel = self.both(data)
         self.assertEqual((sequential.status_code, parallel.status_code), (422, 422), parallel.body)
 
     def test_a_worker_checks_the_links_its_sheet_points_at(self):
@@ -111,6 +143,46 @@ class ParallelUploadTests(unittest.TestCase):
             fallback = self.preview(self.changed)
         self.assertEqual(fallback.status_code, 200, fallback.body)
         self.assertEqual(fallback.json()["changes"], sequential.json()["changes"])
+
+
+class RowRangeTests(unittest.TestCase):
+    """A sheet read in row ranges gives what one pass gives, shared formulas included."""
+
+    SHEET = (b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+             b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+             b'<cols><col min="1" max="1" width="9"/></cols><sheetData>'
+             b'<row r="1"><c r="A1"><v>1</v></c><c r="B1"><f t="shared" ref="B1:B6" si="0">IF(A1&gt;0,\r\nA1*2&amp;"x",\r\n0)</f>'
+             b'<v>2</v></c></row>'
+             + b"".join(b'<row r="%d" ht="20" customHeight="1"><c r="A%d"><v>%d</v></c><c r="B%d"><f t="shared" si="0"/>'
+                        b'<v>0</v></c></row>' % (n, n, n, n) for n in range(2, 7))
+             + b'</sheetData><mergeCells count="1"><mergeCell ref="C1:D1"/></mergeCells></worksheet>')
+
+    def scan(self, path, chunks):
+        from pp.upload import PartJob, _merge_pieces, _scan_part
+
+        job = PartJob(str(path), "xl/worksheets/sheet1.xml", "xl/sharedStrings.xml", None, None, "S", None,
+                      True, True, frozenset(), True)
+        pieces = [_scan_part(replace(job, chunk=k, chunks=chunks)) for k in range(chunks)]
+        return _merge_pieces(job, pieces)
+
+    def test_ranges_merge_to_the_one_pass_result(self):
+        import tempfile
+        import zipfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "book.xlsx"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("xl/worksheets/sheet1.xml", self.SHEET)
+            whole = self.scan(path, 1)
+            for chunks in (2, 3, 6, 9):
+                split = self.scan(path, chunks)
+                self.assertIsNone(split.error)
+                self.assertEqual(split.digest, whole.digest, chunks)
+                self.assertEqual(split.structure, whole.structure, chunks)
+                self.assertEqual(split.data.extent, whole.data.extent, chunks)
+                self.assertEqual(split.data.formula_rows, whole.data.formula_rows, chunks)
+                self.assertEqual(split.data.filled_rows, whole.data.filled_rows, chunks)
 
 
 if __name__ == "__main__":

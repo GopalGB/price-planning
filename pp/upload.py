@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 import hashlib
+from io import BytesIO
 from io import StringIO
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
@@ -58,7 +59,12 @@ MAX_RATIO = 200
 RATIO_MIN_BYTES = 1024 * 1024
 # Workbooks whose sheets unpack past this are read one sheet per worker process, all cores at once
 PARALLEL_MIN_BYTES = 32 * 1024 * 1024
-MAX_SCAN_WORKERS = 4
+# Readers run in parallel processes; PP_SCAN_WORKERS caps them on a small machine
+MAX_SCAN_WORKERS = int(os.environ.get("PP_SCAN_WORKERS", "16"))
+# A sheet bigger than this is split into row ranges read by several workers at once
+CHUNK_BYTES = 16 * 1024 * 1024
+OFFLOAD_BYTES = 4 * 1024 * 1024  # a non-sheet XML part this big is screened on a worker
+PIVOT_RECORDS = re.compile(r"xl/pivotCache/pivotCacheRecords[0-9]*\.xml")
 MAX_TREE_XML = 8 * 1024 * 1024
 MAX_RELATIONSHIP_XML = 4 * 1024 * 1024
 MAX_RELATIONSHIP_XML_TOTAL = 16 * 1024 * 1024
@@ -202,6 +208,7 @@ class SheetScan:
     keep: frozenset = frozenset()  # (row, col) of the copy's saved edits on this sheet
     moved: bool = False  # rows were matched to template rows: shifted formulas are not differences
     limit: int | None = None  # first extra column: cells from here on are the user's own, not inputs
+    masters: dict | None = None  # shared formula id -> (text, cell) from rows before this row range
 
 
 @dataclass(frozen=True)
@@ -400,7 +407,7 @@ class UploadService:
         raise AppError(422, "unsupported_workbook", UNSUPPORTED_MESSAGES[kind])
 
     def _preview(self, request):
-        progress = request.progress or _no_progress
+        progress = _timed(request.progress or _no_progress)
         filename = _filename(request.filename)
         progress("Checking the file is safe")
         deferred = _deferred_parts(request.path)
@@ -1052,6 +1059,22 @@ def _no_progress(*_args):
     pass
 
 
+def _timed(progress):
+    """progress that also logs how long each upload step took, so a slow upload shows where its time went."""
+    state = {"step": None, "since": time.monotonic(), "start": time.monotonic()}
+
+    def report(step, *counts):
+        now = time.monotonic()
+        if step != state["step"]:
+            if state["step"] is not None:
+                LOGGER.info("Upload step %r took %.1fs (%.1fs so far)", state["step"], now - state["since"],
+                            now - state["start"])
+            state["step"], state["since"] = step, now
+        progress(step, *counts)
+
+    return report
+
+
 def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progress=_no_progress,
                    overrides=frozenset(), deferred=frozenset(), column_limits=None):
     """overrides: (sheet, row, col) of the copy's saved edits; deferred: parts _validate_archive left to us;
@@ -1082,7 +1105,12 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
         parallel = (_scan_workers(len(jobs)) > 1
                     and sum(sizes.get(job.part, 0) for job in jobs) >= PARALLEL_MIN_BYTES)
         strings = None if parallel else _shared_strings(archive, strings_part)
-    results = _scan_parts(jobs, progress, parallel, snapshot, strings, sizes)
+    unread = sorted(deferred - {job.part for job in jobs})
+    results, screened = _scan_parts(jobs, progress, parallel, snapshot, strings, sizes,
+                                    unread if parallel else ())
+    failed = next((error for _, error in screened.values() if error is not None), None)
+    if failed is not None:
+        raise AppError(*failed)
     failed = next((result for result in results.values() if result.error is not None), None)
     if failed is not None:
         raise AppError(*failed.error)
@@ -1091,7 +1119,11 @@ def _read_workbook(path, provenance=True, snapshot=None, fingerprint=True, progr
         if job.screen and result.references - {item["id"] for item in graph.get(job.part, [])}:
             raise AppError(422, "invalid_workbook",
                            f"File is not a safe Excel workbook (sheet {job.name} links to a missing part)")
-    _screen_unread(path, deferred - {job.part for job in jobs})
+    for part, (references, _) in screened.items():
+        if references - {item["id"] for item in graph.get(part, [])}:
+            raise AppError(422, "invalid_workbook",
+                           f"File is not a safe Excel workbook ({part} links to a missing part)")
+    _screen_unread(path, [part for part in unread if part not in screened])
     if deferred:
         _deferred_open_check(path)
     progress("Checking rows and columns")
@@ -1136,6 +1168,8 @@ class PartJob:
     keep: frozenset
     screen: bool  # the archive check deferred this part's XML screening and link check to here
     limit: int | None = None
+    chunk: int = 0  # which row range of the part this job reads, of chunks
+    chunks: int = 1
 
 
 @dataclass(frozen=True)
@@ -1146,6 +1180,7 @@ class PartResult:
     structure: tuple | None
     references: frozenset
     error: tuple | None = None
+    chunk: int = 0
 
 
 def _scan_workers(parts):
@@ -1156,38 +1191,66 @@ def _deferred_parts(path):
     """Worksheet parts that move their XML checks onto the workers, when the workbook is big enough."""
     try:
         with zipfile.ZipFile(path) as archive:
-            parts = [info for info in archive.infolist()
-                     if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml")
-                     and "/" not in info.filename[len("xl/worksheets/"):]]
+            infos = archive.infolist()
     except (OSError, zipfile.BadZipFile):
         return frozenset()  # _validate_archive reports the real problem
+    parts = [info for info in infos
+             if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml")
+             and "/" not in info.filename[len("xl/worksheets/"):]]
     if _scan_workers(len(parts)) < 2 or sum(info.file_size for info in parts) < PARALLEL_MIN_BYTES:
         return frozenset()
-    return frozenset(info.filename for info in parts)
+    # Big pivot cache records are screened on a worker too, beside the sheets: nothing here reads them
+    # before that, unlike workbook.xml or the shared strings, which keep their screen up front
+    others = [info for info in infos if PIVOT_RECORDS.fullmatch(info.filename) and info.file_size >= OFFLOAD_BYTES]
+    return frozenset(info.filename for info in parts + others)
 
 
-def _scan_parts(jobs, progress, parallel, snapshot, strings, sizes):
-    results, total = {}, len(jobs)
+def _chunks_for(size, workers):
+    return max(1, min(workers, -(-size // CHUNK_BYTES)))
+
+
+def _scan_parts(jobs, progress, parallel, snapshot, strings, sizes, unread=()):
+    """Every sheet's result, and for each unread part given, (relationship ids, error) from its screen."""
+    results, screened, total = {}, {}, len(jobs)
     progress("Reading sheets", 0, total)
     if not parallel:
         for number, job in enumerate(jobs, 1):
             results[job.name] = _scan_part(job, snapshot, strings)
             progress("Reading sheets", number, total)
-        return results
-    # Biggest sheets first, so one large sheet does not start last and hold everyone up
+        return results, screened
+    workers = _scan_workers(total)
+    # Biggest sheets first and split into row ranges, so every worker shares the largest sheet
     ordered = sorted(jobs, key=lambda job: sizes.get(job.part, 0), reverse=True)
+    whole = {job.name: job for job in ordered}
+    tasks = [replace(job, chunk=k, chunks=n) for job in ordered
+             for n in (_chunks_for(sizes.get(job.part, 0), workers),) for k in range(n)]
+    path = jobs[0].path if jobs else None
+    pieces = {}
     context = multiprocessing.get_context("spawn")  # never fork a server that runs threads
     try:
-        with ProcessPoolExecutor(max_workers=_scan_workers(total), mp_context=context) as pool:
-            futures = [pool.submit(_scan_part, job) for job in ordered]
+        with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
+            futures = {pool.submit(_screen_unread_part, path, part): part for part in unread}
+            futures.update({pool.submit(_scan_part, task): task for task in tasks})
             for future in as_completed(futures):
-                result = future.result()
-                results[result.name] = result
-                progress("Reading sheets", len(results), total)
-                if result.error is not None:
+                task = futures[future]
+                if isinstance(task, str):
+                    screened[task] = future.result()
+                    if screened[task][1] is not None:
+                        for pending in futures:
+                            pending.cancel()
+                        return results, screened
+                    continue
+                piece = future.result()
+                if piece.error is not None:
                     for pending in futures:
                         pending.cancel()
-                    return results
+                    results[piece.name] = piece
+                    return results, screened
+                got = pieces.setdefault(task.name, {})
+                got[task.chunk] = piece
+                if len(got) == task.chunks:
+                    results[task.name] = _merge_pieces(whole[task.name], [got[k] for k in sorted(got)])
+                    progress("Reading sheets", len(results), total)
     except BrokenProcessPool:
         # A reader process died (most likely out of memory); finish the upload here, just slower
         LOGGER.warning("A sheet reader process stopped; reading the remaining sheets in the server")
@@ -1195,47 +1258,205 @@ def _scan_parts(jobs, progress, parallel, snapshot, strings, sizes):
             if job.name not in results:
                 results[job.name] = _scan_part(job, snapshot)
                 progress("Reading sheets", len(results), total)
-    return results
+    return results, screened  # parts not screened here are screened by the caller
+
+
+def _screen_unread_part(path, part):
+    """A deferred part no sheet reads: its XML screen and the relationship ids it points at."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            _screen_part(archive, part)
+            with archive.open(part) as stream:
+                return frozenset(_relationship_references(stream)), None
+    except AppError as exc:
+        return frozenset(), (exc.status, exc.code, exc.message)
+    except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
+        error = _unreadable(part, exc)
+        return frozenset(), (error.status, error.code, error.message)
+
+
+def _merge_pieces(job, pieces):
+    """One sheet's result from the results of its row ranges, as if it had been read in one pass."""
+    if len(pieces) == 1:
+        return pieces[0]
+    cells, formulas, formula_rows, columns, headers = {}, {}, {}, {}, {}
+    for piece in pieces:
+        data = piece.data
+        cells.update(data.cells)
+        formulas.update(data.formulas)
+        formula_rows.update(data.formula_rows)  # each row lies in one range
+        for col, count in data.columns.items():
+            columns[col] = columns.get(col, 0) + count
+        for col, header in data.headers.items():
+            headers.setdefault(col, header)  # ranges arrive in row order: the topmost text names the column
+    datas = [piece.data for piece in pieces]
+    data = SheetData(
+        cells, {}, sum(item.ignored_count for item in datas), any(item.displaced for item in datas),
+        (max(item.extent[0] for item in datas), max(item.extent[1] for item in datas)),
+        formula_rows, max(item.filled_cols for item in datas), any(item.suspect for item in datas),
+        columns, headers, sum(item.filled_rows for item in datas))
+    structures = [piece.structure for piece in pieces]
+    structure = (job.hidden, tuple(sorted(merge for item in structures for merge in item[1])),
+                 tuple(row for item in structures for row in item[2]),
+                 tuple(column for item in structures for column in item[3]),
+                 next((item[4] for item in structures if item[4] is not None), None))
+    digest = _sheet_digest(formulas) if job.fingerprint else None
+    return PartResult(job.name, data, digest, structure, frozenset().union(*(piece.references for piece in pieces)))
+
+
+# One entry each per reader process: the row ranges of one upload share them
+_PART_BYTES, _STRINGS, _SNAPSHOTS = {}, {}, {}
+
+
+def _cached(cache, key, build):
+    if key not in cache:
+        cache.clear()
+        cache[key] = build()
+    return cache[key]
+
+
+def _file_key(path):
+    status = os.stat(path)
+    return path, status.st_size, status.st_mtime_ns
+
+
+ROOT_OPEN = re.compile(rb"<(?![?!])([^\s/>]+)[^>]*>")
+SHEET_DATA_OPEN = re.compile(rb"<((?:[A-Za-z_][\w.-]*:)?)sheetData(?:\s[^>]*)?>")
+ROW_OPEN = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?row[\s/>]")
+SHARED_FORMULA = re.compile(rb"<((?:[A-Za-z_][\w.-]*:)?)f(\s[^>]*)>([^<]+)</\1f>")
+SHARED_TYPE = re.compile(rb"\bt\s*=\s*[\"']shared[\"']")
+SHARED_ID = re.compile(rb"\bsi\s*=\s*[\"']([0-9]+)[\"']")
+CELL_REFERENCE = re.compile(rb"<(?:[A-Za-z_][\w.-]*:)?c\s[^>]*?\br\s*=\s*[\"']\$?([A-Za-z]{1,3})\$?([0-9]+)[\"']")
+
+
+def _row_ranges(data, chunks):
+    """Byte offsets that cut a worksheet's rows into about chunks ranges, each starting at a row; None when
+    the part has no rows to cut. Every worker computes the same cuts from the same bytes."""
+    root = ROOT_OPEN.search(data)
+    if root is None or root.group(0).endswith(b"/>"):
+        return None
+    opened = SHEET_DATA_OPEN.search(data, root.end())
+    if opened is None or opened.group(0).endswith(b"/>"):
+        return None
+    close = b"</" + opened.group(1) + b"sheetData>"
+    body_end = data.rfind(close)
+    if body_end < opened.end():
+        return None
+    # Cells cost the time, and dense rows hold many more per byte: cut at equal cell counts
+    start, span = opened.end(), body_end - opened.end()
+    step = max(1, span // (chunks * 16))
+    marks, weight = [], 0
+    for offset in range(start, body_end, step):
+        weight += data.count(b"<c ", offset, offset + step) + data.count(b":c ", offset, offset + step)
+        marks.append((weight, offset + step))
+    cuts, mark = [start], 0
+    for k in range(1, chunks):
+        while mark < len(marks) - 1 and marks[mark][0] * chunks < weight * k:
+            mark += 1
+        found = ROW_OPEN.search(data, max(marks[mark][1] if marks else start, cuts[-1] + 1), body_end)
+        if found is None:
+            break
+        cuts.append(found.start())
+    cuts.append(body_end)
+    return root.group(0), opened.group(0), close + b"</" + root.group(1) + b">", cuts
+
+
+def _shared_masters(data, end):
+    """Shared formula masters written before byte end: id -> (formula text, its cell)."""
+    masters = {}
+    for found in SHARED_FORMULA.finditer(data, 0, end):
+        attributes = found.group(2)
+        number = SHARED_ID.search(attributes)
+        if number is None or SHARED_TYPE.search(attributes) is None:
+            continue
+        cell = None
+        for cell in CELL_REFERENCE.finditer(data, max(0, found.start() - 4096), found.start()):
+            pass
+        if cell is not None:
+            # The XML parser's own reading of the text: entities and line breaks as the one-pass read sees them
+            text = SafeET.fromstring(b"<f>" + found.group(3) + b"</f>").text or ""
+            masters[number.group(1).decode()] = (text, (cell.group(1) + cell.group(2)).decode().upper())
+    return masters
+
+
+def _chunk_stream(archive, job):
+    """This job's row range of its part as a small worksheet of its own, screened like the whole part
+    would be, and the shared formula masters of the rows before it. (None, None) for an empty range."""
+    data = _cached(_PART_BYTES, (*_file_key(job.path), job.part), lambda: archive.read(job.part))
+    layout = _row_ranges(data, job.chunks)
+    if layout is None:  # nothing to cut: the first range reads the whole part
+        document = data if job.chunk == 0 else None
+    else:
+        root, opened, closing, cuts = layout
+        if job.chunk >= len(cuts) - 1:
+            return None, None
+        last = job.chunk == len(cuts) - 2
+        head = data[:cuts[0]] if job.chunk == 0 else root + opened
+        tail = data[cuts[-1]:] if last else closing
+        document = head + data[cuts[job.chunk]:cuts[job.chunk + 1]] + tail
+    if document is None:
+        return None, None
+    if job.screen:
+        _screen_stream(BytesIO(document))
+    masters = _shared_masters(data, cuts[job.chunk]) if layout is not None and job.chunk else None
+    return BytesIO(document), masters
 
 
 def _scan_part(job, snapshot=None, strings=None):
     try:
         with zipfile.ZipFile(job.path) as archive:
-            if job.screen:
-                _screen_part(archive, job.part)
             if strings is None:
-                strings = _shared_strings(archive, job.strings_part)
+                strings = _cached(_STRINGS, (*_file_key(job.path), job.strings_part),
+                                  lambda: _shared_strings(archive, job.strings_part))
             if snapshot is None and job.snapshot_path is not None:
                 from .workbook_service import TemplateSnapshot
-                snapshot = TemplateSnapshot(job.snapshot_path)
+                snapshot = _cached(_SNAPSHOTS, job.snapshot_path, lambda: TemplateSnapshot(job.snapshot_path))
             found, references = _empty_structure(), set() if job.screen else None
-            with archive.open(job.part) as stream:
+            masters = None
+            if job.chunks > 1:
+                stream, masters = _chunk_stream(archive, job)
+                if stream is None:
+                    return PartResult(job.name, SheetData({}, {}, 0, False), None,
+                                      (job.hidden, (), (), (), None), frozenset(), chunk=job.chunk)
+            else:
+                if job.screen:
+                    _screen_part(archive, job.part)
+                stream = archive.open(job.part)
+            with stream:
                 data = _sheet_cells(SheetScan(archive, job.part, strings, snapshot, job.index, job.name,
-                                              job.all_formulas, job.keep, limit=job.limit),
+                                              job.all_formulas, job.keep, limit=job.limit, masters=masters),
                                     _iter_sheet(stream, found, references))
             structure = (job.hidden, tuple(sorted(found["merge"])), tuple(found["row"]),
                          tuple(found["column"]), found["protection"])
             references = frozenset(references or ())
-        digest = _sheet_digest(data.formulas) if job.fingerprint else None
-        # Formulas only feed the digest, and a template read keeps no cells, so neither crosses back
-        data = replace(data, formulas={}, cells={} if job.all_formulas else data.cells)
-        return PartResult(job.name, data, digest, structure, references)
+        whole = job.chunks == 1
+        digest = _sheet_digest(data.formulas) if job.fingerprint and whole else None
+        # Formulas only feed the digest (a split sheet's digest is taken after the merge), and a
+        # template read keeps no cells, so neither crosses back when it need not
+        data = replace(data, formulas={} if whole or not job.fingerprint else data.formulas,
+                       cells={} if job.all_formulas else data.cells)
+        return PartResult(job.name, data, digest, structure, references, chunk=job.chunk)
     except AppError as exc:
-        return PartResult(job.name, None, None, None, frozenset(), (exc.status, exc.code, exc.message))
+        return PartResult(job.name, None, None, None, frozenset(), (exc.status, exc.code, exc.message), job.chunk)
     except (KeyError, OSError, zipfile.BadZipFile, ET.ParseError, expat.ExpatError, ValueError) as exc:
         error = _unreadable(f"sheet {job.name}", exc)
-        return PartResult(job.name, None, None, None, frozenset(), (error.status, error.code, error.message))
+        return PartResult(job.name, None, None, None, frozenset(), (error.status, error.code, error.message),
+                          job.chunk)
 
 
 def _screen_part(archive, part):
     """The archive check's XML screen for one part; its size and ratio limits were already enforced."""
+    with archive.open(part) as stream:
+        _screen_stream(stream)
+
+
+def _screen_stream(stream):
     parser = _xml_parser()
     expanded = 0
-    with archive.open(part) as stream:
-        while chunk := stream.read(1 << 20):
-            expanded += len(chunk)
-            parser.Parse(chunk, False)
-            _check_xml_token(parser, expanded)
+    while chunk := stream.read(1 << 20):
+        expanded += len(chunk)
+        parser.Parse(chunk, False)
+        _check_xml_token(parser, expanded)
     parser.Parse(b"", True)
 
 
@@ -1395,8 +1616,22 @@ def _shared_strings(archive, part):
     return list(_iter_shared_strings(archive, part))
 
 
+class _SharedFormulas(dict):
+    """Shared formula masters read in this row range, plus those of earlier ranges, built on first use."""
+
+    def __init__(self, earlier):
+        super().__init__()
+        self.earlier = earlier or {}
+
+    def get(self, key, default=None):
+        if key not in self and key in self.earlier:
+            text, origin = self.earlier[key]
+            self[key] = Translator("=" + text.lstrip("="), origin=origin)
+        return super().get(key, default)
+
+
 def _sheet_cells(request, stream_cells):
-    cells, formulas, shared, ignored = {}, {}, {}, 0
+    cells, formulas, shared, ignored = {}, {}, _SharedFormulas(request.masters), 0
     detector = DisplacementDetector(request.snapshot, request.index)
     for cell in stream_cells:
         reference = (cell.get("r") or "").replace("$", "").upper()
