@@ -119,6 +119,7 @@ class TemplateBundleRuntimeTests(unittest.TestCase):
         _settings(restart, restart_h2)
 
         restored = create_runtime(restart)
+        restored.recovery.join()
         client.app = restored.app
         try:
             workbook = client.get(f"/api/copies/{old_copy['id']}/workbook")

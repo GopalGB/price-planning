@@ -106,6 +106,7 @@ class EndToEndContractTests(unittest.TestCase):
             first.close()
 
         second = create_runtime(root)
+        second.recovery.join()
         try:
             with second.database.connect() as connection:
                 copy = connection.execute(

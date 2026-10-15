@@ -24,6 +24,7 @@ class Runtime:
     snapshot: TemplateSnapshot
     pool: EnginePool
     app: object
+    recovery: threading.Thread | None = None  # edits left from the last run, recalculating
     _closed: bool = False
 
     def close(self):
@@ -56,7 +57,12 @@ def create_runtime(root: str | Path) -> Runtime:
             return pool.apply(request)
 
         if config.template_results != "cached":
-            recover_unfinished(database, calculate, snapshot)
+            # Edits left from the last run recalculate in the background: opening the app never waits on Excel
+            recovery = threading.Thread(target=_recover, args=(database, calculate, snapshot),
+                                        name="unfinished-recovery", daemon=True)
+            recovery.start()
+        else:
+            recovery = None
         if config.engine == "excel" and config.template_results != "cached":
             _warm_excel_caches(snapshot.source_path)
         # A values-only template never calculates, so copies must not start engine workers.
@@ -64,11 +70,21 @@ def create_runtime(root: str | Path) -> Runtime:
         app = create_app(ServiceContext(database, snapshot, config, calculator))
         threading.Thread(target=app.state.services.uploads.warm, args=(snapshot,),
                          name="upload-identity-warmup", daemon=True).start()
-        return Runtime(config, database, snapshot, pool, app)
+        return Runtime(config, database, snapshot, pool, app, recovery)
     except Exception:
         pool.close()
         database.close()
         raise
+
+
+def _recover(database, calculate, snapshot):
+    import logging
+
+    try:
+        logging.getLogger(__name__).info("Recalculated edits left from the last run: %s",
+                                         recover_unfinished(database, calculate, snapshot))
+    except Exception:
+        logging.getLogger(__name__).exception("Recalculating edits left from the last run failed")
 
 
 def _import_results(config):
