@@ -94,6 +94,143 @@ class ExcelWorkerTests(unittest.TestCase):
         close.assert_called_once()
 
 
+def saving_host():
+    """FormualizerHost that can save itself, the way Excel's SaveCopyAs keeps the copy's current cells."""
+    from openpyxl import load_workbook
+
+    from pp.engine.excel import FormualizerHost
+
+    class SavingHost(FormualizerHost):
+        opened = []
+
+        def __init__(self, workbook, sheet_names):
+            super().__init__(workbook, sheet_names)
+            self.source, self.written = Path(workbook), {}
+            SavingHost.opened.append(self.source)
+
+        def write(self, sheet, cells):
+            super().write(sheet, cells)
+            self.written.update(((sheet, row, col), value) for row, col, value in cells)
+
+        def write_formulas(self, sheet, cells):
+            super().write_formulas(sheet, cells)
+            self.written.update(((sheet, row, col), text) for row, col, text in cells)
+
+        def save_copy(self, path):
+            book = load_workbook(self.source)
+            for (sheet, row, col), value in self.written.items():
+                book[self.names[sheet]].cell(row + 1, col + 1).value = value
+            book.save(path)
+
+    return SavingHost
+
+
+class ResumeTests(unittest.TestCase):
+    def test_restarted_copy_opens_its_saved_point_and_replays_only_newer_edits(self):
+        from pp.engine.worker import WarmCopy
+
+        host = saving_host()
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as directory, \
+                mock.patch.dict("os.environ", {"PP_ENGINE_CACHE_DIR": str(Path(directory) / "cache")}), \
+                mock.patch("pp.engine.excel.default_host", return_value=host):
+            source = workbook(directory)
+            resume = Path(directory) / "resume"
+            first = WarmCopy("copy", "excel", resume)
+            first.apply(1, str(source), [(0, 0, 0, 5)])
+            self.assertIsNotNone(first.resume_due())
+            first.save_resume_point()
+            self.assertIsNone(first.resume_due())
+            first.close()
+
+            again = WarmCopy("copy", "excel", resume)
+            with mock.patch("pp.engine.excel.ExcelEngine.apply", autospec=True,
+                            side_effect=lambda engine, updates: (applied.append(updates), [])[1]) as _:
+                applied = []
+                again.apply(2, str(source), [(0, 0, 0, 5), (1, 1, 1, 4)])
+            again.close()
+
+            fresh = WarmCopy("other", "excel", resume)
+            restarted = WarmCopy("copy", "excel", resume)
+            expected = fresh.apply(3, str(source), [(0, 0, 0, 5), (1, 1, 1, 4)])
+            resumed = restarted.apply(3, str(source), [(0, 0, 0, 5), (1, 1, 1, 4)])
+            fresh.close()
+            restarted.close()
+
+        self.assertEqual(applied, [[(1, 1, 1, 4)]])  # the edit saved at the resume point is not replayed
+        self.assertEqual([path.name for path in host.opened], ["plan.xlsx"] * 4)
+        self.assertEqual(host.opened[1].parent.parent, resume / "copy")  # restarts open the saved point
+        self.assertEqual(host.opened[2], source)  # a copy with no saved point starts from the template
+        self.assertEqual(host.opened[3].parent.parent, resume / "copy")
+        self.assertEqual(resumed["results"], expected["results"])
+
+    def test_resume_point_from_another_template_file_is_ignored(self):
+        from pp.engine.worker import WarmCopy
+
+        host = saving_host()
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as directory, \
+                mock.patch.dict("os.environ", {"PP_ENGINE_CACHE_DIR": str(Path(directory) / "cache")}), \
+                mock.patch("pp.engine.excel.default_host", return_value=host):
+            source = workbook(directory)
+            resume = Path(directory) / "resume"
+            copy = WarmCopy("copy", "excel", resume)
+            copy.apply(1, str(source), [(0, 0, 0, 5)])
+            copy.save_resume_point()
+            copy.close()
+            workbook(directory)  # the template file is replaced
+            again = WarmCopy("copy", "excel", resume)
+            result = again.apply(2, str(source), [(0, 0, 0, 5)])
+            again.close()
+
+        self.assertEqual(result["changes"], [(0, 0, 1, 10), (0, 0, 2, 10)])  # recalculated from the template
+
+
+class IdleSaveTests(unittest.TestCase):
+    def test_worker_saves_a_resume_point_only_while_idle(self):
+        from pp.engine import worker
+
+        class Connection:
+            def __init__(self):
+                self.events, self.sent = ["request", "idle", None], []
+
+            def poll(self, timeout):
+                if self.events[0] == "idle":
+                    self.events.pop(0)
+                    return False
+                return True
+
+            def recv(self):
+                return self.events.pop(0)
+
+            def send(self, message):
+                self.sent.append(message)
+
+            def close(self):
+                pass
+
+        saves = []
+        state = {"unsaved": False}
+
+        def serve(copy, request):
+            state["unsaved"] = True
+            return {}
+
+        def save(copy):
+            saves.append(len(connection.events))
+            state["unsaved"] = False
+
+        connection = Connection()
+        with mock.patch.object(worker, "_serve", serve), \
+                mock.patch.object(worker.WarmCopy, "resume_due", lambda copy: 5.0 if state["unsaved"] else None), \
+                mock.patch.object(worker.WarmCopy, "save_resume_point", save), \
+                mock.patch.object(worker.WarmCopy, "engine_bytes", lambda copy: 0):
+            worker.worker_loop(connection, "copy", "excel")
+
+        self.assertEqual(saves, [1])  # once, after the request, while no request was waiting
+        self.assertEqual(connection.sent, [(True, {"engine_bytes": 0})])
+
+
 class ExcelRuntimeTests(unittest.TestCase):
     def test_excel_runtime_warms_template_caches_and_builds_an_excel_pool(self):
         import json
@@ -134,6 +271,7 @@ class ValueConversionTests(unittest.TestCase):
 class FakeRange:
     def __init__(self, sheet, cells):
         self.sheet, self.cells = sheet, cells
+        sheet.calls += 1
 
     @property
     def Value2(self):
@@ -141,6 +279,13 @@ class FakeRange:
         rows = tuple(tuple(self.sheet.values.get((r, c)) for c in range(left, right + 1))
                      for r in range(top, bottom + 1))
         return rows[0][0] if (top, left) == (bottom, right) else rows
+
+    @Value2.setter
+    def Value2(self, rows):
+        (top, left), _ = self.cells
+        for r, line in enumerate(rows):
+            for c, item in enumerate(line):
+                self.sheet.values[(top + r, left + c)] = item
 
 
 class FakeCell:
@@ -159,6 +304,7 @@ class FakeCell:
 class FakeSheet:
     def __init__(self):
         self.values = {}
+        self.calls = 0
 
     def Cells(self, row, col):
         return FakeCell(self, row, col)
@@ -170,10 +316,17 @@ class FakeSheet:
 class FakeApp:
     def __init__(self):
         self.Hwnd, self.calculated, self.quit, self.sheets = 77, 0, False, {}
-        self.Workbooks = types.SimpleNamespace(Open=self.open)
+        self.Workbooks = types.SimpleNamespace(Open=self.open, Add=self.add)
+
+    def add(self):
+        self.added = types.SimpleNamespace(closed=False)
+        self.added.Close = lambda SaveChanges: setattr(self.added, "closed", True)
+        self.calculation_when_opened = None
+        return self.added
 
     def open(self, path, **options):
         self.opened = (path, options)
+        self.calculation_when_opened = getattr(self, "Calculation", None)
         return types.SimpleNamespace(Worksheets=lambda name: self.sheets.setdefault(name, FakeSheet()),
                                      Close=lambda SaveChanges: setattr(self, "closed", SaveChanges))
 
@@ -248,7 +401,13 @@ class ComHostTests(unittest.TestCase):
             source = Path(directory) / "plan.xlsm"
             source.write_bytes(b"template")
             host = ComExcelHost(source, ["Calc", "Data"])
+            sheet = app.sheets["Calc"]
+            sheet.calls = 0
             host.write(0, [(0, 0, 5), (1, 2, "1-2")])
+            separate_writes = sheet.calls
+            sheet.calls = 0
+            host.write(0, [(r, c, r * 10 + c) for r in range(10, 20) for c in range(3)])
+            block_writes = sheet.calls
             host.calculate()
             app.sheets["Calc"].values[(2, 2)] = 7.0  # Excel row 2, column B
             block = host.read(0, 0, 0, 1, 2)
@@ -261,6 +420,10 @@ class ComHostTests(unittest.TestCase):
         self.assertEqual((app.Visible, app.DisplayAlerts, app.EnableEvents, app.AutomationSecurity,
                           app.Calculation), (False, False, False, 1, -4135))
         self.assertEqual(app.opened[1]["UpdateLinks"], 0)
+        self.assertEqual(app.calculation_when_opened, -4135)  # never recalculates while opening
+        self.assertTrue(app.added.closed)
+        self.assertEqual((separate_writes, block_writes), (2, 1))  # 30 cells, one Excel call
+        self.assertEqual(app.sheets["Calc"].values[(20, 3)], 192)
         self.assertEqual(app.calculated, 1)
         self.assertEqual(block, [[5, None, None], [None, 7.0, "'1-2"]])
         self.assertEqual(single, [[5]])

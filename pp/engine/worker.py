@@ -1,6 +1,11 @@
 """Spawn-safe calculation worker entry point."""
 
+import json
+import logging
 import os
+import pickle
+import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 import tempfile
@@ -13,6 +18,10 @@ from ..values import exactly_equal
 
 
 MISSING = object()
+LOG = logging.getLogger(__name__)
+RESUME_VERSION = 1
+RESUME_IDLE_S = 20  # save a resume point once a copy has had no request for this long
+RESUME_MAX_AGE_S = 600  # and at the latest this long after its last unsaved change
 
 
 @dataclass(frozen=True)
@@ -23,7 +32,7 @@ class WorkerBatch:
 
 
 class WarmCopy:
-    def __init__(self, copy_id: str, engine: str = "formualizer"):
+    def __init__(self, copy_id: str, engine: str = "formualizer", resume: str | Path | None = None):
         self.copy_id = copy_id
         self.kind = engine
         self.engine = None
@@ -32,10 +41,17 @@ class WarmCopy:
         self.overrides = {}
         self.cleared = frozenset()
         self.last_applied_revision = None
+        # Excel copies save a resume point here, so a restart opens the copy as it was instead of
+        # replaying every edit on the template (a checkpoint, as databases keep beside their log)
+        self.resume = Path(resume) / copy_id if resume and engine == "excel" else None
+        self.unsaved_since = None
 
     def apply(self, revision: int, template_path: str, changes: list[tuple] | WorkerBatch) -> dict:
         batch = changes if isinstance(changes, WorkerBatch) else WorkerBatch(changes)
+        started = time.monotonic()
         calculated, reset = self._sync(template_path, batch.changes, batch.pivot_state)
+        LOG.info("Calculated copy %s revision %s in %.1fs (%d values changed)", self.copy_id, revision,
+                 time.monotonic() - started, len(calculated))
         return self._result(revision, batch, reset, calculated)
 
     def run_macro(self, revision: int, template_path: str, changes: list[tuple], base_revision: int | None,
@@ -45,11 +61,14 @@ class WarmCopy:
             raise EngineError("template macros need the Excel engine")
         batch = WorkerBatch(changes, base_revision, pivot_state)
         calculated, reset = self._sync(template_path, batch.changes, pivot_state)
+        started = time.monotonic()
         if macro == REFRESH_ALL:
             outcome = self.engine.refresh_data(timeout)
         else:
             outcome = self.engine.run_macro(macro, timeout)
+        LOG.info("Ran %s on copy %s in %.1fs", macro, self.copy_id, time.monotonic() - started)
         self._fold(outcome)
+        self._changed()
         result = self._result(revision, batch, reset, calculated + outcome["changes"])
         return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
 
@@ -62,6 +81,7 @@ class WarmCopy:
         calculated, reset = self._sync(template_path, batch.changes, pivot_state)
         outcome = self.engine.set_slicer(cache, selected)
         self._fold(outcome)
+        self._changed()
         result = self._result(revision, batch, reset, calculated + outcome["changes"])
         return {**result, "messages": outcome["messages"], "contents": outcome["contents"]}
 
@@ -99,10 +119,13 @@ class WarmCopy:
                 value = self.baseline[coordinate] if after is MISSING else after
                 updates.append((*coordinate, value))
         calculated = self.engine.apply(updates)
+        if updates:
+            self._changed()
         self.overrides = desired
         self.cleared = cleared
         if reset and self.kind == "excel" and _has_pivot_state(pivot_state):
             calculated = calculated + self.engine.restore_pivots(pivot_state)["changes"]
+            self._changed()
         return calculated, reset
 
     def _result(self, revision: int, batch: WorkerBatch, reset: bool, changes: list, **extra) -> dict:
@@ -116,6 +139,74 @@ class WarmCopy:
         return {"copy_id": self.copy_id, "revision": revision, "pid": os.getpid(),
                 "changes": changes, "results": results, "removals": removals,
                 "delta": delta, "base_revision": batch.base_revision, **extra}
+
+    def _changed(self) -> None:
+        if self.resume is not None and self.unsaved_since is None:
+            self.unsaved_since = time.monotonic()
+
+    def resume_due(self) -> float | None:
+        """Seconds to wait for another request before saving a resume point, or None if nothing is unsaved."""
+        if self.unsaved_since is None or self.engine is None:
+            return None
+        return max(0.0, min(RESUME_IDLE_S, self.unsaved_since + RESUME_MAX_AGE_S - time.monotonic()))
+
+    def save_resume_point(self) -> None:
+        """Save the copy as Excel holds it and the state that goes with it, then point the manifest at both.
+
+        The manifest is replaced last and atomically, so a crash mid-save leaves the previous point usable.
+        """
+        save = getattr(getattr(self.engine, "host", None), "save_copy", None)
+        if self.resume is None or save is None or self.unsaved_since is None:
+            return
+        self.unsaved_since = None
+        point = self.resume / f"{time.time_ns()}"
+        point.mkdir(parents=True)
+        try:
+            save(point / Path(self.source).name)
+            state = {"engine": self.engine.checkpoint_state(), "baseline": self.baseline,
+                     "overrides": self.overrides, "cleared": self.cleared}
+            with open(point / "state.pickle", "wb") as handle:
+                pickle.dump(state, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            manifest = {"version": RESUME_VERSION, "template": _template_stamp(self.source), "point": point.name}
+            pending = self.resume / "manifest.json.tmp"
+            pending.write_text(json.dumps(manifest))
+            os.replace(pending, self.resume / "manifest.json")
+        except Exception:
+            shutil.rmtree(point, ignore_errors=True)
+            raise
+        for entry in self.resume.iterdir():
+            if entry.is_dir() and entry != point:
+                shutil.rmtree(entry, ignore_errors=True)
+
+    def _resumed_engine(self, template_path: str):
+        """The engine reopened from this copy's last resume point, or None to start from the template."""
+        if self.resume is None:
+            return None
+        try:
+            manifest = json.loads((self.resume / "manifest.json").read_text())
+        except FileNotFoundError:
+            return None
+        except Exception:
+            LOG.exception("Copy %s resume point is unreadable; starting from the template", self.copy_id)
+            return None
+        if manifest.get("version") != RESUME_VERSION or manifest.get("template") != _template_stamp(template_path):
+            return None
+        from .excel import ExcelEngine
+
+        point = self.resume / manifest["point"]
+        try:
+            # written only by this server's workers into its own data folder
+            with open(point / "state.pickle", "rb") as handle:
+                state = pickle.load(handle)
+            started = time.monotonic()
+            engine = ExcelEngine.load(Path(template_path), workbook=point / Path(template_path).name,
+                                      state=state["engine"])
+        except Exception:
+            LOG.exception("Copy %s could not resume; starting from the template", self.copy_id)
+            return None
+        self.baseline, self.overrides, self.cleared = state["baseline"], state["overrides"], state["cleared"]
+        LOG.info("Copy %s resumed from its saved point in %.1fs", self.copy_id, time.monotonic() - started)
+        return engine
 
     def close(self) -> None:
         """Release the engine; an Excel engine quits its private Excel."""
@@ -142,7 +233,7 @@ class WarmCopy:
             self.source = template_path
             if self.kind == "excel":
                 from .excel import ExcelEngine
-                self.engine = ExcelEngine.load(Path(template_path))
+                self.engine = self._resumed_engine(template_path) or ExcelEngine.load(Path(template_path))
             elif self.kind == "python":
                 from ..calc.host import CalcHost
                 from .excel import ExcelEngine
@@ -171,6 +262,12 @@ class WarmCopy:
             roots = set(cleared) | set(changed_spills)
             if roots:
                 self.engine.recalculate(roots)
+
+
+def _template_stamp(path) -> list:
+    """Which template a resume point was made from: a replaced template file starts copies afresh."""
+    found = Path(path).stat()
+    return [str(path), found.st_size, found.st_mtime_ns]
 
 
 def _has_pivot_state(state) -> bool:
@@ -231,16 +328,23 @@ def _serve(copy: WarmCopy, request: tuple) -> dict:
     return copy.apply(revision, template_path, WorkerBatch(changes, base_revision, rest[0] if rest else None))
 
 
-def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: str | None = None) -> None:
+def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: str | None = None,
+                resume: str | None = None) -> None:
     """Serve one copy serially inside its dedicated spawned process."""
+    if not logging.getLogger().handlers:  # a spawned process starts without the server's logging
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     if spool:
         tempfile.tempdir = tempfile.gettempdir()  # Python temp files and the engine cache stay where they are
         os.environ.update(TMPDIR=spool, TMP=spool, TEMP=spool)  # only the engine's own files move
-    copy = WarmCopy(copy_id, engine)
+    copy = WarmCopy(copy_id, engine, resume)
     try:
         while True:
+            wait = copy.resume_due()
+            if wait is not None and not connection.poll(wait):
+                _save(copy)
+                continue
             request = connection.recv()
-            if request is None:
+            if request is None:  # evicted or shutting down: the pool waits only seconds, too short to save
                 return
             try:
                 result = _serve(copy, request)
@@ -248,8 +352,15 @@ def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: st
                 connection.send((True, result))
             except Exception as exc:
                 copy.close()
-                copy = WarmCopy(copy_id, engine)
+                copy = WarmCopy(copy_id, engine, resume)
                 connection.send((False, type(exc).__name__))
     finally:
         copy.close()
         connection.close()
+
+
+def _save(copy: WarmCopy) -> None:
+    try:
+        copy.save_resume_point()
+    except Exception:
+        LOG.exception("Saving copy %s resume point failed", copy.copy_id)

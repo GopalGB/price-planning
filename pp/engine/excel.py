@@ -13,6 +13,7 @@ for it in tests on machines without Excel.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import pickle
 import shutil
@@ -30,9 +31,12 @@ from .formualizer import EngineError, MacroTimeout, _cached_formula_map, _json_v
 from .native_load import prepared_template
 
 BLOCK_ROWS = 256
+LOG = logging.getLogger(__name__)
 # COM reports a cell error as the HRESULT 0x800A0000 + Excel's CVErr number.
 COM_ERROR_BASE = -2146828288
 XL_CELL_TYPE_FORMULAS = -4123
+XL_FORMULAS, XL_PART, XL_BY_COLUMNS, XL_PREVIOUS = -4123, 2, 2, 2  # Range.Find arguments
+XL_MANUAL = -4135  # xlCalculationManual
 NO_CELLS = -2146827284  # SpecialCells found no cells (0x800A03EC)
 DIALOG_CLASS = "#32770"
 REFRESH_ALL = ":refresh"  # not a valid VBA name, so no template button can collide with it
@@ -159,28 +163,55 @@ class ComExcelHost(ExcelHost):
         self.app = _new_excel(win32com.client)
         self.pid = win32process.GetWindowThreadProcessId(self.app.Hwnd)[1]
         try:
-            for name, value in (("Visible", False), ("DisplayAlerts", False), ("ScreenUpdating", False),
-                                ("EnableEvents", False), ("AskToUpdateLinks", False),
-                                ("AutomationSecurity", 1)):  # 1 = msoAutomationSecurityLow: macros allowed
-                setattr(self.app, name, value)
+            self._quiet()
+            # Calculation can only be set with a book open, and Excel recalculates a file saved by another
+            # Excel build while opening it; a blank book first makes the template open already manual.
+            blank = self.app.Workbooks.Add()
+            self.app.Calculation = XL_MANUAL
+            self.app.CalculateBeforeSave = False
+            started = time.monotonic()
             self.book = self.app.Workbooks.Open(str(self.path), UpdateLinks=0, ReadOnly=False,
                                                 IgnoreReadOnlyRecommended=True, AddToMru=False,
                                                 Notify=False)
-            self.app.Calculation = -4135  # xlCalculationManual: recalculate once per batch
+            blank.Close(SaveChanges=False)
+            self.app.Calculation = XL_MANUAL
+            LOG.info("Excel opened %s in %.1fs", workbook.name, time.monotonic() - started)
             self.sheets = [self.book.Worksheets(name) for name in sheet_names]
         except Exception:
             self.close()
             raise
 
+    def _quiet(self):
+        """Hidden, silent, manual Excel; template macros switch some of these back on, so it runs again after."""
+        for name, value in (("Visible", False), ("DisplayAlerts", False), ("ScreenUpdating", False),
+                            ("EnableEvents", False), ("AskToUpdateLinks", False),
+                            ("AutomationSecurity", 1)):  # 1 = msoAutomationSecurityLow: macros allowed
+            setattr(self.app, name, value)
+        if getattr(self, "book", None) is not None:
+            self.app.Calculation = XL_MANUAL
+
     def write(self, sheet, cells):
-        worksheet = self.sheets[sheet]
-        for row, col, value in cells:
-            worksheet.Cells(row + 1, col + 1).Value2 = to_com(value)
+        self._put(sheet, [(row, col, to_com(value)) for row, col, value in cells], "Value2")
 
     def write_formulas(self, sheet, cells):
+        self._put(sheet, cells, "Formula2")
+
+    def _put(self, sheet, cells, kind):
         worksheet = self.sheets[sheet]
-        for row, col, formula in cells:
-            worksheet.Cells(row + 1, col + 1).Formula2 = formula
+        for top, left, rows in _rectangles(cells):
+            try:
+                setattr(self._area(worksheet, top, left, rows), kind, tuple(tuple(row) for row in rows))
+            except Exception:
+                if len(rows) == 1 and len(rows[0]) == 1:
+                    raise
+                for r, line in enumerate(rows):  # one cell at a time, as before blocks were written whole
+                    for c, item in enumerate(line):
+                        setattr(worksheet.Cells(top + r + 1, left + c + 1), kind, item)
+
+    @staticmethod
+    def _area(worksheet, top, left, rows):
+        return worksheet.Range(worksheet.Cells(top + 1, left + 1),
+                               worksheet.Cells(top + len(rows), left + len(rows[0])))
 
     def calculate(self):
         self.app.Calculate()
@@ -217,16 +248,34 @@ class ComExcelHost(ExcelHost):
         return areas
 
     def used_range(self, sheet):
-        used = self.sheets[sheet].UsedRange
-        rows, cols = used.Rows.Count, used.Columns.Count
-        if rows == 1 and cols == 1 and used.Value2 is None:
+        """UsedRange, narrowed to the last column that holds content. Formatting alone stretches UsedRange
+        across all 16384 columns of most template tabs: 230 million cells where content fills about 8 million.
+        Rows stay UsedRange's, since Find can skip rows an AutoFilter hides."""
+        worksheet = self.sheets[sheet]
+        last = worksheet.Cells.Find(What="*", After=worksheet.Cells(1, 1), LookIn=XL_FORMULAS, LookAt=XL_PART,
+                                    SearchOrder=XL_BY_COLUMNS, SearchDirection=XL_PREVIOUS)
+        if last is None:
             return None
+        used = worksheet.UsedRange
         top, left = used.Row - 1, used.Column - 1
-        return (top, left, top + rows - 1, left + cols - 1)
+        return (top, min(left, last.Column - 1), top + used.Rows.Count - 1, last.Column - 1)
+
+    def save_copy(self, path):
+        """Save this copy as Excel holds it now, to resume from after a restart."""
+        started = time.monotonic()
+        self.book.SaveCopyAs(str(path))
+        LOG.info("Excel saved a resume point in %.1fs", time.monotonic() - started)
 
     def run_macro(self, name, timeout):
         """Run a workbook macro under the dialog watcher and the time limit."""
-        return self._watched(lambda: self.app.Run(f"'{self.book.Name}'!{name}"), timeout)
+        try:
+            return self._watched(lambda: self.app.Run(f"'{self.book.Name}'!{name}"), timeout)
+        finally:
+            if not getattr(self, "killed", False):
+                try:
+                    self._quiet()
+                except Exception:
+                    LOG.exception("Excel settings could not be restored after %s", name)
 
     def refresh_all(self, timeout):
         """Excel's own RefreshAll on this copy, then wait for the background queries to finish."""
@@ -290,6 +339,7 @@ class ComExcelHost(ExcelHost):
             while not done.is_set():
                 if time.monotonic() >= deadline:
                     timed_out.set()
+                    self.killed = True
                     _kill(self.pid)
                     return
                 _press_dialogs(self.pid, seen, dialogs)
@@ -525,26 +575,47 @@ class ExcelEngine:
     override_baseline: set = field(default_factory=set)  # override cells whose baseline we created
     override_index: DependencyIndex | None = None
     pivot_cells: frozenset = frozenset()  # pivot output cells: Excel's, published, never overrides (P6.4 decision 1)
+    template_cells: frozenset = frozenset()  # the template's own formula cells
     handles_clears = True
 
     @classmethod
     def load(cls, template_path: str | Path, cache_dir: str | Path | None = None,
-             host_factory=None) -> ExcelEngine:
+             host_factory=None, workbook: str | Path | None = None, state: dict | None = None) -> ExcelEngine:
+        """Open the template, or with ``workbook`` and ``state`` a copy saved by ``checkpoint_state``."""
         path = Path(template_path)
         try:
             prepared = prepared_template(path, cache_dir)
             cells, formulas, names, cached = _cached_formula_map(prepared)[:4]
             index = _cached_index(prepared, formulas, names)
-            host = (host_factory or default_host())(path, names)
-            pivot_cells, pivot_values = _pivot_outputs(host)
+            host = (host_factory or default_host())(Path(workbook) if workbook else path, names)
+            if state is None:
+                pivot_cells, pivot_values = _pivot_outputs(host)
+            else:
+                pivot_cells, pivot_values = state["pivot_cells"], {}
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("Excel calculation engine failed to load") from exc
         baseline = {key: from_com(cached.get(key)) for key in cells}
         baseline.update(pivot_values)
-        return cls(host, index, frozenset(cells) | pivot_cells, baseline, prepared=prepared, names=names,
-                   pivot_cells=frozenset(pivot_cells))
+        template = frozenset(cells)
+        engine = cls(host, index, template | pivot_cells, baseline, prepared=prepared, names=names,
+                     pivot_cells=frozenset(pivot_cells), template_cells=template)
+        if state is not None:
+            engine.baseline.update(state["baseline"])
+            engine.formula_anchors = (template - state["anchors_removed"]) | state["anchors_added"]
+            engine.current = dict(state["current"])
+            engine.formula_overrides = dict(state["formula_overrides"])
+            engine.override_baseline = set(state["override_baseline"])
+        return engine
+
+    def checkpoint_state(self) -> dict:
+        """What ``load`` needs besides the saved workbook; the template supplies everything else."""
+        return {"anchors_added": self.formula_anchors - self.template_cells,
+                "anchors_removed": self.template_cells - self.formula_anchors,
+                "current": dict(self.current), "formula_overrides": dict(self.formula_overrides),
+                "override_baseline": set(self.override_baseline), "pivot_cells": self.pivot_cells,
+                "baseline": {key: self.baseline.get(key) for key in self.override_baseline | self.pivot_cells}}
 
     @property
     def formula_cells(self):
@@ -599,8 +670,11 @@ class ExcelEngine:
         delta it publishes must cover that sync plus the action.
         """
         try:
-            before = self._read_values()
+            started = time.monotonic()
+            before = self._scan()
+            scanned = time.monotonic()
             messages = action() or []
+            ran = time.monotonic()
             self.host.calculate()
             now = set()
             areas = [(sheet, rect) for sheet in range(len(self.names))
@@ -617,37 +691,58 @@ class ExcelEngine:
                     if text is None:
                         raise EngineError("macro formula could not be read")
                     texts[(sheet, row, col)] = text
-            after = self._read_values()
-            moved = {key for key in set(before) | set(after) if key not in now and key not in self.pivot_cells
-                     and not exactly_equal(before.get(key), after.get(key))}
+            old, fresh = _diff(before, self._scan())
+            differing = old.keys() | fresh.keys()
+            # every other cell kept its value through the action; read the few that are needed
+            same = self._read_cells(key for key in new | detached if key not in differing)
+
+            def value(side, key):
+                return side.get(key) if key in differing else same.get(key)
+
+            changed = {key for key in differing if not exactly_equal(old.get(key), fresh.get(key))}
+            moved = {key for key in changed if key not in now and key not in self.pivot_cells}
+            # formula cells whose value moved, including ones whose text the action rewrote in place
+            recalculated = {key for key in changed if key in now}
             contents = [(*key, {"formula": texts[key]}) for key in new]
-            contents += [(*key, after.get(key)) for key in moved | detached]
+            contents += [(*key, value(fresh, key)) for key in moved | detached]
             contents.sort(key=lambda item: item[:3])
-            self._track(contents, {key: before.get(key) for key in new})
+            self._track(contents, {key: value(old, key) for key in new})
             # pivot outputs changed by the action are published, and so is whatever reads them
-            changes = self._publish(self._affected([item[:3] for item in contents] + sorted(self.pivot_cells)))
+            reached = self._affected([item[:3] for item in contents] + sorted(self.pivot_cells))
+            changes = self._publish(reached | (recalculated & self.formula_anchors))
+            LOG.info("Excel action: scan %.1fs, run %.1fs, record %.1fs, %d cells written, %d values changed",
+                     scanned - started, ran - scanned, time.monotonic() - ran, len(contents), len(changes))
             return {"messages": messages, "changes": changes, "contents": contents,
-                    "before": {item[:3]: before.get(item[:3]) for item in contents}}
+                    "before": {item[:3]: value(old, item[:3]) for item in contents}}
         except EngineError:
             raise
         except Exception as exc:
             raise EngineError("Excel calculation engine failed to run the macro") from exc
 
-    def _read_values(self) -> dict:
-        """Every non-empty value of every used range, read in row blocks."""
-        values = {}
+    def _scan(self) -> dict:
+        """Every sheet's content box in row blocks, kept as bytes: (sheet, first row) -> (left, bytes).
+
+        Bytes, not cells: a whole-workbook scan is millions of values, and only the blocks an action
+        changed are ever unpacked.
+        """
+        blocks = {}
         for sheet in range(len(self.names)):
             box = self.host.used_range(sheet)
             if box is None:
                 continue
             top, left, bottom, right = box
-            for start in range(top, bottom + 1, BLOCK_ROWS):
-                stop = min(start + BLOCK_ROWS - 1, bottom)
-                for offset, row in enumerate(self.host.read(sheet, start, left, stop, right)):
-                    for position, raw in enumerate(row):
-                        if raw is not None:
-                            values[(sheet, start + offset, left + position)] = from_com(raw)
-        return values
+            for start in range(_block(top), bottom + 1, BLOCK_ROWS):
+                rows = self.host.read(sheet, start, left, min(start + BLOCK_ROWS - 1, bottom), right)
+                blocks[(sheet, start)] = (left, pickle.dumps(rows, protocol=pickle.HIGHEST_PROTOCOL))
+        return blocks
+
+    def _read_cells(self, keys) -> dict:
+        found = {}
+        for sheet, top, left, bottom, right, members in _blocks(keys):
+            grid = self.host.read(sheet, top, left, bottom, right)
+            for row, col in members:
+                found[(sheet, row, col)] = from_com(grid[row - top][col - left])
+        return found
 
     def _baselines(self, changes) -> dict:
         """The value a cell had before it becomes a formula override (read before the write)."""
@@ -765,6 +860,71 @@ def _pivot_outputs(host) -> tuple[set, dict]:
                     cells.add(key)
                     values[key] = from_com(raw)
     return cells, values
+
+
+def _block(row):
+    return row - row % BLOCK_ROWS
+
+
+def _diff(before, after):
+    """Before and after values of the cells that may differ between two scans; any cell in neither
+    dict holds the same value in both."""
+    old, new = {}, {}
+    for key in before.keys() | after.keys():
+        first, second = before.get(key), after.get(key)
+        if first == second:
+            continue
+        sheet, start = key
+        if first is not None and second is not None and first[0] == second[0]:
+            left = first[0]
+            rows_before, rows_after = pickle.loads(first[1]), pickle.loads(second[1])
+            for offset in range(max(len(rows_before), len(rows_after))):
+                a = rows_before[offset] if offset < len(rows_before) else ()
+                b = rows_after[offset] if offset < len(rows_after) else ()
+                if a == b:
+                    continue
+                for position in range(max(len(a), len(b))):
+                    x = a[position] if position < len(a) else None
+                    y = b[position] if position < len(b) else None
+                    if x != y or type(x) is not type(y):
+                        cell = (sheet, start + offset, left + position)
+                        if x is not None:
+                            old[cell] = from_com(x)
+                        if y is not None:
+                            new[cell] = from_com(y)
+            continue
+        for side, out in ((first, old), (second, new)):
+            if side is None:
+                continue
+            left = side[0]
+            for offset, row in enumerate(pickle.loads(side[1])):
+                for position, raw in enumerate(row):
+                    if raw is not None:
+                        out[(sheet, start + offset, left + position)] = from_com(raw)
+    return old, new
+
+
+def _rectangles(cells):
+    """Cells as (top, left, rows) rectangles, so Excel takes a whole block in one call, not one per cell.
+
+    Writing cell by cell costs one cross-process COM call each; an uploaded copy replays hundreds of
+    thousands of cells. Later duplicates of a cell win, as they did when writes ran one by one.
+    """
+    latest = {(row, col): value for row, col, value in cells}
+    runs = []
+    for (row, col), value in sorted(latest.items()):
+        if runs and runs[-1][0] == row and runs[-1][1] + len(runs[-1][2]) == col:
+            runs[-1][2].append(value)
+        else:
+            runs.append((row, col, [value]))
+    rectangles = []
+    for row, col, values in runs:
+        last = rectangles[-1] if rectangles else None
+        if last and last[1] == col and len(last[2][0]) == len(values) and last[0] + len(last[2]) == row:
+            last[2].append(values)
+        else:
+            rectangles.append((row, col, [values]))
+    return rectangles
 
 
 def _blocks(affected):

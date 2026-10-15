@@ -222,7 +222,7 @@ class EngineMemoryBudgetConfigTests(unittest.TestCase):
     def test_the_runtime_pool_is_built_with_the_configured_budget(self):
         source = (Path(__file__).resolve().parents[2] / "pp" / "runtime.py").read_text()
 
-        self.assertIn("EnginePool(config.max_workers, config.engine_memory_budget_mb, config.engine)",
+        self.assertIn("EnginePool(config.max_workers, config.engine_memory_budget_mb, config.engine,",
                       source)
 
     def test_the_config_field_is_named_for_the_memory_budget(self):

@@ -46,7 +46,8 @@ def create_runtime(root: str | Path) -> Runtime:
     database.initialize()
     _register_template(database, snapshot)
     database.migrate_legacy(snapshot.hash)
-    pool = EnginePool(config.max_workers, config.engine_memory_budget_mb, config.engine)
+    pool = EnginePool(config.max_workers, config.engine_memory_budget_mb, config.engine,
+                      resume=config.data_dir / "resume")
     try:
         operations = OperationService(database, snapshot)
 

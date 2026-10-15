@@ -145,11 +145,12 @@ class SlicerRequest:
 
 
 class _CopyWorker:
-    def __init__(self, context, copy_id: str, engine: str = "formualizer", spool: Path | None = None):
+    def __init__(self, context, copy_id: str, engine: str = "formualizer", spool: Path | None = None,
+                 resume: Path | None = None):
         parent, child = context.Pipe()
         self.connection = parent
-        self.process = context.Process(target=worker_loop, args=(child, copy_id, engine, spool and str(spool)),
-                                       daemon=True)
+        self.process = context.Process(target=worker_loop, args=(child, copy_id, engine, spool and str(spool),
+                                                                 resume and str(resume)), daemon=True)
         self.process.start()
         child.close()
         self.busy = False
@@ -198,7 +199,7 @@ class _CopyWorker:
 
 class EnginePool:
     def __init__(self, max_workers: int, memory_budget_mb: int | None = None,
-                 engine: str = "formualizer"):
+                 engine: str = "formualizer", resume: Path | None = None):
         if max_workers < 1:
             raise ValueError("max_workers must be positive")
         if memory_budget_mb is not None and memory_budget_mb < 1:
@@ -206,6 +207,7 @@ class EnginePool:
         self._context = multiprocessing.get_context("spawn")
         self._max_workers = max_workers
         self._engine = engine
+        self._resume = resume  # where Excel copies keep resume points across restarts
         self._workers: OrderedDict[str, _CopyWorker] = OrderedDict()
         self._condition = threading.Condition()
         self._closed = False
@@ -288,7 +290,7 @@ class EnginePool:
                 self._condition.wait()
 
     def _create(self, copy_id: str) -> _CopyWorker:
-        worker = _CopyWorker(self._context, copy_id, self._engine, self.spool)
+        worker = _CopyWorker(self._context, copy_id, self._engine, self.spool, self._resume)
         worker.busy = True
         self._workers[copy_id] = worker
         return worker

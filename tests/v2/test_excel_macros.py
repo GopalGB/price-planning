@@ -49,6 +49,16 @@ def detach_b1(host):
     return []
 
 
+def paste_values_b1(host):
+    host.write(0, [(0, 1, 4)])  # B1 = A1*2 becomes its own value, like Copy then PasteSpecial values
+    return []
+
+
+def rewrite_b1(host):
+    host.write_formulas(0, [(0, 1, "=A1*5")])  # a formula cell given a new formula in place
+    return []
+
+
 def set_and_chain(host):
     host.write(0, [(0, 0, 5)])
     host.write_formulas(0, [(1, 0, "=A1*3"), (1, 1, "=A2+1")])
@@ -105,6 +115,23 @@ class MacroEngineTests(unittest.TestCase):
         self.assertEqual(engine.apply([(0, 0, 0, 3)]), [])
         self.assertEqual(engine.get(0, 0, 1), 9)
 
+    def test_formula_pasted_as_its_own_value_is_recorded_with_that_value(self):
+        engine = self.load({"Paste": paste_values_b1})
+
+        result = engine.run_macro("Paste")
+
+        self.assertEqual(result["contents"], [(0, 0, 1, 4)])
+        self.assertEqual(result["before"], {(0, 0, 1): 4})
+        self.assertNotIn((0, 0, 1), engine.formula_anchors)
+
+    def test_formula_rewritten_in_place_publishes_its_new_value(self):
+        engine = self.load({"Rewrite": rewrite_b1})
+
+        result = engine.run_macro("Rewrite")
+
+        self.assertIn((0, 0, 1, 10), result["changes"])
+        self.assertEqual(engine.get(0, 0, 1), 10)
+
     def test_replay_of_recorded_contents_reads_identical_values(self):
         original = self.load({"Build": set_and_chain})
         replay = self.load({})
@@ -123,9 +150,8 @@ class FakeExcelSheet:
 
     def __init__(self):
         self.values, self.formulas = {}, {}
-
-    def Cells(self, row, col):
-        return FakeExcelCell(self, (row, col))
+        self.formatted = (1, 1)  # formatting alone stretches UsedRange, as on the template's 16384-column tabs
+        self.Cells = FakeExcelCells(self)
 
     def Range(self, first, last):
         return FakeExcelRange(self, first.at, last.at)
@@ -133,9 +159,27 @@ class FakeExcelSheet:
     @property
     def UsedRange(self):
         cells = set(self.values) | set(self.formulas)
-        rows = max((row for row, _ in cells), default=1)
-        cols = max((col for _, col in cells), default=1)
+        rows = max([row for row, _ in cells] + [self.formatted[0]])
+        cols = max([col for _, col in cells] + [self.formatted[1]])
         return FakeExcelRange(self, (1, 1), (rows, cols))
+
+
+class FakeExcelCells:
+    """Worksheet.Cells: called for one cell, or searched with Find for the last content cell."""
+
+    def __init__(self, sheet):
+        self.sheet = sheet
+
+    def __call__(self, row, col):
+        return FakeExcelCell(self.sheet, (row, col))
+
+    def Find(self, What, After, LookIn, LookAt, SearchOrder, SearchDirection):
+        cells = set(self.sheet.values) | set(self.sheet.formulas)
+        if not cells:
+            return None
+        row = max(row for row, _ in cells) if SearchOrder == 1 else 1
+        col = max(col for _, col in cells) if SearchOrder == 2 else 1
+        return FakeExcelRange(self.sheet, (row, col), (row, col))
 
 
 class FakeExcelCell:
@@ -169,6 +213,13 @@ class FakeExcelRange:
     def Row(self):
         return self.first[0]
 
+    def _put(self, rows, store, other):
+        for r, line in enumerate(rows):
+            for c, item in enumerate(line):
+                at = (self.first[0] + r, self.first[1] + c)
+                store[at] = item
+                other.pop(at, None)
+
     @property
     def Column(self):
         return self.first[1]
@@ -190,9 +241,17 @@ class FakeExcelRange:
     def Value2(self):
         return self._grid(self.sheet.values.get)
 
+    @Value2.setter
+    def Value2(self, rows):
+        self._put(rows, self.sheet.values, self.sheet.formulas)
+
     @property
     def Formula2(self):
         return self._grid(lambda at: self.sheet.formulas.get(at, self.sheet.values.get(at)))
+
+    @Formula2.setter
+    def Formula2(self, rows):
+        self._put(rows, self.sheet.formulas, self.sheet.values)
 
     def SpecialCells(self, kind):
         if not self.sheet.formulas:
@@ -350,6 +409,8 @@ class ComHostTests(unittest.TestCase):
         sheet.formulas[(2, 2)] = "=A1*2"
         self.assertEqual(host.formula_areas(0), [(1, 1, 1, 1)])
         self.assertEqual(host.used_range(0), (0, 0, 1, 1))
+        sheet.formatted = (4000, 16384)
+        self.assertEqual(host.used_range(0), (0, 0, 3999, 1))  # UsedRange rows, content columns only
         self.assertEqual(host.read_formulas(0, 0, 0, 1, 1), [[None, None], [None, "=A1*2"]])
         host.write_formulas(0, [(2, 0, "=A1*3")])
         self.assertEqual(sheet.formulas[(3, 1)], "=A1*3")
@@ -365,7 +426,7 @@ class MacroApp:
         self.refresh_impl = lambda app: None
         self.calls = []
         self.sheets, self.killed = {}, threading.Event()
-        self.Workbooks = SimpleNamespace(Open=self.open)
+        self.Workbooks = SimpleNamespace(Open=self.open, Add=lambda: SimpleNamespace(Close=lambda SaveChanges: None))
 
     def open(self, path, **options):
         self.opened = Path(path)
