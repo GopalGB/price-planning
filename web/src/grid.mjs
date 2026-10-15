@@ -96,6 +96,7 @@ export class PlanningGrid {
     this.cache = new RowCache(3);
     this.store.inputRevision = meta.input_revision;
     this.store.calculatedRevision = meta.calculated_revision;
+    this.store.calcError = meta.calc_error ?? null;
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     this.disposables = [];
     this.highlights = [];
@@ -945,10 +946,17 @@ export class PlanningGrid {
     const busy =
       !this.store.blocksCalculated(this.store.inputRevision) ||
       this.controller.busy;
-    $("save-chip").textContent = busy
-      ? "Calculating..."
-      : `Saved · rev ${this.store.inputRevision}`;
-    $("save-chip").classList.toggle("busy", busy);
+    const failed = !this.controller.busy && this.store.calcError;
+    $("save-chip").textContent = failed
+      ? "Calculation failed"
+      : busy
+        ? "Calculating..."
+        : `Saved · rev ${this.store.inputRevision}`;
+    $("save-chip").title = failed
+      ? `Your edits are saved, but the formulas could not be recalculated: ${this.store.calcError}. Any new edit tries again.`
+      : "";
+    $("save-chip").classList.toggle("busy", busy && !failed);
+    $("save-chip").classList.toggle("failed", Boolean(failed));
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
     this.dashboard?.repaint();
     if (coordinates?.length)

@@ -209,6 +209,29 @@ class OperationAPIContractTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(apply.call_args.args[0].base_revision, 0)
 
+    def test_failed_calculation_is_reported_until_a_later_edit_calculates(self):
+        """A failure left browsers showing 'Calculating...' forever; they must be told why."""
+        from pp.engine.formualizer import EngineError
+        copy_id, headers = self.copy["id"], {"x-csrf-token": self.csrf}
+        with mock.patch.object(self.fixture.pool, "apply", side_effect=EngineError("Excel stopped responding")):
+            response = self.client.post(f"/api/copies/{copy_id}/ops", {
+                "op_id": "fails", "action": "edit",
+                "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+            }, headers)
+        self.assertEqual(response.status_code, 200)
+        workbook = self.client.get(f"/api/copies/{copy_id}/workbook").json()
+        self.assertEqual((workbook["input_revision"], workbook["calculated_revision"]), (1, 0))
+        self.assertEqual(workbook["calc_error"], "EngineError: Excel stopped responding")
+
+        self.client.post(f"/api/copies/{copy_id}/ops", {
+            "op_id": "retries", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 15, "expected_version": 1}],
+        }, headers)
+        workbook = self.client.get(f"/api/copies/{copy_id}/workbook").json()
+        self.assertEqual((workbook["calculated_revision"], workbook["calc_error"]), (2, None))
+        calculated = self.client.get(f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1").json()
+        self.assertEqual(calculated["rows"]["1"]["1"]["v"], 30)
+
 
 class DynamicSpillAPIContractTests(unittest.TestCase):
     def setUp(self):

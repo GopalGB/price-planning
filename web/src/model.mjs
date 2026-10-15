@@ -144,6 +144,7 @@ export class CellStore {
     this.calcBatches = new Map();
     this.inputRevision = 0;
     this.calculatedRevision = 0;
+    this.calcError = null; // why the newest saved state could not be calculated
     this.openSheets = new Set();
     this.merge(rows, sheet);
   }

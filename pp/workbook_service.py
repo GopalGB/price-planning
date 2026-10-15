@@ -205,6 +205,13 @@ class CurrentResults(dict):
         return cell["v"]
 
 
+def calc_error(connection, copy_id: str, revision: int) -> str | None:
+    """Why the copy's newest saved state could not be calculated, while it still waits."""
+    row = connection.execute("SELECT last_error FROM pp_calc_jobs WHERE copy_id=? AND revision=? AND status='pending'",
+                             (copy_id, revision)).fetchone()
+    return row[0] if row is not None else None
+
+
 def _calculated_revision(snapshot, copy):
     # Saved Excel results are current for every revision of a values-only template.
     return copy["input_revision"] if getattr(snapshot, "results", "engine") == "cached" else copy["calculated_revision"]
@@ -297,6 +304,7 @@ class WorkbookService:
             snapshot = self.templates.for_copy(connection, copy)
             extents = _result_extents(connection, copy_id)
             pivot_state = read_state(connection, copy_id)
+            error = calc_error(connection, copy_id, copy["input_revision"])
         sheets = [{"index": item["index"], "name": item["name"], "hidden": item["hidden"],
                    "protected": bool(item.get("protected", False)),
                    "rows": _visible_extent(item, extents, 0),
@@ -321,6 +329,7 @@ class WorkbookService:
                   for item in _tab_order(snapshot)]
         return {"template": {"hash": snapshot.hash, "name": snapshot.name},
                 "input_revision": copy["input_revision"], "calculated_revision": _calculated_revision(snapshot, copy),
+                "calc_error": error if _calculated_revision(snapshot, copy) < copy["input_revision"] else None,
                 "calculation": snapshot.results, "sheets": sheets, "styles": snapshot.styles,
                 "buttons": snapshot.buttons, "drawings": snapshot.drawings, "refreshable": snapshot.refreshable}
 

@@ -412,7 +412,9 @@ export class EditController {
         this.store.calculatedRevision,
         message.calculated_revision,
       );
+      this.store.calcError = message.error ?? null;
     }
+    if (message.type === "calc") this.store.calcError = null;
     this.paint(message.cells ?? message.changes ?? []);
   }
 }

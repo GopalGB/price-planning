@@ -45,7 +45,7 @@ from .ops import OperationService
 from .pivot import PivotQuery, PivotService
 from .upload import ConfirmRequest, PreviewRequest, UploadDependencies, UploadService
 from .workbook_service import (CellQuery, HistoryQuery, RowQuery, TemplateCatalog, WorkbookService,
-                               _calculated_revision)
+                               _calculated_revision, calc_error)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -509,6 +509,12 @@ async def _announce(services, copy_id, revision):
                                                "calculated_revision": revision, "changes": []})
 
 
+def _failure(exc):
+    """The reason a person sees: the error type and its first line, never a traceback."""
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else ""
+    return f"{type(exc).__name__}: {detail}"[:200] if detail else type(exc).__name__
+
+
 _CALC_LOCKS = {}  # copy id -> the lock its background calculations take turns on
 
 
@@ -533,8 +539,9 @@ async def _calculate_latest(services, copy_id, revision):
                 if await _publish_result(services, request, result):
                     await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", latest)))
         except Exception as exc:
-            logging.getLogger(__name__).error("Calculating copy %s revision %s failed: %s", copy_id, latest, exc)
-            await asyncio.to_thread(services.calculations.failed, copy_id, latest, type(exc).__name__)
+            logging.getLogger(__name__).exception("Calculating copy %s revision %s failed", copy_id, latest)
+            await asyncio.to_thread(services.calculations.failed, copy_id, latest, _failure(exc))
+            await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services, copy_id)})
 
 
 async def _calculate_baseline(services, copy, user_id):
@@ -555,8 +562,9 @@ async def _calculate_baseline(services, copy, user_id):
                 state = _calc_state(services, copy["id"])
                 await services.hub.broadcast(copy["id"], {"type": "calc_state", **state})
         except Exception as exc:
-            logging.getLogger(__name__).error("Calculating copy %s failed: %s", copy["id"], exc)
-            await asyncio.to_thread(services.calculations.failed, copy["id"], 0, type(exc).__name__)
+            logging.getLogger(__name__).exception("Calculating copy %s failed", copy["id"])
+            await asyncio.to_thread(services.calculations.failed, copy["id"], 0, _failure(exc))
+            await services.hub.broadcast(copy["id"], {"type": "calc_state", **_calc_state(services, copy["id"])})
             raise
     return services.copies.get(user_id, copy["id"])
 
@@ -1021,8 +1029,11 @@ def _calc_state(services, copy_id):
         row = connection.execute("SELECT input_revision,calculated_revision,template_id FROM pp_copies WHERE id=?",
                                  (copy_id,)).fetchone()
         snapshot = services.workbooks.templates.get(connection, row["template_id"])
+        error = calc_error(connection, copy_id, row["input_revision"])
     # same rule as rows and workbook reads: a values-only template is always current
-    return {"input_revision": row["input_revision"], "calculated_revision": _calculated_revision(snapshot, row)}
+    calculated = _calculated_revision(snapshot, row)
+    return {"input_revision": row["input_revision"], "calculated_revision": calculated,
+            "error": error if calculated < row["input_revision"] else None}
 
 
 async def _app_error(request, exc: AppError):
