@@ -232,6 +232,22 @@ class OperationAPIContractTests(unittest.TestCase):
         calculated = self.client.get(f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1").json()
         self.assertEqual(calculated["rows"]["1"]["1"]["v"], 30)
 
+    def test_opening_a_copy_retries_a_calculation_left_behind(self):
+        """A copy stuck behind with nothing calculating it recovers when someone opens it."""
+        from pp.engine.formualizer import EngineError
+        copy_id = self.copy["id"]
+        with mock.patch.object(self.fixture.pool, "apply", side_effect=EngineError("lost")):
+            self.client.post(f"/api/copies/{copy_id}/ops", {
+                "op_id": "left-behind", "action": "edit",
+                "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+            }, {"x-csrf-token": self.csrf})
+        opened = self.client.get(f"/api/copies/{copy_id}/workbook").json()
+        self.assertEqual((opened["calculated_revision"], opened["calc_running_since"]), (0, None))
+        workbook = self.client.get(f"/api/copies/{copy_id}/workbook").json()
+        self.assertEqual((workbook["calculated_revision"], workbook["calc_error"]), (1, None))
+        calculated = self.client.get(f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1").json()
+        self.assertEqual(calculated["rows"]["1"]["1"]["v"], 24)
+
     def test_opening_a_copy_opens_its_excel_before_the_first_edit(self):
         """Excel took a minute to open on the first edit; opening the copy starts it instead."""
         pool, copy_id = self.fixture.pool, self.copy["id"]

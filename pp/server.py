@@ -295,8 +295,15 @@ async def _copy_shares(request: Request):
 
 async def _workbook(request: Request):
     services, user = _read_auth(request)
-    body = services.workbooks.workbook(request.path_params["copy_id"], user["id"])
-    _in_background(_open_engine(services, request.path_params["copy_id"]))
+    copy_id = request.path_params["copy_id"]
+    body = services.workbooks.workbook(copy_id, user["id"])
+    if (services.engine_pool is not None and body["calculated_revision"] < body["input_revision"]
+            and copy_id not in _RUNNING):
+        # behind with nothing calculating it (a lost or failed run): opening the copy tries again
+        _in_background(_calculate_latest(services, copy_id, body["input_revision"]))
+    else:
+        _in_background(_open_engine(services, copy_id))
+    body["calc_running_since"] = _RUNNING.get(copy_id)
     return JSONResponse(body)
 
 
@@ -518,6 +525,7 @@ def _failure(exc):
 
 
 _CALC_LOCKS = {}  # copy id -> the lock its background calculations take turns on
+_RUNNING = {}  # copy id -> when the calculation running for it started (epoch seconds)
 
 
 async def _calculate_latest(services, copy_id, revision):
@@ -545,6 +553,7 @@ async def _open_engine(services, copy_id):
 
 async def _calculate_state(services, copy_id, state, calculate):
     latest = state["input_revision"]
+    _RUNNING[copy_id] = time.time()
     try:
         source = services.workbooks.calculation_source(copy_id)
         changes = services.operations.revision_changes(copy_id, latest)
@@ -558,6 +567,8 @@ async def _calculate_state(services, copy_id, state, calculate):
         logging.getLogger(__name__).exception("Calculating copy %s revision %s failed", copy_id, latest)
         await asyncio.to_thread(services.calculations.failed, copy_id, latest, _failure(exc))
         await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services, copy_id)})
+    finally:
+        _RUNNING.pop(copy_id, None)
 
 
 async def _calculate_baseline(services, copy, user_id):
@@ -1049,7 +1060,7 @@ def _calc_state(services, copy_id):
     # same rule as rows and workbook reads: a values-only template is always current
     calculated = _calculated_revision(snapshot, row)
     return {"input_revision": row["input_revision"], "calculated_revision": calculated,
-            "error": error if calculated < row["input_revision"] else None}
+            "error": error if calculated < row["input_revision"] else None, "running_since": _RUNNING.get(copy_id)}
 
 
 async def _app_error(request, exc: AppError):

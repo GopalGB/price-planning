@@ -19,6 +19,24 @@ from ..values import exactly_equal
 
 MISSING = object()
 LOG = logging.getLogger(__name__)
+LOG_FORMAT = "%(asctime)s %(levelname)s %(process)d %(name)s %(message)s"
+LOG_LIMIT = 20 * 1024 * 1024  # a log past this size is renamed .old when the server starts
+
+
+def setup_logging(name: str, directory: str | Path | None = None) -> None:
+    """Log to the console and, when PP_LOG_DIR (or directory) is set, to a file there someone can send."""
+    handlers = [logging.StreamHandler()]
+    folder = directory or os.environ.get("PP_LOG_DIR")
+    if folder:
+        path = Path(folder) / name
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if directory and path.exists() and path.stat().st_size > LOG_LIMIT:
+                path.replace(path.with_suffix(".old.log"))
+            handlers.append(logging.FileHandler(path, encoding="utf-8"))
+        except OSError:
+            pass  # a log file is a convenience; the console still has everything
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers)
 RESUME_VERSION = 1
 RESUME_IDLE_S = 20  # save a resume point once a copy has had no request for this long
 RESUME_MAX_AGE_S = 600  # and at the latest this long after its last unsaved change
@@ -332,7 +350,7 @@ def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: st
                 resume: str | None = None) -> None:
     """Serve one copy serially inside its dedicated spawned process."""
     if not logging.getLogger().handlers:  # a spawned process starts without the server's logging
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+        setup_logging("engine.log")
     if spool:
         tempfile.tempdir = tempfile.gettempdir()  # Python temp files and the engine cache stay where they are
         os.environ.update(TMPDIR=spool, TMP=spool, TEMP=spool)  # only the engine's own files move

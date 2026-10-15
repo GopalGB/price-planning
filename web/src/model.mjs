@@ -145,6 +145,7 @@ export class CellStore {
     this.inputRevision = 0;
     this.calculatedRevision = 0;
     this.calcError = null; // why the newest saved state could not be calculated
+    this.calcSince = null; // when the server started the running calculation (epoch ms)
     this.openSheets = new Set();
     this.merge(rows, sheet);
   }

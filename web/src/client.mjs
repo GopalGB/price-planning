@@ -413,6 +413,8 @@ export class EditController {
         message.calculated_revision,
       );
       this.store.calcError = message.error ?? null;
+      if (message.running_since)
+        this.store.calcSince = message.running_since * 1000;
     }
     if (message.type === "calc") this.store.calcError = null;
     this.paint(message.cells ?? message.changes ?? []);

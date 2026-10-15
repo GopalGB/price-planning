@@ -101,7 +101,8 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
         # the engine recalculates this copy instead of skipping it
         from pp.server import _calc_state
         self.assertEqual(_calc_state(runtime.app.state.services, copy_id),
-                         {"input_revision": 1, "calculated_revision": 1, "error": None})
+                         {"input_revision": 1, "calculated_revision": 1, "error": None,
+                          "running_since": None})
         with runtime.database.connect() as connection:
             pending = connection.execute("SELECT COUNT(*) FROM pp_calc_jobs WHERE copy_id=? AND status='pending'",
                                          (copy_id,)).fetchone()[0]

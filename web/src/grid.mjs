@@ -97,8 +97,15 @@ export class PlanningGrid {
     this.store.inputRevision = meta.input_revision;
     this.store.calculatedRevision = meta.calculated_revision;
     this.store.calcError = meta.calc_error ?? null;
+    this.store.calcSince = meta.calc_running_since
+      ? meta.calc_running_since * 1000
+      : null;
     this.selection = [{ startRow: 1, endRow: 1, startColumn: 1, endColumn: 1 }];
     this.disposables = [];
+    // the save chip counts how long a calculation has been running, so a stuck one is visible
+    const ticker = setInterval(() => this.paintSaveChip(), 1000);
+    ticker.unref?.(); // never keeps a test process alive
+    this.disposables.push({ dispose: () => clearInterval(ticker) });
     this.highlights = [];
     this.internal = 0;
     this.closingEditor = false;
@@ -943,20 +950,7 @@ export class PlanningGrid {
       this.rendered.set(`${r}:${c}`, signature);
     }
     if (Object.keys(changed).length) this.mutate(changed);
-    const busy =
-      !this.store.blocksCalculated(this.store.inputRevision) ||
-      this.controller.busy;
-    const failed = !this.controller.busy && this.store.calcError;
-    $("save-chip").textContent = failed
-      ? "Calculation failed"
-      : busy
-        ? "Calculating..."
-        : `Saved · rev ${this.store.inputRevision}`;
-    $("save-chip").title = failed
-      ? `Your edits are saved, but the formulas could not be recalculated: ${this.store.calcError}. Any new edit tries again.`
-      : "";
-    $("save-chip").classList.toggle("busy", busy && !failed);
-    $("save-chip").classList.toggle("failed", Boolean(failed));
+    this.paintSaveChip();
     $("edit-status").textContent = this.controller.busy ? "Saving..." : "Ready";
     this.dashboard?.repaint();
     if (coordinates?.length)
@@ -970,6 +964,32 @@ export class PlanningGrid {
       this.renderTableFilters();
     }
     this.selectionInfo();
+  }
+  paintSaveChip() {
+    const chip = $("save-chip");
+    if (!chip || !this.store || this.reconnecting) return;
+    const behind = !this.store.blocksCalculated(this.store.inputRevision);
+    const busy = behind || this.controller.busy;
+    const failed = !this.controller.busy && this.store.calcError;
+    if (!behind) this.store.calcSince = null;
+    else this.store.calcSince ??= Date.now();
+    const seconds = Math.max(
+      0,
+      Math.round((Date.now() - (this.store.calcSince ?? Date.now())) / 1000),
+    );
+    const elapsed = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+    chip.textContent = failed
+      ? "Calculation failed"
+      : busy
+        ? `Calculating... ${behind ? elapsed : ""}`.trim()
+        : `Saved · rev ${this.store.inputRevision}`;
+    chip.title = failed
+      ? `Your edits are saved, but the formulas could not be recalculated: ${this.store.calcError}. Any new edit tries again.`
+      : behind
+        ? "Excel on the server is recalculating this copy. Reopening the copy restarts a calculation that was lost."
+        : "";
+    chip.classList.toggle("busy", busy && !failed);
+    chip.classList.toggle("failed", Boolean(failed));
   }
   refreshInputHighlight(enabled) {
     this.inputHighlight = enabled;

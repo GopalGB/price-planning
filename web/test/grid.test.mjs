@@ -122,8 +122,8 @@ test('real grid accepts an older formula calculation after a newer partial block
   [0,[{input_revision:0,calculated_revision:0,rows:rows(0,{1:{v:2,k:'f'}})},{input_revision:2,calculated_revision:2,rows:rows(0,{1:{v:4,k:'f'}})}]],
   [256,[{input_revision:2,calculated_revision:2,rows:rows(256,{1:{v:7,k:'f'},2:{v:3,k:'f'}})}]],
  ]);const {grid,chips}=gridHarness(responses);
- await grid.loadBlock(0,true);await grid.loadBlock(256,true);assert.equal(chips['save-chip'].textContent,'Calculating...');
- grid.controller.remote({type:'calc',calculated_revision:1,changes:[{sheet:0,r:0,c:1,v:4}]});assert.equal(grid.store.get(0,0,1).v,4);assert.equal(chips['save-chip'].textContent,'Calculating...');
+ await grid.loadBlock(0,true);await grid.loadBlock(256,true);assert.equal(chips['save-chip'].textContent,'Calculating... 0:00');
+ grid.controller.remote({type:'calc',calculated_revision:1,changes:[{sheet:0,r:0,c:1,v:4}]});assert.equal(grid.store.get(0,0,1).v,4);assert.equal(chips['save-chip'].textContent,'Calculating... 0:00');
  grid.controller.remote({type:'calc',calculated_revision:2,changes:[{sheet:0,r:256,c:2,v:8}]});assert.equal(chips['save-chip'].textContent,'Saved · rev 2');
  await grid.loadBlock(0,true);assert.equal(chips['save-chip'].textContent,'Saved · rev 2');
 });

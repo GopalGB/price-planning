@@ -12,6 +12,7 @@ import uvicorn
 
 from pp.auto_backup import KEEP, AutoBackup
 from pp.config import _detected_ipv4, http_origin, load_config
+from pp.engine.worker import LOG_LIMIT, setup_logging
 from pp.runtime import create_runtime
 from pp.template.importer import import_template
 
@@ -125,7 +126,11 @@ def main(argv=None) -> int:
     parser.add_argument("--import-template", action="store_true",
                         help="Import or reuse the configured template snapshot, then exit")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    os.environ["PP_LOG_DIR"] = str(ROOT / "logs")  # Excel workers inherit it and write engine.log beside it
+    setup_logging("server.log", ROOT / "logs")
+    if (ROOT / "logs" / "engine.log").exists() and (ROOT / "logs" / "engine.log").stat().st_size > LOG_LIMIT:
+        (ROOT / "logs" / "engine.log").replace(ROOT / "logs" / "engine.old.log")
+    print(f"Logs: {ROOT / 'logs'}", flush=True)
     if args.import_template:
         config = load_config(ROOT)
         if config.template_path is None or not config.template_path.is_file():
