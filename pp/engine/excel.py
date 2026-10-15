@@ -16,10 +16,12 @@ import hashlib
 import logging
 import os
 import pickle
+import re
 import shutil
 import tempfile
 import threading
 import time
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -159,7 +161,7 @@ class ComExcelHost(ExcelHost):
         pythoncom.CoInitialize()
         self.directory = tempfile.mkdtemp(prefix="pp-excel-")
         self.path = Path(self.directory) / workbook.name
-        shutil.copy2(workbook, self.path)
+        copy_without_refresh_on_open(workbook, self.path)
         self.app = _new_excel(win32com.client)
         self.pid = win32process.GetWindowThreadProcessId(self.app.Hwnd)[1]
         try:
@@ -387,6 +389,34 @@ class ComExcelHost(ExcelHost):
             _kill(getattr(self, "pid", None))
             shutil.rmtree(self.directory, ignore_errors=True)
             pythoncom.CoUninitialize()
+
+
+_REFRESH_PARTS = re.compile(r"xl/(connections|queryTables/[^/]+|pivotCache/[^/]+)\.xml")
+_REFRESH_ON_LOAD = re.compile(rb'\srefreshOnLoad="(?:1|true)"')
+
+
+def copy_without_refresh_on_open(source: Path, target: Path) -> bool:
+    """Copy a workbook with its "refresh data when opening the file" settings turned off.
+
+    A data connection that refreshes on open made every server Excel rerun its query while opening
+    (six minutes on the office server). Data refreshes only when someone presses Refresh data.
+    Returns whether anything was turned off; a workbook without such settings is copied as is.
+    """
+    with zipfile.ZipFile(source) as archive:
+        found = [info for info in archive.infolist()
+                 if _REFRESH_PARTS.fullmatch(info.filename) and _REFRESH_ON_LOAD.search(archive.read(info))]
+        if not found:
+            shutil.copy2(source, target)
+            return False
+        changed = {info.filename for info in found}
+        with zipfile.ZipFile(target, "w") as out:
+            for info in archive.infolist():
+                data = archive.read(info)
+                if info.filename in changed:
+                    data = _REFRESH_ON_LOAD.sub(b"", data)
+                out.writestr(info, data, compress_type=info.compress_type)
+    LOG.info("Turned off refresh on open in %s (%d parts)", source.name, len(changed))
+    return True
 
 
 def _kill(pid):

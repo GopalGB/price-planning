@@ -456,3 +456,31 @@ class ComHostTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RefreshOnOpenTests(unittest.TestCase):
+    def test_excel_working_copy_never_refreshes_data_while_opening(self):
+        """A connection set to refresh on open made each server Excel take six minutes to open."""
+        import tempfile
+        import zipfile
+        from pathlib import Path
+        from pp.engine.excel import copy_without_refresh_on_open
+
+        with tempfile.TemporaryDirectory() as folder:
+            source, target, plain = (Path(folder) / name for name in ("in.xlsm", "out.xlsm", "plain.xlsm"))
+            with zipfile.ZipFile(source, "w", zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("xl/connections.xml", '<connections><connection id="1" refreshOnLoad="1" '
+                                                       'type="5"/><connection id="2" type="5"/></connections>')
+                archive.writestr("xl/queryTables/queryTable2.xml", '<queryTable refreshOnLoad="1" name="q"/>')
+                archive.writestr("xl/worksheets/sheet1.xml", '<c><v>refreshOnLoad="1"</v></c>')
+                archive.writestr("xl/vbaProject.bin", b"\x00binary")
+            self.assertTrue(copy_without_refresh_on_open(source, target))
+            with zipfile.ZipFile(source) as before, zipfile.ZipFile(target) as after:
+                self.assertEqual(before.namelist(), after.namelist())
+                self.assertEqual(after.read("xl/connections.xml"),
+                                 b'<connections><connection id="1" type="5"/><connection id="2" type="5"/></connections>')
+                self.assertEqual(after.read("xl/queryTables/queryTable2.xml"), b'<queryTable name="q"/>')
+                for name in ("xl/worksheets/sheet1.xml", "xl/vbaProject.bin"):  # cell text and macros untouched
+                    self.assertEqual(after.read(name), before.read(name))
+            self.assertFalse(copy_without_refresh_on_open(target, plain))
+            self.assertEqual(plain.read_bytes(), target.read_bytes())
