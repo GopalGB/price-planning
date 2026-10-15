@@ -15,7 +15,8 @@ tar -xf "%TEMP%\mingit.zip" -C "%LOCALAPPDATA%\MinGit"
 if not exist "%GIT%" goto git_failed
 :have_git
 rem Windows certificate store, like curl.exe here; the office proxy breaks revocation checks
-set GITCMD="%GIT%" -c http.sslBackend=schannel -c http.schannelCheckRevoke=false -c core.autocrlf=false
+rem The app folder may have been set up by another Windows user; git refuses such folders otherwise
+set GITCMD="%GIT%" -c http.sslBackend=schannel -c http.schannelCheckRevoke=false -c core.autocrlf=false -c safe.directory=*
 if exist "%HOME_DIR%app\.git" goto update
 %GITCMD% clone --branch feat/v2-integration https://github.com/GopalGB/price-planning.git "%HOME_DIR%app"
 if errorlevel 1 goto pull_failed
