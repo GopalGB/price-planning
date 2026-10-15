@@ -497,7 +497,9 @@ class VolatileConditionalFormattingRowsTest(unittest.TestCase):
                 return next(self.results)
 
         engine = ContrastingEngine()
-        with patch(
+        # This checks how the helper-workbook path (still used for rules the calculator cannot compile)
+        # groups targets, so the in-process path is switched off
+        with patch("pp.fidelity.conditional_formatting.FAST_RULES", False), patch(
             "pp.fidelity.conditional_formatting.FormualizerEngine.load",
             return_value=engine,
         ) as load:

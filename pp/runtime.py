@@ -63,8 +63,8 @@ def create_runtime(root: str | Path) -> Runtime:
             recovery.start()
         else:
             recovery = None
-        if config.engine == "excel" and config.template_results != "cached":
-            _warm_excel_caches(snapshot.source_path)
+        if config.engine in ("excel", "python") and config.template_results != "cached":
+            _warm_excel_caches(snapshot.source_path, config.engine == "python")
         # A values-only template never calculates, so copies must not start engine workers.
         calculator = None if config.template_results == "cached" else pool
         app = create_app(ServiceContext(database, snapshot, config, calculator))
@@ -91,10 +91,10 @@ def _import_results(config):
     """Excel's saved results are exact for an Excel-calculated template, so never run the import engine pass."""
     if getattr(config, "template_results", "engine") == "cached":
         return "cached"
-    return "saved" if getattr(config, "engine", "formualizer") == "excel" else "engine"
+    return "saved" if getattr(config, "engine", "formualizer") in ("excel", "python") else "engine"
 
 
-def _warm_excel_caches(source):
+def _warm_excel_caches(source, calculator=False):
     """Build the Excel engine's template caches in the background; a failure only delays the first edit."""
     import logging
     import threading
@@ -103,6 +103,10 @@ def _warm_excel_caches(source):
         try:
             from .engine.excel import warm_caches
             warm_caches(source)
+            if calculator:
+                from .calc.model import Template
+                from .engine.native_load import prepared_template
+                Template.load(prepared_template(source))
         except Exception:
             logging.getLogger(__name__).exception("Excel engine cache warm-up failed")
 

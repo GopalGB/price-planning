@@ -94,6 +94,9 @@ class ExcelHost:
     def memory_bytes(self) -> int: ...
     def close(self) -> None: ...
 
+    def invalidate(self, cells) -> None:
+        """Cells about to be read after an edit; Excel has already recalculated them."""
+
 
 EXCEL_CLSID = "{00024500-0000-0000-C000-000000000046}"
 CO_E_CLASSSTRING = -2147221005  # "Invalid class string": the Excel.Application name is not registered
@@ -707,6 +710,7 @@ class ExcelEngine:
         return found
 
     def _publish(self, affected) -> list[tuple[int, int, int, object]]:
+        self.host.invalidate(affected)
         published = []
         for sheet, top, left, bottom, right, members in _blocks(affected):
             values = self.host.read(sheet, top, left, bottom, right)

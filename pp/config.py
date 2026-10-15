@@ -337,8 +337,9 @@ def _engine(settings) -> str:
     # "excel" calculates copies in Microsoft Excel (Windows server with Excel installed).
     # PP_ENGINE wins so office_run.bat can switch Excel on even when an older settings.json says otherwise
     value = os.environ.get("PP_ENGINE") or settings.get("engine", "formualizer")
-    if value not in ("formualizer", "excel"):
-        raise ValueError("engine must be 'formualizer' or 'excel'")
+    # "python" calculates copies in this app's own calculator (no Excel needed).
+    if value not in ("formualizer", "excel", "python"):
+        raise ValueError("engine must be 'formualizer', 'excel' or 'python'")
     return value
 
 

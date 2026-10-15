@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import lru_cache
 import json
 from pathlib import Path
 import re
@@ -18,6 +19,9 @@ from openpyxl.formula.translate import Translator, TranslatorError
 from openpyxl.utils.cell import get_column_letter, range_boundaries, range_to_tuple
 from openpyxl.workbook.defined_name import DefinedName
 
+from pp.calc.compile import Compiler, Unsupported
+from pp.calc.ops import RefArea
+from pp.calc.values import Area, XlError
 from pp.engine.formualizer import EngineError, FormualizerEngine
 
 
@@ -178,7 +182,8 @@ class EvaluationState:
             return evaluated
 
     def _bounded_formula_evaluation(self, indexed, deadline) -> FormulaEvaluation:
-        tasks, failures, total = [], {}, 0
+        tasks, failures, total, fast = [], {}, 0, {}
+        book = _CopyBook(self.values, self.snapshot)
         extent = self.values.extent(self.query.sheet)
         for key, rule in indexed:
             _check_deadline(deadline)
@@ -191,6 +196,11 @@ class EvaluationState:
                 self._warn(rule, failures[key])
                 continue
             total += count
+            if visible is not None and FAST_RULES:
+                found = _fast_rule(book, key, rule, visible, self.query.sheet, deadline)
+                if found is not None:
+                    fast[key] = found
+                    continue
             try:
                 tasks.extend(_cached_formula_tasks(key, rule, visible, self.snapshot, self.query.sheet))
             except ConditionalFormatError as exc:
@@ -199,6 +209,7 @@ class EvaluationState:
         evaluated = PublicFormulaEvaluator(
             self.snapshot, self.values, self.query.sheet, deadline,
         ).evaluate(tasks)
+        evaluated.results.update(fast)
         evaluated.failures.update(failures)
         for key, code in evaluated.failures.items():
             if key not in failures:
@@ -276,6 +287,114 @@ class EvaluationState:
 
 class _OutOfTime(Exception):
     pass
+
+
+# Rules the calculator compiles run in-process, cell by cell, with no helper workbook; any other rule
+# (a defined name, a function it lacks) keeps the helper-workbook path
+FAST_RULES = True
+_compiled_rules: dict = {}
+_compiled_lock = threading.Lock()
+
+
+def _rule_text(rule):
+    """The rule as one formula written in its top-left cell, or None for a rule kind with no formula."""
+    formulas = rule.get("formulas", [])
+    if not formulas:
+        return None
+    if rule["type"] == "expression":
+        return "=" + formulas[0].lstrip("=")
+    target = f"{get_column_letter(rule['top_left'][1] + 1)}{rule['top_left'][0] + 1}"
+    operands = [value.lstrip("=") for value in formulas]
+    if rule.get("operator") in OPERATORS:
+        return f"={target}{OPERATORS[rule['operator']]}({operands[0]})"
+    if rule.get("operator") in {"between", "notBetween"} and len(operands) == 2:
+        body = f"AND({target}>=({operands[0]}),{target}<=({operands[1]}))"
+        return f"={body}" if rule["operator"] == "between" else f"=NOT({body})"
+    return None
+
+
+def _compiled_rule(snapshot, sheet, key, rule):
+    cache_key = (getattr(snapshot, "hash", id(snapshot)), sheet, key)
+    with _compiled_lock:
+        if cache_key in _compiled_rules:
+            return _compiled_rules[cache_key]
+    function, text = None, _rule_text(rule)
+    if text is not None:
+        sheets = snapshot.sheets
+        try:
+            function = Compiler([item["name"] for item in sheets]).compile(text, (sheet, *rule["top_left"]), False)
+        except Unsupported:
+            function = None
+        except Exception:  # a formula the parser rejects: the helper workbook path reports it as before
+            function = None
+    with _compiled_lock:
+        _compiled_rules[cache_key] = function
+    return function
+
+
+def _fast_rule(book, key, rule, visible, sheet, deadline):
+    """[(coordinate, result)] for every visible target, or None when this rule must take the helper path."""
+    function = _compiled_rule(book.snapshot, sheet, key, rule)
+    if function is None:
+        return None
+    found = []
+    try:
+        for index, (row, col) in enumerate(_coordinates(visible)):
+            if index % 1024 == 0:
+                _check_deadline(deadline)
+            value = function(book, row, col)
+            found.append(((row, col), False if isinstance(value, XlError) else value))
+    except _OutOfTime:
+        raise
+    except Exception:  # anything the calculator cannot finish falls back rather than guessing
+        return None
+    return found
+
+
+class _CopyBook:
+    """The calculator's view of one copy's current values (results, edits, then the template's)."""
+
+    def __init__(self, values, snapshot):
+        self.values, self.snapshot, self.areas, self.read = values, snapshot, {}, 0
+
+    def cell(self, sheet, row, col):
+        return _calc_value(self.values.get(sheet, row, col))
+
+    def area(self, sheet, top, left, bottom, right):
+        key = (sheet, top, left, bottom, right)
+        found = self.areas.get(key)
+        if found is None:
+            if bottom < top or right < left:
+                return Area.scalar(None)
+            # The helper path's reference limits, so a rule reading too much falls back and warns as before
+            size = (bottom - top + 1) * (right - left + 1)
+            self.read += size
+            if size > MAX_FORMULA_CELLS or self.read > MAX_FORMULA_CELLS * 16:
+                raise ConditionalFormatError("formula_reference_limit", "conditional formula reads too many cells")
+            found = self.areas[key] = RefArea(
+                [[self.cell(sheet, r, c) for c in range(left, right + 1)] for r in range(top, bottom + 1)],
+                sheet, top, left)
+        return found
+
+    def last_row(self, sheet):
+        return self.values.extent(sheet)[0] - 1
+
+    def last_col(self, sheet):
+        return self.values.extent(sheet)[1] - 1
+
+    def is_formula(self, sheet, row, col):
+        return self.snapshot.cell(sheet, row, col).get("formula") is not None
+
+
+def _calc_value(value):
+    if isinstance(value, dict):
+        try:
+            return XlError(value.get("error", "#VALUE!"))
+        except ValueError:
+            return XlError("#VALUE!")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    return value
 
 
 def _check_deadline(deadline) -> None:
@@ -523,7 +642,7 @@ def _formula_tasks(rule_key, rule, coordinates, snapshot, sheet):
         if not translators:
             raise ValueError("conditional rule is missing a formula")
         moves = _relative_axes(rule, translators)
-        translated, expanded, shared, grouped = {}, {}, {}, OrderedDict()
+        translated, expanded, shared, grouped, aliasable = {}, {}, {}, OrderedDict(), None
         for row, col in coordinates:
             # one translation per distinct relative row/column: a rule anchored to a column reads the same
             # formula all along a row, so ~100 cells share one text
@@ -533,7 +652,11 @@ def _formula_tasks(rule_key, rule, coordinates, snapshot, sheet):
             text = translated[where]
             if text not in expanded:
                 expanded[text] = _expand_defined_names(text, sheet, snapshot)
-                shared[text] = _formula_aliasable(expanded[text])
+                if aliasable is None:
+                    # Translation only moves cell references (off the sheet it raises), so every target's
+                    # text has the same functions and range shapes: one tokenizer pass answers for the rule
+                    aliasable = _formula_aliasable(expanded[text])
+                shared[text] = aliasable
             key = expanded[text], None if shared[text] else (row, col)
             grouped.setdefault(key, []).append((row, col))
         return [FormulaTask(rule_key, targets[0], key[0], tuple(targets[1:]))
@@ -566,11 +689,75 @@ def _formula_aliasable(formula):
     return True
 
 
+class _FastTranslator:
+    """openpyxl's Translator.translate_formula, compiled once: each reference splits into fixed text, column
+    parts that depend only on the column shift, and row parts that depend only on the row shift, so a
+    target's text is joined from two small caches instead of re-translating every reference."""
+
+    def __init__(self, translator):
+        self.row, self.col = translator.row, translator.col
+        tokens = translator.get_tokens()
+        self.literal = None if not tokens or tokens[0].type != "LITERAL" else tokens[0].value
+        self.empty = not tokens
+        self.parts = ["="]
+        for token in tokens:
+            if token.type == "OPERAND" and token.subtype == "RANGE":
+                self._range(token.value)
+            else:
+                self.parts.append(token.value)
+
+    def _range(self, text):
+        # the same cases, in the same order, as Translator.translate_range
+        sheet, text = Translator.strip_ws_name(text)
+        self.parts.append(sheet)
+        match = Translator.ROW_RANGE_RE.match(text)
+        if match is not None:
+            self.parts += [("r", match.group(1)), ":", ("r", match.group(2))]
+            return
+        match = Translator.COL_RANGE_RE.match(text)
+        if match is not None:
+            self.parts += [("c", match.group(1)), ":", ("c", match.group(2))]
+            return
+        if ":" in text:
+            for index, piece in enumerate(text.split(":")):
+                if index:
+                    self.parts.append(":")
+                self._range(piece)
+            return
+        match = Translator.CELL_REF_RE.match(text)
+        if match is None:
+            self.parts.append(text)  # a named range
+            return
+        self.parts += [("c", match.group(1)), ("r", match.group(2))]
+
+    def translate(self, row, col):
+        """The formula as written in the 0-based cell (row, col)."""
+        if self.empty:
+            return ""
+        if self.literal is not None:
+            return self.literal
+        rows, cols = row + 1 - self.row, col + 1 - self.col
+        return "".join(part if isinstance(part, str)
+                       else _shift_row(part[1], rows) if part[0] == "r" else _shift_col(part[1], cols)
+                       for part in self.parts)
+
+
+_shift_row = lru_cache(maxsize=65536)(Translator.translate_row)
+_shift_col = lru_cache(maxsize=65536)(Translator.translate_col)
+
+
+def _fast(translator):
+    found = getattr(translator, "_fast", None)
+    if found is None:
+        found = translator._fast = _FastTranslator(translator)
+    return found
+
+
 def _translated_formula(rule, translators, row, col):
     target = f"{get_column_letter(col + 1)}{row + 1}"
     if rule["type"] == "expression":
-        return _context_formula(translators[0].translate_formula(target), row, col)
-    operands = [translator.translate_formula(target)[1:] for translator in translators]
+        return _context_formula(_fast(translators[0]).translate(row, col), row, col)
+    operands = [_fast(translator).translate(row, col)[1:] for translator in translators]
     if rule.get("operator") in OPERATORS:
         return _context_formula(f"={target}{OPERATORS[rule['operator']]}({operands[0]})", row, col)
     if rule.get("operator") in {"between", "notBetween"} and len(operands) == 2:

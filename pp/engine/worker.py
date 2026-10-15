@@ -143,6 +143,10 @@ class WarmCopy:
             if self.kind == "excel":
                 from .excel import ExcelEngine
                 self.engine = ExcelEngine.load(Path(template_path))
+            elif self.kind == "python":
+                from ..calc.host import CalcHost
+                from .excel import ExcelEngine
+                self.engine = ExcelEngine.load(Path(template_path), host_factory=CalcHost)
             else:
                 self.engine = FormualizerAdapter.load(Path(template_path))
             return True
