@@ -94,7 +94,7 @@ class OfficeRun(unittest.TestCase):
         labels = set(re.findall(r'^:(\w+)', text, re.M))
         self.assertLessEqual(set(re.findall(r'\bgoto :?(\w+)', text, re.I)), labels)
         for must in ('%LOCALAPPDATA%\\MinGit', 'MinGit-', '-64-bit.zip', '--ssl-no-revoke',
-                     'http.schannelCheckRevoke=false', 'clone --branch feat/v2-integration', 'pull --ff-only', 'safe.directory=*'):
+                     'http.schannelCheckRevoke=false', 'clone --branch feat/v2-integration', 'pull --ff-only', 'safe.directory=*', 'index.lock'):
             self.assertIn(must, text)
 
 

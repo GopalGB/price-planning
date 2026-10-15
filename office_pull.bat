@@ -22,6 +22,8 @@ if exist "%HOME_DIR%app\.git" goto update
 if errorlevel 1 goto pull_failed
 goto done
 :update
+rem A pull stopped partway leaves index.lock behind; with no git running it only blocks updates
+tasklist /fi "imagename eq git.exe" 2>nul | find /i "git.exe" >nul || del "%HOME_DIR%app\.git\index.lock" 2>nul
 rem The app folder holds only the app's own files: a local edit there would block every update.
 rem One block: cmd reads it whole before the pull replaces this file under it.
 (
