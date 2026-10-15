@@ -351,6 +351,7 @@ def worker_loop(connection, copy_id: str, engine: str = "formualizer", spool: st
                 result["engine_bytes"] = copy.engine_bytes()
                 connection.send((True, result))
             except Exception as exc:
+                LOG.exception("Copy %s calculation failed", copy_id)
                 copy.close()
                 copy = WarmCopy(copy_id, engine, resume)
                 connection.send((False, type(exc).__name__))

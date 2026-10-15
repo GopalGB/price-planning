@@ -491,6 +491,7 @@ async def _publish_macro(services, copy_id, revision, source, result, pivot_stat
         if await _publish_result(services, request, result):
             await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
     except Exception as exc:
+        logging.getLogger(__name__).error("Calculating copy %s revision %s failed: %s", copy_id, revision, exc)
         await asyncio.to_thread(services.calculations.failed, copy_id, revision, type(exc).__name__)
 
 
@@ -516,6 +517,7 @@ async def _calculate_and_publish(services, copy_id, revision):
         if published:
             await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
     except Exception as exc:
+        logging.getLogger(__name__).error("Calculating copy %s revision %s failed: %s", copy_id, revision, exc)
         await asyncio.to_thread(services.calculations.failed, copy_id, revision, type(exc).__name__)
 
 
@@ -537,6 +539,7 @@ async def _calculate_baseline(services, copy, user_id):
                 state = _calc_state(services, copy["id"])
                 await services.hub.broadcast(copy["id"], {"type": "calc_state", **state})
         except Exception as exc:
+            logging.getLogger(__name__).error("Calculating copy %s failed: %s", copy["id"], exc)
             await asyncio.to_thread(services.calculations.failed, copy["id"], 0, type(exc).__name__)
             raise
     return services.copies.get(user_id, copy["id"])

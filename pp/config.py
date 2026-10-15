@@ -264,6 +264,9 @@ def _path(root: Path, value: object, name: str) -> Path:
     return path if path.is_absolute() else root / path
 
 
+EXCEL_WORKERS = 6
+
+
 def _default_engine_memory_mb() -> int:
     """The development Mac holds fewer resident engines than the office server."""
     return 16_000 if sys.platform == "win32" else 3_000
@@ -299,7 +302,10 @@ def load_config(root: str | Path, settings_path: str | Path | None = None) -> Co
                      else settings.get("port", 8000), "port", 65535)
     data_dir = _data_dir(root, settings)
     database_path = resolve_database_path(root, settings_path)
-    max_workers = _positive(settings.get("max_workers", 1), "max_workers", 128)
+    # each Excel copy is its own Excel process, so one worker would make copies evict and reopen each other;
+    # the memory budget still closes idle copies when they outgrow it
+    default_workers = EXCEL_WORKERS if _engine(settings) == "excel" else 1
+    max_workers = _positive(settings.get("max_workers", default_workers), "max_workers", 128)
     replay_window = _positive(settings.get("replay_window", 1000), "replay_window", 1_000_000)
     engine_memory = _positive(settings.get("engine_memory_budget_mb", _default_engine_memory_mb()),
                               "engine_memory_budget_mb", 1_000_000)

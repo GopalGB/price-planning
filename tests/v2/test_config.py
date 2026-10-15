@@ -65,6 +65,8 @@ class ConfigContractTests(unittest.TestCase):
             self.assertFalse((root / "settings.json").exists())
             self.assertEqual(config.template_path, template_dir / "a.xlsm")
             self.assertEqual(config.max_workers, 1)
+            with mock.patch.dict(os.environ, {"PP_ENGINE": "excel"}):
+                self.assertEqual(load_config(root).max_workers, 6)  # one Excel per open copy
 
     def test_interface_enumeration_parses_only_assigned_darwin_and_linux_addresses(self):
         cases = (

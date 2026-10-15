@@ -12,7 +12,7 @@ import tempfile
 import threading
 
 from .formualizer import EngineError, MacroTimeout
-from .worker import worker_loop
+from .worker import _has_pivot_state, worker_loop
 
 
 def spool_root() -> Path:
@@ -296,6 +296,11 @@ class EnginePool:
         return worker
 
     def apply(self, request: CalculationRequest) -> dict:
+        if not request.changes and not _has_pivot_state(request.pivot_state) and request.copy_id not in self._workers:
+            # nothing typed, nothing refreshed, no engine open: the copy is the template, whose saved results
+            # need no engine, so a new copy never waits for Excel to open (nor evicts another copy's Excel)
+            return {"copy_id": request.copy_id, "revision": request.revision, "changes": [], "results": [],
+                    "removals": [], "delta": False, "base_revision": request.base_revision}
         return self._run(request, _CopyWorker.calculate)
 
     def run_macro(self, request: MacroRequest) -> dict:

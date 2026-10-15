@@ -37,16 +37,54 @@ from pp.workbook_service import TemplateSnapshot  # noqa: E402
 
 def full_read(engine, snapshot):
     values = {}
-    for index, sheet in enumerate(snapshot.sheets):
-        rows, cols = sheet["rows"], sheet["cols"]
-        for top in range(0, rows, 2048):
-            bottom = min(top + 2047, rows - 1)
-            block = engine.host.read(index, top, 0, bottom, cols - 1)
+    for index in range(len(snapshot.sheets)):
+        box = engine.host.used_range(index)  # content only: formatting spans 16384 columns on most tabs
+        if box is None:
+            continue
+        first, left, last, right = box
+        for top in range(first, last + 1, 2048):
+            bottom = min(top + 2047, last)
+            block = engine.host.read(index, top, left, bottom, right)
             for offset, line in enumerate(block):
                 for col, value in enumerate(line):
                     if value is not None:
-                        values[(index, top + offset, col)] = from_com(value)
+                        values[(index, top + offset, left + col)] = from_com(value)
     return values
+
+
+def parse_cells(text):
+    """'sheet:row:col=value,...' (zero-based), numbers as numbers, anything else as text."""
+    cells = []
+    for item in text.split(","):
+        key, _, raw = item.partition("=")
+        sheet, row, col = map(int, key.split(":"))
+        try:
+            value = float(raw)
+            value = int(value) if value.is_integer() else value
+        except ValueError:
+            value = raw
+        cells.append((sheet, row, col, value))
+    return cells
+
+
+def check_cells(engine, snapshot, cells, report=print):
+    """Type several cells at once, as a user filling a row; every cell Excel changes must be published."""
+    originals = [(sheet, row, col, engine.get(sheet, row, col)) for sheet, row, col, _ in cells]
+    before = full_read(engine, snapshot)
+    start = time.time()
+    published = engine.apply(cells)
+    elapsed = time.time() - start
+    after = full_read(engine, snapshot)
+    typed = {cell[:3] for cell in cells}
+    changed = {cell for cell in before.keys() | after.keys()
+               if not exactly_equal(before.get(cell), after.get(cell))} - typed
+    missed = changed - {item[:3] for item in published}
+    sheets = sorted({cell[0] for cell in changed})
+    engine.apply(originals)
+    leftover = len(engine.overlay_snapshot())
+    report(f"typed {len(cells)} cells: {elapsed:.1f} s, published {len(published)}, Excel changed {len(changed)} "
+           f"on sheets {sheets}, missed {len(missed)}, overlay after revert {leftover}")
+    return bool(missed) + bool(leftover)
 
 
 def check_macros(snapshot, open_engine, report=print):
@@ -200,6 +238,7 @@ def main():
     parser.add_argument("--macros", action="store_true", help="run the template buttons instead of edits")
     parser.add_argument("--refresh", action="store_true", help="refresh the data connections instead of edits")
     parser.add_argument("--slicers", action="store_true", help="select and restore each Excel slicer")
+    parser.add_argument("--cells", help="type these cells together, e.g. 4:22:1=GROUP,4:22:7=10 (zero-based)")
     args = parser.parse_args()
     config = load_config(Path(args.root))
     snapshot = TemplateSnapshot(import_template(config.template_path, config.data_dir, "saved"))
@@ -224,7 +263,9 @@ def main():
         start = time.time()
         cells = len(full_read(engine, snapshot))
         print(f"full read of every sheet: {time.time() - start:.1f} s, {cells} non-empty cells", flush=True)
-        inputs = sorted(snapshot.input_mask)
+        if args.cells:
+            failures += check_cells(engine, snapshot, parse_cells(args.cells))
+        inputs = [] if args.cells else sorted(snapshot.input_mask)
         random.seed(7)
         for key in random.sample(inputs, min(args.edits, len(inputs))):
             sheet, row, col = map(int, key.split(":"))

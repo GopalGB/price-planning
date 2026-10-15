@@ -231,6 +231,28 @@ class IdleSaveTests(unittest.TestCase):
         self.assertEqual(connection.sent, [(True, {"engine_bytes": 0})])
 
 
+class SmokeCellsTests(unittest.TestCase):
+    def test_typed_row_check_proves_every_excel_change_is_published(self):
+        from types import SimpleNamespace
+
+        from ops.excel_smoke import check_cells, parse_cells
+        from pp.engine.excel import ExcelEngine, FormualizerHost
+
+        self.assertEqual(parse_cells("0:0:0=5,1:1:1=2.5,0:2:0=GROUP A"),
+                         [(0, 0, 0, 5), (1, 1, 1, 2.5), (0, 2, 0, "GROUP A")])
+        TMP.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=TMP) as directory:
+            source = workbook(directory)
+            engine = ExcelEngine.load(source, cache_dir=Path(directory) / "cache", host_factory=FormualizerHost)
+            snapshot = SimpleNamespace(sheets=[{}, {}])
+            lines = []
+            failures = check_cells(engine, snapshot, parse_cells("0:0:0=5,1:1:1=4"), lines.append)
+            engine.close()
+
+        self.assertEqual(failures, 0)
+        self.assertIn("Excel changed 3 on sheets [0], missed 0, overlay after revert 0", lines[0])
+
+
 class ExcelRuntimeTests(unittest.TestCase):
     def test_excel_runtime_warms_template_caches_and_builds_an_excel_pool(self):
         import json

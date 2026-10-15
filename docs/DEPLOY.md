@@ -85,7 +85,8 @@ a detected `10.x` address. No manual JSON editing is required. Configure
 `max_workers` in `settings.json` only when you need to override those defaults.
 An explicit nonempty `allowed_origins` list replaces the derived list and must
 use the exact browser origin including its port.
-Keep `max_workers` at one until memory measurements justify more warm copies.
+`max_workers` defaults to one, or six with the Excel engine: each Excel copy is its own Excel
+process, and the memory budget closes idle copies when they outgrow it.
 Signup requires `demo_mode: true`; use HTTPS and `cookie_secure: true` outside an
 explicit HTTP demo. V2 serves `static/dist/` when present, otherwise a placeholder.
 Office Excel parity, Windows operation, LAN access, and performance acceptance

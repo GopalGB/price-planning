@@ -160,13 +160,23 @@ class WarmEngineTests(unittest.TestCase):
         self.addCleanup(fixture.close)
         pool = EnginePool(max_workers=1)
         self.addCleanup(pool.close)
-        original = pool.apply(CalculationRequest("warm-copy", 0, fixture.source, []))
+        # the template's own value: an empty first request would need no engine at all
+        original = pool.apply(CalculationRequest("warm-copy", 0, fixture.source, [(0, 1, 1, 10)]))
         fixture.source.rename(fixture.source.with_suffix(".parked"))
         edited = pool.apply(CalculationRequest("warm-copy", 1, fixture.source, [(0, 1, 1, 15)]))
         restored = pool.apply(CalculationRequest("warm-copy", 2, fixture.source, []))
         self.assertEqual((original["pid"], edited["pid"]), (restored["pid"], restored["pid"]))
         self.assertEqual(self.cell(edited), 30)
         self.assertEqual(self.cell(restored), 20)
+
+    def test_untouched_copy_is_published_without_starting_an_engine(self):
+        pool = EnginePool(max_workers=1)
+        self.addCleanup(pool.close)
+
+        result = pool.apply(CalculationRequest("new-copy", 0, Path("missing.xlsm"), [], 0))
+
+        self.assertEqual((result["results"], result["delta"], result["base_revision"]), ([], False, 0))
+        self.assertEqual(pool.order(), [])
 
     def cell(self, response):
         values = {(sheet, row, col): value for sheet, row, col, value in response["changes"]}
