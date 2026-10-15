@@ -164,6 +164,7 @@ class HTTPTransportTests(unittest.TestCase):
                 ]
             })
             self.assertEqual(status, 200)
+            self.settled(owner, path)
             self.assertEqual(owner.send("GET", path + "/sheets/2/cell?r=1&c=1")[1]["v"], 30)
             self.assertEqual(owner.send("GET", path + "/sheets/2/cell?r=16&c=1")[1]["v"], "x b")
 
@@ -242,6 +243,17 @@ class HTTPTransportTests(unittest.TestCase):
             ]
         })
         self.assertEqual(status, 200)
+        self.settled(client, path)
+
+    def settled(self, client, path, timeout=20):
+        """Edits reply before calculating; wait until the copy's calculation has caught up."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            workbook = client.send("GET", path + "/workbook")[1]
+            if workbook["calculated_revision"] >= workbook["input_revision"]:
+                return
+            time.sleep(0.05)
+        self.fail("the copy did not finish calculating")
 
     def assert_socket_revoked(self, live):
         try:

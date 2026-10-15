@@ -108,13 +108,13 @@ class ValuesOnlyTemplateTests(unittest.TestCase):
         self.assertGreaterEqual(pending, 1)
         # the browser advances its loaded rows only on a calc message, so values mode sends an empty one
         import asyncio
-        from pp.server import _calculate_and_publish
+        from pp.server import _announce
         services, sent = runtime.app.state.services, []
 
         async def capture(copy, message):
             sent.append(message)
         with mock.patch.object(services.hub, "broadcast", side_effect=capture):
-            asyncio.run(_calculate_and_publish(services, copy_id, 1))
+            asyncio.run(_announce(services, copy_id, 1))
         self.assertIn({"type": "calc", "from_calculated_revision": 0, "calculated_revision": 1, "changes": []},
                       sent)
         with mock.patch("pp.engine.pool.EnginePool.apply") as engine:

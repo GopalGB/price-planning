@@ -386,7 +386,10 @@ async def _ops(request: Request):
         ack, created = services.operations.apply_with_status(copy_id, user["id"], payload,
                                                               _session_check(request, services))
         if created:
-            await _calculate_and_publish(services, copy_id, ack["input_revision"])
+            await _announce(services, copy_id, ack["input_revision"])
+    if created and services.engine_pool is not None:
+        # the edit is saved; Excel can take a while, so the reply never waits for it
+        _in_background(_calculate_latest(services, copy_id, ack["input_revision"]))
     return JSONResponse(ack)
 
 
@@ -495,30 +498,43 @@ async def _publish_macro(services, copy_id, revision, source, result, pivot_stat
         await asyncio.to_thread(services.calculations.failed, copy_id, revision, type(exc).__name__)
 
 
-async def _calculate_and_publish(services, copy_id, revision):
+async def _announce(services, copy_id, revision):
+    """Tell browsers about a saved edit; a values-only template is then already current."""
     event = _event(services.database, copy_id, ("op", revision))
     await services.hub.broadcast(copy_id, event)
     state = _calc_state(services, copy_id)
     await services.hub.broadcast(copy_id, {"type": "calc_state", **state})
-    if services.engine_pool is None:
+    if services.engine_pool is None and state["calculated_revision"] >= revision:
+        await services.hub.broadcast(copy_id, {"type": "calc", "from_calculated_revision": revision - 1,
+                                               "calculated_revision": revision, "changes": []})
+
+
+_CALC_LOCKS = {}  # copy id -> the lock its background calculations take turns on
+
+
+async def _calculate_latest(services, copy_id, revision):
+    """Calculate the copy's newest saved state once; edits saved meanwhile are folded into the next run.
+
+    Edits keep saving while it runs: only publishing the result takes the copy's pipeline lock.
+    """
+    lock = _CALC_LOCKS.setdefault(copy_id, asyncio.Lock())
+    async with lock:
+        state = await asyncio.to_thread(_calc_state, services, copy_id)
         if state["calculated_revision"] >= revision:
-            # values-only template: nothing recalculates, but browsers advance their rows on a calc message
-            await services.hub.broadcast(copy_id, {"type": "calc", "from_calculated_revision": revision - 1,
-                                                   "calculated_revision": revision, "changes": []})
-        return
-    try:
-        source = services.workbooks.calculation_source(copy_id)
-        changes = services.operations.revision_changes(copy_id, revision)
-        request = CalculationRequest(
-            copy_id, revision, source, changes, state["calculated_revision"],
-            pivot_state=services.workbooks.pivot_state(copy_id),
-        )
-        published = await _run_calculation(services, request)
-        if published:
-            await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", revision)))
-    except Exception as exc:
-        logging.getLogger(__name__).error("Calculating copy %s revision %s failed: %s", copy_id, revision, exc)
-        await asyncio.to_thread(services.calculations.failed, copy_id, revision, type(exc).__name__)
+            return  # an earlier run already calculated a state that includes this edit
+        latest = state["input_revision"]
+        try:
+            source = services.workbooks.calculation_source(copy_id)
+            changes = services.operations.revision_changes(copy_id, latest)
+            request = CalculationRequest(copy_id, latest, source, changes, state["calculated_revision"],
+                                         pivot_state=services.workbooks.pivot_state(copy_id))
+            result = await asyncio.to_thread(services.engine_pool.apply, request)
+            async with services.hub.pipeline(copy_id):
+                if await _publish_result(services, request, result):
+                    await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", latest)))
+        except Exception as exc:
+            logging.getLogger(__name__).error("Calculating copy %s revision %s failed: %s", copy_id, latest, exc)
+            await asyncio.to_thread(services.calculations.failed, copy_id, latest, type(exc).__name__)
 
 
 async def _calculate_baseline(services, copy, user_id):
@@ -845,12 +861,33 @@ async def _upload_confirm(request: Request):
         session_check=_session_check(request, services),
     )
     body = await asyncio.to_thread(services.uploads.confirm, confirmation)
+    # The upload is saved now; recalculating a whole uploaded workbook can take Excel minutes, so it runs
+    # after the reply and browsers follow it through the copy's calc_state and calc messages.
     if body.get("accepted"):
         copy_id = body.get("copy_id") or body["copy"]["id"]
-        await _calculate_and_publish(services, copy_id, body["input_revision"])
+        async with services.hub.pipeline(copy_id):
+            await _announce(services, copy_id, body["input_revision"])
+        if services.engine_pool is not None:
+            _in_background(_calculate_latest(services, copy_id, body["input_revision"]))
     elif mode == "new_copy":
-        body["copy"] = await _calculate_baseline(services, body["copy"], user["id"])
+        _in_background(_calculate_baseline(services, body["copy"], user["id"]))
     return JSONResponse(body, status_code=201 if mode == "new_copy" else 200)
+
+
+_BACKGROUND = set()  # running background calculations, held so they are not garbage collected
+
+
+def _in_background(coroutine):
+    task = asyncio.get_running_loop().create_task(coroutine)
+    _BACKGROUND.add(task)
+
+    def done(finished):
+        _BACKGROUND.discard(finished)
+        if not finished.cancelled() and finished.exception() is not None:
+            logging.getLogger(__name__).error("Background calculation failed: %s", finished.exception())
+
+    task.add_done_callback(done)
+    return task
 
 
 def _selected_sheets(query, sheets):

@@ -2082,7 +2082,8 @@ class UploadAPITests(unittest.TestCase):
 
         self.assertEqual(created.status_code, 201, created.body)
         self.assertEqual((created.json()["accepted"], created.json()["operation"]), (0, None))
-        self.assertEqual(created.json()["copy"]["calculated_revision"], 0)
+        workbook = member.get(f"/api/copies/{created.json()['copy']['id']}/workbook")
+        self.assertEqual(workbook.json()["calculated_revision"], 0)  # baseline calculated after the reply
         self.assertEqual(self.fixture.count("pp_copies"), before + 1)
 
     def test_new_copy_refuses_an_active_template_change_after_preview(self):

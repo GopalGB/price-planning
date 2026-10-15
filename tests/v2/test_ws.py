@@ -473,7 +473,14 @@ class WebSocketContractTests(unittest.TestCase):
             hub.broadcast = original
             hub.discard(connection)
         self.assertEqual((first.status_code, second.status_code), (200, 200))
-        self.assertEqual(socket.messages, [("op", 1), ("calc", 1), ("op", 2), ("calc", 2)])
+        # edits no longer wait for calculation, so op 2 may arrive before calc 1, but never out of order
+        ops = [revision for kind, revision in socket.messages if kind == "op"]
+        calcs = [revision for kind, revision in socket.messages if kind == "calc"]
+        self.assertEqual(ops, [1, 2])
+        self.assertEqual(calcs, sorted(set(calcs)))
+        self.assertEqual(calcs[-1], 2)
+        for revision in calcs:
+            self.assertLess(socket.messages.index(("op", revision)), socket.messages.index(("calc", revision)))
 
     async def _async_edit(self, op_id, value, version):
         return await self.owner._request("POST", f"/api/copies/{self.copy['id']}/ops", {

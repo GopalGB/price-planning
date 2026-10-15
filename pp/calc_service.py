@@ -72,6 +72,9 @@ class CalculationService:
                                (revision, now, copy_id))
             connection.execute("UPDATE pp_calc_jobs SET status='complete',updated_at=?,last_error=NULL WHERE copy_id=? AND revision=?",
                                (now, copy_id, revision))
+            # this revision's full state covers every earlier one still waiting
+            connection.execute("UPDATE pp_calc_jobs SET status='superseded',updated_at=? "
+                               "WHERE copy_id=? AND revision<? AND status='pending'", (now, copy_id, revision))
             connection.execute("INSERT INTO pp_events(copy_id,event_type,input_revision,payload_json,created_at) VALUES(?,'calc',?,?,?)",
                                (copy_id, revision, _json(payload), now))
             return True

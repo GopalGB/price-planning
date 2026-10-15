@@ -13,6 +13,14 @@ class ASGIResponse:
         return json.loads(self.body)
 
 
+async def _drain_background():
+    # asyncio.run cancels leftover tasks; a server loop would finish them, so wait like one does
+    from pp.server import _BACKGROUND
+    loop = asyncio.get_running_loop()
+    while pending := [task for task in _BACKGROUND if task.get_loop() is loop]:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 class ASGIClient:
     def __init__(self, app, origin="http://testserver"):
         self.app = app
@@ -58,6 +66,7 @@ class ASGIClient:
             messages.append(message)
 
         await self.app(scope, receive, send)
+        await _drain_background()
         start = next(message for message in messages if message["type"] == "http.response.start")
         content = b"".join(message.get("body", b"") for message in messages
                            if message["type"] == "http.response.body")
