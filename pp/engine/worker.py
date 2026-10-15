@@ -23,7 +23,7 @@ LOG_FORMAT = "%(asctime)s %(levelname)s %(process)d %(name)s %(message)s"
 LOG_LIMIT = 20 * 1024 * 1024  # a log past this size is renamed .old when the server starts
 
 
-def setup_logging(name: str, directory: str | Path | None = None) -> None:
+def setup_logging(name: str, directory: str | Path | None = None, force: bool = False) -> None:
     """Log to the console and, when PP_LOG_DIR (or directory) is set, to a file there someone can send."""
     handlers = [logging.StreamHandler()]
     folder = directory or os.environ.get("PP_LOG_DIR")
@@ -36,7 +36,8 @@ def setup_logging(name: str, directory: str | Path | None = None) -> None:
             handlers.append(logging.FileHandler(path, encoding="utf-8"))
         except OSError:
             pass  # a log file is a convenience; the console still has everything
-    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers)
+    # force: replaces handlers an imported module may already have set, which made basicConfig a no-op
+    logging.basicConfig(level=logging.INFO, format=LOG_FORMAT, handlers=handlers, force=force)
 RESUME_VERSION = 1
 RESUME_IDLE_S = 20  # save a resume point once a copy has had no request for this long
 RESUME_MAX_AGE_S = 600  # and at the latest this long after its last unsaved change
@@ -236,8 +237,13 @@ class WarmCopy:
                 pass
 
     def engine_bytes(self) -> int:
-        external = getattr(self.engine, "memory_bytes", None)
-        return _engine_bytes() + (external() if external else 0)
+        """Memory for the pool's budget. Measuring it must never cost a finished calculation."""
+        try:
+            external = getattr(self.engine, "memory_bytes", None)
+            return _engine_bytes() + (external() if external else 0)
+        except Exception:
+            LOG.exception("Measuring copy %s memory failed", self.copy_id)
+            return 0
 
     def _template_value(self, coordinate):
         formula_cells = getattr(self.engine, "formula_cells", ())
@@ -319,8 +325,11 @@ def _engine_bytes():
         counters = Counters(cb=ctypes.sizeof(Counters))
         kernel32 = ctypes.WinDLL("kernel32")
         kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-        ctypes.WinDLL("psapi").GetProcessMemoryInfo(
-            kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
+        memory_info = ctypes.WinDLL("psapi").GetProcessMemoryInfo
+        # without argtypes ctypes passes the 64-bit process handle as a 32-bit int and raises OverflowError
+        memory_info.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+        memory_info.restype = wintypes.BOOL
+        memory_info(kernel32.GetCurrentProcess(), ctypes.byref(counters), counters.cb)
         return int(counters.PeakWorkingSetSize)
     import resource
 

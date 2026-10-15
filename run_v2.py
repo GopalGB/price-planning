@@ -127,10 +127,11 @@ def main(argv=None) -> int:
                         help="Import or reuse the configured template snapshot, then exit")
     args = parser.parse_args(argv)
     os.environ["PP_LOG_DIR"] = str(ROOT / "logs")  # Excel workers inherit it and write engine.log beside it
-    setup_logging("server.log", ROOT / "logs")
+    setup_logging("server.log", ROOT / "logs", force=True)
     if (ROOT / "logs" / "engine.log").exists() and (ROOT / "logs" / "engine.log").stat().st_size > LOG_LIMIT:
         (ROOT / "logs" / "engine.log").replace(ROOT / "logs" / "engine.old.log")
     print(f"Logs: {ROOT / 'logs'}", flush=True)
+    logging.getLogger("pp").info("Server log started")  # an empty server.log then means logging broke
     if args.import_template:
         config = load_config(ROOT)
         if config.template_path is None or not config.template_path.is_file():

@@ -15,6 +15,13 @@ from tests.v2.support import BackendFixture, TMP
 
 
 class WarmEngineTests(unittest.TestCase):
+    def test_a_memory_reading_failure_never_discards_a_calculation(self):
+        """On Windows the memory call raised after every Excel calculation, so each result was thrown away."""
+        from pp.engine.worker import WarmCopy
+        copy = WarmCopy("memory-reading")
+        with mock.patch("pp.engine.worker._engine_bytes", side_effect=OverflowError("int too long to convert")):
+            self.assertEqual(copy.engine_bytes(), 0)
+
     def test_zero_revision_open_has_an_empty_sparse_overlay(self):
         from pp.engine.worker import WarmCopy
 
