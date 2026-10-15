@@ -484,3 +484,7 @@ class RefreshOnOpenTests(unittest.TestCase):
                     self.assertEqual(after.read(name), before.read(name))
             self.assertFalse(copy_without_refresh_on_open(target, plain))
             self.assertEqual(plain.read_bytes(), target.read_bytes())
+            binary = Path(folder) / "old.xls"
+            binary.write_bytes(b"\xd0\xcf\x11\xe0 not a zip")
+            self.assertFalse(copy_without_refresh_on_open(binary, Path(folder) / "copy.xls"))
+            self.assertEqual((Path(folder) / "copy.xls").read_bytes(), binary.read_bytes())

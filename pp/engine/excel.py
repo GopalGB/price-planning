@@ -402,6 +402,9 @@ def copy_without_refresh_on_open(source: Path, target: Path) -> bool:
     (six minutes on the office server). Data refreshes only when someone presses Refresh data.
     Returns whether anything was turned off; a workbook without such settings is copied as is.
     """
+    if not zipfile.is_zipfile(source):  # an old binary .xls has no such settings to turn off
+        shutil.copy2(source, target)
+        return False
     with zipfile.ZipFile(source) as archive:
         found = [info for info in archive.infolist()
                  if _REFRESH_PARTS.fullmatch(info.filename) and _REFRESH_ON_LOAD.search(archive.read(info))]
