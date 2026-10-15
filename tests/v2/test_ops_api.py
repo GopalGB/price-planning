@@ -232,6 +232,22 @@ class OperationAPIContractTests(unittest.TestCase):
         calculated = self.client.get(f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1").json()
         self.assertEqual(calculated["rows"]["1"]["1"]["v"], 30)
 
+    def test_opening_a_copy_opens_its_excel_before_the_first_edit(self):
+        """Excel took a minute to open on the first edit; opening the copy starts it instead."""
+        pool, copy_id = self.fixture.pool, self.copy["id"]
+        with mock.patch.object(type(pool), "kind", new_callable=mock.PropertyMock, return_value="excel"), \
+                mock.patch.object(pool, "warm", wraps=pool.warm) as warm:
+            self.client.get(f"/api/copies/{copy_id}/workbook")
+            self.client.get(f"/api/copies/{copy_id}/workbook")
+        self.assertEqual(warm.call_count, 1)
+        self.assertIn(copy_id, pool.order())
+        self.client.post(f"/api/copies/{copy_id}/ops", {
+            "op_id": "after-warm", "action": "edit",
+            "cells": [{"sheet": 0, "r": 1, "c": 1, "v": 12, "expected_version": 0}],
+        }, {"x-csrf-token": self.csrf})
+        calculated = self.client.get(f"/api/copies/{copy_id}/sheets/2/rows?start=1&count=1").json()
+        self.assertEqual((calculated["rows"]["1"]["1"]["v"], calculated["calculated_revision"]), (24, 1))
+
 
 class DynamicSpillAPIContractTests(unittest.TestCase):
     def setUp(self):

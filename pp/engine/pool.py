@@ -303,6 +303,10 @@ class EnginePool:
                     "removals": [], "delta": False, "base_revision": request.base_revision}
         return self._run(request, _CopyWorker.calculate)
 
+    def warm(self, request: CalculationRequest) -> dict:
+        """Like apply, but opens the copy's engine even when it holds nothing to calculate."""
+        return self._run(request, _CopyWorker.calculate)
+
     def run_macro(self, request: MacroRequest) -> dict:
         return self._run(request, _CopyWorker.macro)
 

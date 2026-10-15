@@ -295,7 +295,9 @@ async def _copy_shares(request: Request):
 
 async def _workbook(request: Request):
     services, user = _read_auth(request)
-    return JSONResponse(services.workbooks.workbook(request.path_params["copy_id"], user["id"]))
+    body = services.workbooks.workbook(request.path_params["copy_id"], user["id"])
+    _in_background(_open_engine(services, request.path_params["copy_id"]))
+    return JSONResponse(body)
 
 
 async def _rows(request: Request):
@@ -523,25 +525,39 @@ async def _calculate_latest(services, copy_id, revision):
 
     Edits keep saving while it runs: only publishing the result takes the copy's pipeline lock.
     """
-    lock = _CALC_LOCKS.setdefault(copy_id, asyncio.Lock())
-    async with lock:
+    async with _CALC_LOCKS.setdefault(copy_id, asyncio.Lock()):
         state = await asyncio.to_thread(_calc_state, services, copy_id)
         if state["calculated_revision"] >= revision:
             return  # an earlier run already calculated a state that includes this edit
-        latest = state["input_revision"]
-        try:
-            source = services.workbooks.calculation_source(copy_id)
-            changes = services.operations.revision_changes(copy_id, latest)
-            request = CalculationRequest(copy_id, latest, source, changes, state["calculated_revision"],
-                                         pivot_state=services.workbooks.pivot_state(copy_id))
-            result = await asyncio.to_thread(services.engine_pool.apply, request)
-            async with services.hub.pipeline(copy_id):
-                if await _publish_result(services, request, result):
-                    await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", latest)))
-        except Exception as exc:
-            logging.getLogger(__name__).exception("Calculating copy %s revision %s failed", copy_id, latest)
-            await asyncio.to_thread(services.calculations.failed, copy_id, latest, _failure(exc))
-            await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services, copy_id)})
+        await _calculate_state(services, copy_id, state, services.engine_pool.apply)
+
+
+async def _open_engine(services, copy_id):
+    """Open a copy's Excel as soon as someone opens the copy, so their first edit does not wait for it."""
+    pool = services.engine_pool
+    if pool is None or pool.kind != "excel" or copy_id in pool.order():
+        return
+    async with _CALC_LOCKS.setdefault(copy_id, asyncio.Lock()):
+        if copy_id not in pool.order():
+            state = await asyncio.to_thread(_calc_state, services, copy_id)
+            await _calculate_state(services, copy_id, state, pool.warm)
+
+
+async def _calculate_state(services, copy_id, state, calculate):
+    latest = state["input_revision"]
+    try:
+        source = services.workbooks.calculation_source(copy_id)
+        changes = services.operations.revision_changes(copy_id, latest)
+        request = CalculationRequest(copy_id, latest, source, changes, state["calculated_revision"],
+                                     pivot_state=services.workbooks.pivot_state(copy_id))
+        result = await asyncio.to_thread(calculate, request)
+        async with services.hub.pipeline(copy_id):
+            if await _publish_result(services, request, result):
+                await services.hub.broadcast(copy_id, _event(services.database, copy_id, ("calc", latest)))
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Calculating copy %s revision %s failed", copy_id, latest)
+        await asyncio.to_thread(services.calculations.failed, copy_id, latest, _failure(exc))
+        await services.hub.broadcast(copy_id, {"type": "calc_state", **_calc_state(services, copy_id)})
 
 
 async def _calculate_baseline(services, copy, user_id):

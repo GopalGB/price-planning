@@ -630,12 +630,21 @@ class ExcelEngine:
         try:
             baselines = self._baselines(changes)
             plain, formulas = self._track(changes, baselines)
+            started = time.monotonic()
             for sheet, cells in plain.items():
                 self.host.write(sheet, cells)
             for sheet, cells in formulas.items():
                 self.host.write_formulas(sheet, cells)
+            wrote = time.monotonic()
             self.host.calculate()
-            return self._publish(self._affected([(sheet, row, col) for sheet, row, col, _ in changes]))
+            calculated = time.monotonic()
+            affected = self._affected([(sheet, row, col) for sheet, row, col, _ in changes])
+            traced = time.monotonic()
+            published = self._publish(affected)
+            LOG.info("Excel edit: write %.1fs (%d cells), calculate %.1fs, trace %.1fs, read %.1fs "
+                     "(%d formulas read, %d changed)", wrote - started, len(changes), calculated - wrote,
+                     traced - calculated, time.monotonic() - traced, len(affected), len(published))
+            return published
         except EngineError:
             raise
         except Exception as exc:
